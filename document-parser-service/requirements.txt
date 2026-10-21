@@ -1,0 +1,14 @@
+# 阶段 2 实测通过的版本组合（Python 3.14.0 / Windows / CPU）
+#
+# 版本号取自本机 pip list 实测值，不要凭记忆手写 —— Docling 生态版本耦合紧，
+# 漂移会直接报错。首次搭建时先不加版本装一遍，再用实测值回填。
+docling==2.138.0
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+# 测内存峰值用 RSS（评审 M4），比 tracemalloc 真实
+psutil==7.2.2
+# Task 3/4 的测试全靠它（评审 B4：venv 里原本没装）
+pytest==9.1.1

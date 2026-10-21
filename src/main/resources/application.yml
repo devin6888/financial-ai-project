@@ -1,0 +1,100 @@
+spring:
+  application:
+    name: financial-agent
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/finagent
+    username: finagent
+    password: finagent
+
+  # 数据库版本化迁移。从阶段 2 起 schema 只有一个来源：src/main/resources/db/migration
+  # 改表请新增 V*.sql，不要再 docker compose down -v。
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 全新库（已 down -v），不需要 baseline-on-migrate
+
+  ai:
+    openai:
+      # 百炼 OpenAI 兼容模式。
+      # 注意：Spring AI 2.0 改用官方 OpenAI Java SDK，该 SDK 的 base-url 需【包含 /v1】
+      # （SDK 会自行拼接 /chat/completions、/embeddings）。漏掉 /v1 会直接 404 NotFound。
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.2
+      embedding:
+        options:
+          model: text-embedding-v4
+          # 必须显式指定：默认 2048 维会超出 pgvector 的 vector 索引上限（2000）
+          dimensions: 1024
+
+    # 说明：本 profile 不启用 PgVectorStore 的持久化配置。
+    # PgVectorStore 默认使用自己的 vector_store 表，而设计文档 §15 要求 embedding 存在
+    # document_chunk.embedding —— 两者归属尚未决定，留到阶段 3（见阶段 1 计划文末「未决问题」）。
+    # 测试 profile 用 initialize-schema: true 自建 vector_store_test 表，仅用于验证接线。
+
+# ---------- 腾讯云 COS 对象存储 ----------
+# 凭据通过环境变量注入（Spring Boot 宽松绑定自动映射），不写入仓库：
+#   FINAGENT_COS_SECRET_ID    必需
+#   FINAGENT_COS_SECRET_KEY   必需
+#   FINAGENT_COS_REGION       必需，例如 ap-guangzhou
+#   FINAGENT_COS_BUCKET       必需，形如 mybucket-1251234567（必须带 APPID 后缀）
+#   FINAGENT_COS_KEY_PREFIX   可选，对象键前缀，例如 dev/
+# 四个必需项齐备时才装配 ObjectStorage Bean；缺失时相关测试自动跳过。
+
+# ---------- 解析服务（document-parser-service） ----------
+finagent:
+  parser:
+    base-url: http://127.0.0.1:8000
+    # 作业化之后单个请求都很短（提交 / 查询 / 取结果），不再需要 45 分钟读超时
+    read-timeout-minutes: 5
+    poll-interval-seconds: 10
+    # 整个作业的最长等待。
+    # 实测修正：181 页**不止 25 分钟** —— 前 8 页 8.2 s/页，但整本跑到 50 分钟仍未结束
+    #（后段密集财报表格更慢）。初版按 8.2 s/页估的 60 分钟差点不够，放宽到 180。
+    job-timeout-minutes: 180
+
+  # ---------- 作用域（设计文档 v0.3，阶段 5） ----------
+  # documents-soft-limit 的 5：fusionLimit 50 / 5 = 每份 10 条进精排；
+  # 再多于 5 份，单份分不到 10 条，Reranker 没有样本区分同文档内的细微差别。
+  scope:
+    documents-soft-limit: 5
+    # 文档级路由阈值：超过任一条就要把单池检索换成文档级路由（D11）。
+    # 阶段 5 只记录不实现，trace 里标 doc_routing=unavailable。
+    routing-threshold-documents: 20
+    routing-threshold-chunks: 50000
+
+  # ---------- 问答编排（阶段 5） ----------
+  chat:
+    # trace 一行一条 JSON；置空则关闭落盘
+    trace-file: logs/chat-trace.jsonl
+
+  # ---------- 上下文装配（§9.8 / §9.15，阶段 5） ----------
+  # max-tokens 6000：qwen-plus 32k，证据占 6k 给答案与推理留足空间。
+  # min-score-factor 0.6：§9.15 原文的阈值，Parent 内低于 0.6×最高分的块不送。
+  context:
+    max-tokens: 6000
+    min-score-factor: 0.6
+    neighbor-radius: 1
+    parent-whole-max-tokens: 1500
+
+  # ---------- Rerank（百炼 qwen3-rerank，可选增强） ----------
+  # api-key 缺失或为空 -> 装配 NoopRerankModel：检索照常返回 RRF 结果，trace 里标 degraded。
+  # 故意写成「占位符 + 空默认值」，让「没有 key」成为正常状态而不是启动失败。
+  #   本地启用：在 .env 里加 FINAGENT_RERANK_API_KEY（与 SPRING_AI_OPENAI_API_KEY 同一把百炼 Key）
+  rerank:
+    base-url: https://dashscope.aliyuncs.com
+    model: qwen3-rerank
+    api-key: ${FINAGENT_RERANK_API_KEY:}
+    # Rerank 可降级，所以宁可快速失败：连接 2 s、读取 15 s
+    connect-timeout: 2s
+    read-timeout: 15s
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.finagent: DEBUG

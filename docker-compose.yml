@@ -1,0 +1,22 @@
+services:
+  postgres:
+    build: ./docker/postgres
+    image: finagent-postgres:16
+    container_name: finagent-postgres
+    environment:
+      POSTGRES_DB: finagent
+      POSTGRES_USER: finagent
+      POSTGRES_PASSWORD: finagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 注意：不再挂载 init 目录 —— 从阶段 2 起 schema 由 Flyway 管理（见 src/main/resources/db/migration）
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finagent -d finagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

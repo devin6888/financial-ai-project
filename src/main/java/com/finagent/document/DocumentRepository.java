@@ -1,0 +1,319 @@
+package com.finagent.document;
+
+import com.finagent.scope.DocMeta;
+import com.finagent.scope.SelectableDocument;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * document 表的仓储。
+ *
+ * <p>解析状态与解析结果都在这张表上（合并方案），没有独立的 parse_job 表。
+ * 用 JdbcTemplate 而非 JPA —— 本项目 SQL 都是手写的，多一层 ORM 只是负担。
+ */
+@Repository
+public class DocumentRepository {
+
+    private final JdbcTemplate jdbc;
+
+    public DocumentRepository(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** 幂等登记公司，返回 id。 */
+    public long upsertCompany(String code, String name, String market) {
+        Long id = jdbc.queryForObject("""
+                INSERT INTO company (code, name, market)
+                VALUES (?, ?, ?)
+                ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+                RETURNING id
+                """, Long.class, code, name, market);
+        return id == null ? -1L : id;
+    }
+
+    /**
+     * 幂等登记文档：content_hash 已存在时复用该行。
+     *
+     * <p>注意会把 parse_status 重置为 PENDING 并清掉上一次的作业号 ——
+     * 重解析是"替换"语义，不是"共存"（详见计划「追加变更 B」）。
+     *
+     * @return document id
+     */
+    public long upsertDocument(long companyId, String docType, Integer docYear, String title,
+                               String objectKey, String contentHash) {
+        Long id = jdbc.queryForObject("""
+                INSERT INTO document (company_id, doc_type, doc_year, title, object_key,
+                                      content_hash, parse_status)
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+                ON CONFLICT (content_hash) DO UPDATE
+                    SET object_key   = EXCLUDED.object_key,
+                        title        = EXCLUDED.title,
+                        parse_status = 'PENDING',
+                        parse_job_id = NULL,
+                        parse_error  = NULL
+                RETURNING id
+                """, Long.class, companyId, docType, docYear, title, objectKey, contentHash);
+        return id == null ? -1L : id;
+    }
+
+    public void markRunning(long documentId, String jobId) {
+        jdbc.update("""
+                UPDATE document
+                   SET parse_status = 'RUNNING', parse_job_id = ?,
+                       parse_started_at = now(), parse_error = NULL
+                 WHERE id = ?
+                """, jobId, documentId);
+    }
+
+    public void markDone(long documentId, String parsedObjectKey, String parser,
+                         String parserVersion, int pagesParsed) {
+        jdbc.update("""
+                UPDATE document
+                   SET parse_status = 'DONE', parsed_object_key = ?, parser = ?,
+                       parser_version = ?, pages_parsed = ?, parsed_at = now(),
+                       parse_finished_at = now(), parse_error = NULL
+                 WHERE id = ?
+                """, parsedObjectKey, parser, parserVersion, pagesParsed, documentId);
+    }
+
+    public void markFailed(long documentId, String error) {
+        jdbc.update("""
+                UPDATE document
+                   SET parse_status = 'FAILED', parse_error = ?, parse_finished_at = now()
+                 WHERE id = ?
+                """, error, documentId);
+    }
+
+    /**
+     * 在途文档：应用启动时用它恢复。
+     *
+     * <p>走的是部分索引 idx_document_parse_active，只覆盖 PENDING/RUNNING 行。
+     */
+    public List<InFlightDocument> findInFlight() {
+        return jdbc.query("""
+                SELECT id, content_hash, parse_job_id
+                  FROM document
+                 WHERE parse_status IN ('PENDING', 'RUNNING')
+                 ORDER BY id
+                """, IN_FLIGHT_MAPPER);
+    }
+
+    /** 读回某个文档的解析状态与产物指针，用于验收断言。 */
+    public ParseState findParseState(long documentId) {
+        return jdbc.queryForObject("""
+                SELECT id, parse_status, parsed_object_key, parser, parser_version,
+                       pages_parsed, parse_error, title
+                  FROM document
+                 WHERE id = ?
+                """, (rs, n) -> new ParseState(
+                        rs.getLong("id"),
+                        rs.getString("parse_status"),
+                        rs.getString("parsed_object_key"),
+                        rs.getString("parser"),
+                        rs.getString("parser_version"),
+                        (Integer) rs.getObject("pages_parsed"),
+                        rs.getString("parse_error"),
+                        rs.getString("title")), documentId);
+    }
+
+    /**
+     * 公司代码是否存在。
+     *
+     * <p>为什么需要它：§9.14 要求「companyIds 必须命中 company 表」——
+     * LLM 会编造不存在的代码，必须在入库前校验，否则它会变成永远命中 0 行的硬过滤条件，
+     * 静默地把整个检索结果清空。
+     */
+    public boolean companyExists(String code) {
+        if (code == null || code.isBlank()) {
+            return false;
+        }
+        Integer n = jdbc.queryForObject(
+                "SELECT count(*) FROM company WHERE code = ?", Integer.class, code.strip());
+        return n != null && n > 0;
+    }
+
+    /**
+     * 公司代码（如 300059）→ company.id。
+     *
+     * <p>为什么要这一步：QU 抽出来的是<b>股票代码</b>，而检索的硬过滤条件是
+     * document.company_id。两者不是一回事，直接透传会得到「过滤条件永远不匹配」——
+     * 不报错，只是静默返回 0 条。
+     *
+     * @return 不存在时返回 null，由调用方决定是否放弃该过滤条件
+     */
+    public Long findCompanyIdByCode(String code) {
+        if (code == null || code.isBlank()) {
+            return null;
+        }
+        java.util.List<Long> ids = jdbc.query("SELECT id FROM company WHERE code = ?",
+                (rs, n) -> rs.getLong("id"), code.strip());
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    /**
+     * 按 doc_type + doc_year 推算报告期并回填（只在 period_start 为空时写）。
+     *
+     * <p>为什么不让调用方传 period：报告期是「类型 + 年份」的纯函数，让每个入口各传一次
+     * 只会出现「有的入口忘了传」，而漏传的表现是 period 为 null —— 不报错，只是
+     * 阶段 5 判定「本期证据」时静默失效。
+     *
+     * <p>为什么半年报从 1/1 起：A 股半年报的「本期」是 1-6 月，起点必须是 1/1，
+     * 不能理解成「报告期内的 6 个月」。
+     *
+     * @return 受影响行数；0 表示 doc_year 为空或期间已存在
+     */
+    public int backfillPeriod(long documentId) {
+        return jdbc.update("""
+                UPDATE document
+                   SET period_start = CASE doc_type
+                           WHEN 'ANNUAL'      THEN make_date(doc_year, 1, 1)
+                           WHEN 'SEMI_ANNUAL' THEN make_date(doc_year, 1, 1)
+                           WHEN 'Q1'          THEN make_date(doc_year, 1, 1)
+                           WHEN 'Q3'          THEN make_date(doc_year, 7, 1)
+                       END,
+                       period_end   = CASE doc_type
+                           WHEN 'ANNUAL'      THEN make_date(doc_year, 12, 31)
+                           WHEN 'SEMI_ANNUAL' THEN make_date(doc_year, 6, 30)
+                           WHEN 'Q1'          THEN make_date(doc_year, 3, 31)
+                           WHEN 'Q3'          THEN make_date(doc_year, 9, 30)
+                       END
+                 WHERE id = ?
+                   AND doc_year IS NOT NULL
+                   AND period_start IS NULL
+                """, documentId);
+    }
+
+    /**
+     * 可检索文档 = 解析完成（DONE）且有 active_chunk_version。
+     *
+     * <p>为什么必须过滤这两条而不是在检索时兜底：库里存在 parse_status=FAILED 的文档，
+     * 它一条 chunk 都没有。放进作用域后检索会返回 0 条，错误信息指向「没找到证据」，
+     * 而真实原因是「这份文档根本没解析成功」—— 用户没法自己修。
+     *
+     * @param ids          为空表示不限
+     * @param companyCodes 为空表示不限
+     * @param years        按 doc_year 精确匹配，为空表示不限
+     * @param docTypes     为空表示不限
+     * @param industries   为空表示不限
+     */
+    public List<DocMeta> findRetrievable(List<Long> ids, List<String> companyCodes,
+                                         List<Integer> years, List<String> docTypes,
+                                         List<String> industries) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT d.id, d.company_id, c.code, c.name, d.doc_year, d.doc_type,
+                       d.period_start, d.period_end, d.active_chunk_version, d.title
+                  FROM document d
+                  LEFT JOIN company c ON c.id = d.company_id
+                 WHERE d.parse_status = 'DONE'
+                   AND d.active_chunk_version IS NOT NULL
+                """);
+        List<Object> args = new ArrayList<>();
+        appendIn(sql, args, "d.id", ids);
+        appendIn(sql, args, "c.code", companyCodes);
+        appendIn(sql, args, "d.doc_year", years);
+        appendIn(sql, args, "d.doc_type", docTypes);
+        appendIn(sql, args, "c.industry", industries);
+        sql.append(" ORDER BY d.doc_year DESC NULLS LAST, d.id");
+        return jdbc.query(sql.toString(), DOC_META_MAPPER, args.toArray());
+    }
+
+    /**
+     * 按 id 查解析状态 —— 只用于「为什么这份文档没进作用域」的诊断。
+     *
+     * <p>分开一个方法而不是给 findRetrievable 加参数：可检索与不可检索是两种语义，
+     * 混在一个查询里迟早会有人忘了加 WHERE。
+     */
+    /**
+     * 前端「选择文档」列表：只列可检索的（解析完成且有 ACTIVE 块版本）。
+     *
+     * <p>chunkCount 只数 CHILD 的 ACTIVE 行：Parent 也是行，算进去会让用户以为文档大了一倍。
+     */
+    public List<SelectableDocument> findSelectableDocuments() {
+        return jdbc.query("""
+                SELECT d.id, d.title, c.code AS company_code, c.name AS company_name,
+                       d.doc_year, d.doc_type, d.pages_parsed,
+                       (SELECT count(*) FROM document_chunk dc
+                         WHERE dc.document_id = d.id
+                           AND dc.chunk_level = 'CHILD'
+                           AND dc.status = 'ACTIVE'
+                           AND dc.chunk_version = d.active_chunk_version) AS chunk_count
+                  FROM document d
+                  LEFT JOIN company c ON c.id = d.company_id
+                 WHERE d.parse_status = 'DONE' AND d.active_chunk_version IS NOT NULL
+                 ORDER BY d.doc_year DESC NULLS LAST, d.id
+                """, (rs, i) -> new SelectableDocument(
+                rs.getLong("id"),
+                rs.getString("title"),
+                rs.getString("company_code"),
+                rs.getString("company_name"),
+                rs.getObject("doc_year", Integer.class),
+                rs.getString("doc_type"),
+                rs.getObject("pages_parsed", Integer.class),
+                rs.getLong("chunk_count")));
+    }
+
+    public List<DocStatus> findStatusByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        String sql = "SELECT id, parse_status, active_chunk_version, title FROM document WHERE id IN ("
+                + String.join(",", Collections.nCopies(ids.size(), "?")) + ")";
+        return jdbc.query(sql, (rs, n) -> new DocStatus(
+                rs.getLong("id"),
+                rs.getString("parse_status"),
+                (Integer) rs.getObject("active_chunk_version"),
+                rs.getString("title")), ids.toArray());
+    }
+
+    /** 空的筛选条件不加任何条件（= 不限），避免拼出 IN () 的语法错误。 */
+    private static void appendIn(StringBuilder sql, List<Object> args, String column, List<?> values) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        sql.append(" AND ").append(column).append(" IN (")
+                .append(String.join(",", Collections.nCopies(values.size(), "?")))
+                .append(")");
+        args.addAll(values);
+    }
+
+    private static final RowMapper<DocMeta> DOC_META_MAPPER = (rs, n) -> new DocMeta(
+            rs.getLong("id"),
+            (Long) rs.getObject("company_id"),
+            rs.getString("code"),
+            rs.getString("name"),
+            (Integer) rs.getObject("doc_year"),
+            rs.getString("doc_type"),
+            rs.getObject("period_start", LocalDate.class),
+            rs.getObject("period_end", LocalDate.class),
+            rs.getInt("active_chunk_version"),
+            rs.getString("title"));
+
+    /** 文档的解析状态投影（诊断用）。 */
+    public record DocStatus(long id, String parseStatus, Integer activeChunkVersion, String title) {
+        public boolean retrievable() {
+            return "DONE".equals(parseStatus) && activeChunkVersion != null;
+        }
+    }
+
+    /** 解析状态与产物指针。 */
+    public record ParseState(long documentId, String parseStatus, String parsedObjectKey,
+                             String parser, String parserVersion, Integer pagesParsed,
+                             String parseError,
+                             /** 文档标题。阶段 3 拼接 embedding_text 需要它（加在末尾，不影响既有调用）。 */
+                             String title) {
+    }
+
+    private static final RowMapper<InFlightDocument> IN_FLIGHT_MAPPER = (rs, n) ->
+            new InFlightDocument(rs.getLong("id"), rs.getString("content_hash"),
+                    rs.getString("parse_job_id"));
+
+    /** 在途文档的最小投影。 */
+    public record InFlightDocument(long documentId, String contentHash, String jobId) {
+    }
+}

@@ -1,0 +1,23 @@
+spring:
+  ai:
+    openai:
+      # 假 Key：仅为让自动装配通过；测试中不做真实调用
+      # 若设置了环境变量 SPRING_AI_OPENAI_API_KEY，它会覆盖此值（环境变量优先级高于 yml），
+      # 此时 VectorStoreSmokeTest 中需要真实 API 的用例会自动启用
+      api-key: test-key-not-used
+    vectorstore:
+      pgvector:
+        initialize-schema: true
+        dimensions: 1024
+        index-type: hnsw
+        distance-type: cosine_distance
+        table-name: vector_store_test
+  datasource:
+    url: jdbc:postgresql://localhost:5432/finagent
+    username: finagent
+    password: finagent
+
+finagent:
+  chat:
+    # 测试不写 logs/chat-trace.jsonl，避免每跑一次测试就往仓库里加文件
+    trace-file: target/test-chat-trace.jsonl
