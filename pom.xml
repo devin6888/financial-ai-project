@@ -78,6 +78,13 @@
       <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
     </dependency>
 
+    <!-- Kafka（阶段 7：异步与任务化）。Boot 4 把自动配置拆成模块，同 spring-boot-flyway 写法；
+         spring-kafka 4.0.7（含 kafka-clients 4.1.2）由该模块传递引入，版本走 spring-boot BOM。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-kafka</artifactId>
+    </dependency>
+
     <!-- 腾讯云 COS 对象存储（设计文档 §14：经 ObjectStorage 抽象访问，便于替换） -->
     <dependency>
       <groupId>com.qcloud</groupId>

@@ -1,10 +1,15 @@
 package com.finagent.document;
 
+import com.finagent.chunk.ReindexMode;
+import com.finagent.chunk.ReindexService;
 import com.finagent.storage.ObjectStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+
+import com.finagent.security.CurrentUser;
+import com.finagent.security.TenantContext;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -26,22 +31,30 @@ public class DocumentParseService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentParseService.class);
 
+    /** 没有 HTTP 上下文时使用的租户（本机 demo 租户）。 */
+    private static final long FALLBACK_TENANT_ID = 1L;
+
     private final ParserAdapter parser;
     private final DocumentRepository documents;
     private final ObjectStorage storage;
+    private final ReindexService reindex;
 
     public DocumentParseService(ParserAdapter parser, DocumentRepository documents,
-                                ObjectStorage storage) {
+                                ObjectStorage storage, ReindexService reindex) {
         this.parser = parser;
         this.documents = documents;
         this.storage = storage;
+        this.reindex = reindex;
     }
 
     /** 便捷入口：先幂等登记公司，再解析。 */
     public long parseAndStore(String companyCode, String companyName, String market,
                               String docType, Integer docYear, String title,
                               String pdfObjectKey, byte[] pdf) {
-        long companyId = documents.upsertCompany(companyCode, companyName, market);
+        // 这条入口只被 CLI 与测试调用（没有 HTTP 上下文）：有上下文用上下文的租户，
+        // 没有就用兜底租户（本机 demo = 1）。生产的上传链路走 DocumentUploadService，那里有上下文。
+        long tenantId = TenantContext.optional().map(CurrentUser::tenantId).orElse(FALLBACK_TENANT_ID);
+        long companyId = documents.upsertCompany(companyCode, companyName, market, tenantId);
         return parseAndStore(companyId, docType, docYear, title, pdfObjectKey, pdf);
     }
 
@@ -54,19 +67,52 @@ public class DocumentParseService {
                 pdfObjectKey, contentHash);
         log.info("文档已登记 document_id={} hash={}", documentId, contentHash);
         try {
-            // 提交与取结果**分成两步**，中间把 job_id 落库 —— 这是「durable」的支点：
-            // 客户端在轮询期间断开时，作业仍在服务端跑，恢复流程能凭 job_id 把它接回来。
-            // （初版让适配器把 submit+poll 包在一起，job_id 拿不到，断线后就只能判定"从未提交"。）
-            String jobId = parser.submit(pdf, title + ".pdf", null, null);
-            documents.markRunning(documentId, jobId);
-
-            ParsedDocument parsed = parser.fetchResult(jobId);
-            persistResult(documentId, contentHash, parsed);
+            parseAndPersist(documentId, contentHash, title, pdf);
             return documentId;
         } catch (RuntimeException e) {
             documents.markFailed(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * 异步解析编排（阶段 7 worker 入口）：从 COS 读回 PDF → 解析 → 切块 + 嵌入。
+     *
+     * <p>与 {@link #parseAndStore(long, String, Integer, String, String, byte[])} 的区别：
+     * 后者是「登记 + 同步解析」，本方法是「文档已登记（PENDING），只做解析 + 后续切块」——
+     * 上传链路在 REST 侧只登记并投递事件，真正的解析移到这里异步完成。
+     * 两条链路共用 {@link #parseAndPersist}，不写第二套解析逻辑。
+     */
+    public void parseDocumentAsync(long documentId) {
+        DocumentRepository.ParseInput input = documents.findParseInput(documentId);
+        if (input.objectKey() == null || input.objectKey().isBlank()) {
+            throw new IllegalStateException(
+                    "文档 " + documentId + " 没有 PDF 对象键，无法异步解析");
+        }
+        byte[] pdf = storage.get(input.objectKey());
+        try {
+            parseAndPersist(documentId, input.contentHash(), input.title(), pdf);
+            // 解析完成 → 复用 ReindexService 做切块 + 嵌入（RECHUNK 是阶段 3 已交付的能力）
+            reindex.reindex(documentId, ReindexMode.RECHUNK);
+        } catch (RuntimeException e) {
+            documents.markFailed(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 提交解析作业并落产物（主流程与异步流程共用）。
+     *
+     * <p>提交与取结果**分成两步**，中间把 job_id 落库 —— 这是「durable」的支点：
+     * 客户端在轮询期间断开时，作业仍在服务端跑，恢复流程能凭 job_id 把它接回来。
+     * （初版让适配器把 submit+poll 包在一起，job_id 拿不到，断线后就只能判定"从未提交"。）
+     */
+    private void parseAndPersist(long documentId, String contentHash, String title, byte[] pdf) {
+        String jobId = parser.submit(pdf, title + ".pdf", null, null);
+        documents.markRunning(documentId, jobId);
+
+        ParsedDocument parsed = parser.fetchResult(jobId);
+        persistResult(documentId, contentHash, parsed);
     }
 
     /**

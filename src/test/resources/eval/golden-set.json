@@ -1,0 +1,774 @@
+{
+  "version": "2026-10-22",
+  "builtBy": "SQL: document_chunk content LIKE '%value%' AND status='ACTIVE' AND chunk_level='CHILD'（2026-10-26 重映射：848→5712、1146→6010，因 TableRenderer 修好表格表头后这两块内容变了；评测时按 embedding_text_hash 解析到当前 ACTIVE 版本，见 EvidenceResolver）",
+  "items": [
+    {
+      "id": "Q01",
+      "type": "METRIC",
+      "question": "2024年营业总收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "11,604,343,090.16"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1657,
+        1919,
+        1946,
+        2298
+      ],
+      "expectRefusal": false,
+      "note": "2024年报「主要会计数据」表"
+    },
+    {
+      "id": "Q02",
+      "type": "METRIC",
+      "question": "2024年归属于上市公司股东的净利润是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "9,610,120,743.64"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1947,
+        1958,
+        2159,
+        2187
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q03",
+      "type": "METRIC",
+      "question": "2024年基本每股收益是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "0.6087"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1949,
+        2336
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q04",
+      "type": "METRIC",
+      "question": "2024年末资产总额是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "306,369,357,347.30"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1940,
+        1942
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q05",
+      "type": "METRIC",
+      "question": "2024年加权平均净资产收益率是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "12.64%"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        2264,
+        2336
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q06",
+      "type": "METRIC",
+      "question": "2024年经营活动产生的现金流量净额是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "44,587,872,891.43"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1670,
+        1953,
+        2188
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q07",
+      "type": "METRIC",
+      "question": "2025年营业总收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "16,067,741,039.51"
+      ],
+      "evidenceChunkIds": [
+        818,
+        5712,
+        1109,
+        1133,
+        1516
+      ],
+      "expectRefusal": false,
+      "note": "2025年报「主要会计数据」表"
+    },
+    {
+      "id": "Q08",
+      "type": "METRIC",
+      "question": "2025年归属于上市公司股东的净利润是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "12,084,594,947.22"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1134,
+        6010,
+        1374,
+        1405
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q09",
+      "type": "METRIC",
+      "question": "2025年基本每股收益是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "0.7650"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1136,
+        1551
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q10",
+      "type": "METRIC",
+      "question": "2025年末资产总额是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "392,933,744,976.20"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1126,
+        1128
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q11",
+      "type": "METRIC",
+      "question": "2025年加权平均净资产收益率是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "14.03%"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1551
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q12",
+      "type": "METRIC",
+      "question": "2025年经营活动产生的现金流量净额是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "-10,222,245,645.14"
+      ],
+      "evidenceChunkIds": [
+        818,
+        863,
+        1140,
+        1406
+      ],
+      "expectRefusal": false,
+      "note": "同上"
+    },
+    {
+      "id": "Q13",
+      "type": "NARRATIVE",
+      "question": "2025年研发人员数量是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "1,973"
+      ],
+      "evidenceChunkIds": [
+        860
+      ],
+      "expectRefusal": false,
+      "note": "2025年报 研发人员情况表（1,973 人）"
+    },
+    {
+      "id": "Q14",
+      "type": "NARRATIVE",
+      "question": "2025年前五名客户合计销售金额是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [
+        "922,605,814.85"
+      ],
+      "evidenceChunkIds": [
+        852
+      ],
+      "expectRefusal": false,
+      "note": "2025年报 前五名客户表"
+    },
+    {
+      "id": "Q15",
+      "type": "NARRATIVE",
+      "question": "2025年报的关键审计事项有哪些？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [
+        1107,
+        1112
+      ],
+      "expectRefusal": false,
+      "note": "2025年报 审计报告 关键审计事项"
+    },
+    {
+      "id": "Q16",
+      "type": "NARRATIVE",
+      "question": "2025年商誉是怎么形成的？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [
+        1108
+      ],
+      "expectRefusal": false,
+      "note": "2025年报 商誉减值 关键审计事项"
+    },
+    {
+      "id": "Q17",
+      "type": "NARRATIVE",
+      "question": "2024年公司主营业务数据说明了什么？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [
+        1654
+      ],
+      "expectRefusal": false,
+      "note": "2024年报 主营业务分析"
+    },
+    {
+      "id": "Q18",
+      "type": "NARRATIVE",
+      "question": "2024年公司应对行业变化的措施是什么？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [
+        1698
+      ],
+      "expectRefusal": false,
+      "note": "2024年报 应对措施段"
+    },
+    {
+      "id": "Q19",
+      "type": "COMPARISON",
+      "question": "2024年和2025年的营业总收入分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "11,604,343,090.16",
+        "16,067,741,039.51"
+      ],
+      "evidenceChunkIds": [
+        818,
+        5712,
+        1109,
+        1133,
+        1516,
+        1627,
+        1657,
+        1919,
+        1946,
+        2298
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q20",
+      "type": "COMPARISON",
+      "question": "2024年和2025年的归母净利润分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "9,610,120,743.64",
+        "12,084,594,947.22"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1134,
+        6010,
+        1374,
+        1405,
+        1627,
+        1947,
+        1958,
+        2159,
+        2187
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q21",
+      "type": "COMPARISON",
+      "question": "2024年和2025年的经营活动现金流量净额分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "44,587,872,891.43",
+        "-10,222,245,645.14"
+      ],
+      "evidenceChunkIds": [
+        818,
+        863,
+        1140,
+        1406,
+        1627,
+        1670,
+        1953,
+        2188
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q22",
+      "type": "COMPARISON",
+      "question": "2024年和2025年的基本每股收益分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "0.6087",
+        "0.7650"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1136,
+        1551,
+        1627,
+        1949,
+        2336
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q23",
+      "type": "COMPARISON",
+      "question": "2024年末和2025年末的资产总额分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "306,369,357,347.30",
+        "392,933,744,976.20"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1126,
+        1128,
+        1627,
+        1940,
+        1942
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q24",
+      "type": "COMPARISON",
+      "question": "2024年和2025年的加权平均净资产收益率分别是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38,
+          7
+        ]
+      },
+      "expectedDocIds": [
+        38,
+        7
+      ],
+      "expectedValues": [
+        "12.64%",
+        "14.03%"
+      ],
+      "evidenceChunkIds": [
+        818,
+        1551,
+        1627,
+        2264,
+        2336
+      ],
+      "expectRefusal": false,
+      "note": "两份报告都要被引用"
+    },
+    {
+      "id": "Q25",
+      "type": "TRAP",
+      "question": "2021年营业总收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [],
+      "expectRefusal": true,
+      "note": "库里没有 2021 年报，2024 年报的表也只回溯到 2022"
+    },
+    {
+      "id": "Q26",
+      "type": "TRAP",
+      "question": "2019年归属于上市公司股东的净利润是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [],
+      "expectRefusal": true,
+      "note": "2019 不在任何对比列里"
+    },
+    {
+      "id": "Q27",
+      "type": "TRAP",
+      "question": "2024年公司的碳排放总量是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [],
+      "expectRefusal": true,
+      "note": "年报没有该指标"
+    },
+    {
+      "id": "Q28",
+      "type": "TRAP",
+      "question": "贵州茅台2024年营业总收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [],
+      "expectRefusal": true,
+      "note": "作用域里只有东方财富的报告"
+    },
+    {
+      "id": "Q29",
+      "type": "TRAP",
+      "question": "五粮液2024年营业收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          7
+        ]
+      },
+      "expectedDocIds": [
+        7
+      ],
+      "expectedValues": [],
+      "evidenceChunkIds": [],
+      "expectRefusal": true,
+      "note": "作用域里只有东方财富的报告"
+    },
+    {
+      "id": "Q30",
+      "type": "NARRATIVE",
+      "question": "2024年员工总数是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "5,560"
+      ],
+      "evidenceChunkIds": [
+        1758
+      ],
+      "expectRefusal": false,
+      "note": "2024 年报「员工情况」表解析正常（同一张表在 2025 年报里被解析坏了，见文档 7 的 946 块）"
+    },
+    {
+      "id": "Q31",
+      "type": "METRIC",
+      "question": "2023年营业总收入是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "11,081,439,282.37"
+      ],
+      "evidenceChunkIds": [
+        1627,
+        1657
+      ],
+      "expectRefusal": false,
+      "note": "数值只存在于 2024 年报的上年同期对比列 → 必须触发期间标注"
+    },
+    {
+      "id": "Q32",
+      "type": "METRIC",
+      "question": "2023年归属于上市公司股东的净利润是多少？",
+      "scope": {
+        "kind": "DOCUMENTS",
+        "documentIds": [
+          38
+        ]
+      },
+      "expectedDocIds": [
+        38
+      ],
+      "expectedValues": [
+        "8,193,469,277.99"
+      ],
+      "evidenceChunkIds": [
+        1627
+      ],
+      "expectRefusal": false,
+      "note": "同上，验证期间标注不依赖指标"
+    }
+  ]
+}

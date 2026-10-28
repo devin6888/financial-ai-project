@@ -83,4 +83,46 @@ class TableRendererTest {
         assertThat(grid.get(0)).hasSize(2);
         assertThat(grid.get(0).get(1)).isEqualTo("超宽");
     }
+
+    @Test
+    void collapsesWholeColumnDuplicationAndRecoversValue() {
+        // 阶段 6 员工表 bug：TableFormer 把 2 列「标签｜数值」误判成 3 列，
+        // 标签 col_span=2（跨列）+ 重复物化，数值被挤到第 3 列。
+        var cells = List.of(
+                new DocumentModel.Cell("母公司在职员工（人）", 0, 0, 1, 2),
+                new DocumentModel.Cell("母公司在职员工（人）", 0, 1, 1, 2),
+                new DocumentModel.Cell("1,293", 0, 2, 1, 1),
+                new DocumentModel.Cell("主要子公司在职员工（人）", 1, 0, 1, 2),
+                new DocumentModel.Cell("主要子公司在职员工（人）", 1, 1, 1, 2),
+                new DocumentModel.Cell("5,110", 1, 2, 1, 1),
+                new DocumentModel.Cell("专业构成", 2, 0, 1, 3),
+                new DocumentModel.Cell("专业构成", 2, 1, 1, 3),
+                new DocumentModel.Cell("专业构成", 2, 2, 1, 3));
+
+        String md = TableRenderer.toMarkdown(table(3, 3, cells, null));
+
+        // 数值被拉回标签右侧，形成 2 列表
+        assertThat(md).contains("| 母公司在职员工（人） | 1,293 |");
+        assertThat(md).contains("| 主要子公司在职员工（人） | 5,110 |");
+        // 不再有「标签重复三次」的三列病态
+        assertThat(md).doesNotContain("| 母公司在职员工（人） | 母公司在职员工（人） |");
+    }
+
+    @Test
+    void doesNotCollapseWhenDuplicationOnlyInHeaderRow() {
+        // 合法场景：只有表头行有跨列合并（被物化成重复格），数据行 3 列互不相同。
+        // 此时不去重、不紧凑重排，避免把第三列错移到第二列。
+        var cells = List.of(
+                new DocumentModel.Cell("合并头", 0, 0, 1, 2),
+                new DocumentModel.Cell("合并头", 0, 1, 1, 2),
+                new DocumentModel.Cell("第三列", 0, 2, 1, 1),
+                new DocumentModel.Cell("a", 1, 0, 1, 1),
+                new DocumentModel.Cell("b", 1, 1, 1, 1),
+                new DocumentModel.Cell("c", 1, 2, 1, 1));
+
+        String md = TableRenderer.toMarkdown(table(2, 3, cells, null));
+
+        assertThat(md).contains("| 合并头 | 合并头 | 第三列 |");
+        assertThat(md).contains("| a | b | c |");
+    }
 }

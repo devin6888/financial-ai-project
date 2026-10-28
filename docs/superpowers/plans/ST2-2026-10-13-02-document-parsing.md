@@ -3,6 +3,8 @@
 > **给执行者：** 按任务逐个执行，每个任务结束后运行该任务的验证命令并确认输出符合预期，再进入下一个任务。步骤用复选框（- [ ]）语法跟踪进度。
 > 注：本环境未安装 superpowers 执行子技能，采用「每个任务由一个子代理独立执行 + 主代理在任务间验收」替代。
 
+> 📖 术语：本文出现的缩写（Parent/Child、embedding、RRF、QU、HNSW、e2e……）在 `docs/术语表.md` 有中文全称、为什么需要它、在本项目里长什么样。写法约定见 `docs/文档写作规范.md`。
+
 **Goal:** 把一份 181 页真实年报，变成**带页码、带章节路径**的 NormalizedDocument，并落盘到 COS，为阶段 3 的切块提供输入。
 
 **Architecture:** Docling 跑在独立的 Python 服务里（venv 已就绪），通过 FastAPI 暴露 `POST /parse`；服务只负责「看懂 PDF」，不碰数据库。Java 侧用 Parser Adapter 调它，保持解析引擎可替换。

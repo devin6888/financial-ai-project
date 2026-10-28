@@ -3,7 +3,9 @@ package com.finagent.answer;
 import com.finagent.answer.AnswerDto.FactDto;
 import com.finagent.citation.Citation;
 import com.finagent.citation.CitationValidator;
+import com.finagent.context.ContextBlock;
 import com.finagent.context.ContextPackage;
+import com.finagent.memory.MemoryContext;
 import com.finagent.understanding.QueryUnderstanding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +46,16 @@ public class AnswerService {
     }
 
     public AnswerResult answer(String question, QueryUnderstanding qu, ContextPackage pkg) {
+        return answer(question, qu, pkg, null);
+    }
+
+    /**
+     * @param memory 背景信息（短期对话 / 摘要 / 结构化上下文 / 长期偏好）。
+     *               <b>它只进 Prompt 的【背景信息】段，不进 {@code pkg.blocks()}</b> ——
+     *               引用编号只由证据块产生，所以记忆不可能出现在 citations 里（D4）。
+     */
+    public AnswerResult answer(String question, QueryUnderstanding qu, ContextPackage pkg,
+                               MemoryContext memory) {
         if (pkg == null || pkg.isEmpty()) {
             // 拒答不调模型：没有证据时让模型「自由发挥」是金融场景最危险的路径
             log.debug("证据包为空，拒答：question={}", question);
@@ -53,7 +65,8 @@ public class AnswerService {
 
         AnswerDto dto;
         try {
-            String raw = generator.complete(AnswerPrompts.SYSTEM, AnswerPrompts.user(question, pkg));
+            String raw = generator.complete(AnswerPrompts.SYSTEM,
+                    AnswerPrompts.user(question, pkg, memory == null ? null : memory.text()));
             dto = parser.parse(raw);
         } catch (RuntimeException e) {
             log.warn("答案生成失败，降级为 error：{}", e.getMessage());
@@ -93,7 +106,23 @@ public class AnswerService {
             warnings.add(WARNING_NO_CITATION);
         }
 
-        List<AnswerResult.Fact> outFacts = guarded.facts().stream()
+        // 第四层：数字必须能回到被引证据。
+        // 2026-10-22 评测抓到 —— 问「2024年员工总数」，模型答「5,560 人」并给了引用，
+        // 但库里 0 个 chunk 含 5,560 / 1,226 / 4,334：引用是真的，数字是编的。
+        // 引用校验管不了这件事（编号合法），只有拿数字回查正文才能发现。
+        Grounding grounding = ground(dto.answer(), guarded.facts(), citations.citations(), pkg.blocks());
+        warnings.addAll(grounding.warnings());
+        confidence = lower(confidence, grounding.confidenceCap());
+        if (grounding.allUngrounded()) {
+            return new AnswerResult(false,
+                    "答案中的数字无法在引用证据中核对（可能是模型推算或编造），已拒答。请换一种问法，或直接查看原始报告。",
+                    toFacts(grounding.facts()), citations.citations(),
+                    AnswerResult.CONFIDENCE_INSUFFICIENT,
+                    "引用块里没有出现答案中的数值，按无证据处理。",
+                    List.copyOf(warnings), citations.dropped().size());
+        }
+
+        List<AnswerResult.Fact> outFacts = grounding.facts().stream()
                 .map(f -> new AnswerResult.Fact(f.metric(), f.period(), f.value(), f.unit(), f.scope(),
                         f.evidence(), AnswerResult.Fact.SOURCE_PDF))
                 .toList();
@@ -106,6 +135,89 @@ public class AnswerService {
                 mergeNote(dto.note(), guarded.note()),
                 List.copyOf(warnings),
                 citations.dropped().size());
+    }
+
+    // ------------------------------------------------------------ 数字落地校验
+
+    /** 报告里出现过的数字形态：千分位（5,560 / 16,067,741,039.51）或四位以上的纯数字。 */
+    private static final java.util.regex.Pattern NUMBER =
+            java.util.regex.Pattern.compile("\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|\\d{4,}(?:\\.\\d+)?");
+
+    record Grounding(List<FactDto> facts, List<String> warnings, String confidenceCap,
+                     boolean allUngrounded) { }
+
+    /**
+     * 拿答案里的数字回查被引证据。
+     *
+     * <p>只拦「报告式数字」（带千分位或四位以上）：增长率、百分比、期数这类
+     * 模型自己算出来的小数字不在此列 —— 那些是允许的推理，不是编造。
+     *
+     * <p>为什么全部落空才拒答：一条答案里只要有一个数能对上，其余多半是折算/合计；
+     * 一个都对不上，说明这段答案不是从证据里读出来的。
+     */
+    Grounding ground(String answer, List<FactDto> facts, List<Citation> citations,
+                     List<ContextBlock> blocks) {
+        java.util.Map<Long, String> byChunk = new java.util.HashMap<>();
+        for (ContextBlock b : blocks) {
+            byChunk.put(b.chunkId(), b.content() == null ? "" : b.content());
+        }
+        StringBuilder cited = new StringBuilder();
+        for (Citation c : citations) {
+            String content = byChunk.get(c.childChunkId());
+            if (content != null) {
+                cited.append(content).append('\n');
+            }
+        }
+        String text = normalizeNumbers(cited.toString());
+
+        List<FactDto> keptFacts = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        for (FactDto f : facts) {
+            // 小数字（股数 3、期数 10）不做落地校验：在正文里必然到处能撞上，校验等于没校验
+            if (f.value() == null || !isReportNumber(f.value())
+                    || text.contains(normalizeNumbers(f.value()))) {
+                keptFacts.add(f);
+            } else {
+                warnings.add(AnswerResult.WARNING_FACT_UNGROUNDED + f.metric());
+            }
+        }
+
+        int total = 0;
+        int ungrounded = 0;
+        java.util.regex.Matcher m = NUMBER.matcher(answer == null ? "" : answer);
+        while (m.find()) {
+            String n = m.group();
+            if (n.matches("(19|20)\\d{2}")) {
+                continue;    // 年份不是事实数字
+            }
+            total++;
+            if (!text.contains(normalizeNumbers(n))) {
+                ungrounded++;
+            }
+        }
+
+        boolean all = total > 0 && ungrounded == total;
+        String cap = AnswerResult.CONFIDENCE_HIGH;
+        if (ungrounded > 0) {
+            warnings.add(AnswerResult.WARNING_ANSWER_UNGROUNDED + ":" + ungrounded);
+            cap = AnswerResult.CONFIDENCE_LOW;
+        }
+        return new Grounding(List.copyOf(keptFacts), List.copyOf(warnings), cap, all);
+    }
+
+    private static boolean isReportNumber(String value) {
+        return NUMBER.matcher(normalizeNumbers(value)).matches();
+    }
+
+    private static String normalizeNumbers(String s) {
+        return s == null ? "" : s.replace(",", "").replace(" ", "");
+    }
+
+    private static List<AnswerResult.Fact> toFacts(List<FactDto> facts) {
+        return facts.stream()
+                .map(f -> new AnswerResult.Fact(f.metric(), f.period(), f.value(), f.unit(), f.scope(),
+                        f.evidence(), AnswerResult.Fact.SOURCE_PDF))
+                .toList();
     }
 
     /** "E12" / "[E12]" / "12" → 12；解析不了的编号直接丢弃（渲染时不会出现这种编号）。 */

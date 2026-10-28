@@ -22,7 +22,7 @@ public class ContextProperties {
     /** 命中块前后各补几个邻居（同 Parent 内）。 */
     private int neighborRadius = 1;
 
-    /** 整段 Parent 的 token 上限；只有 COMPLEX_ANALYSIS 才会考虑整段。 */
+    /** 整段展开的 token 上限（该父块全部子块的 token 和）；只有 COMPLEX_ANALYSIS 才会考虑。 */
     private int parentWholeMaxTokens = 1500;
 
     public int getMaxTokens() {

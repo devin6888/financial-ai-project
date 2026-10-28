@@ -6,6 +6,7 @@ import com.finagent.citation.Citation;
 import com.finagent.document.DocumentRepository;
 import com.finagent.retrieval.RerankStatus;
 import com.finagent.retrieval.RetrievalTrace;
+import com.finagent.scope.ScopeAuthorizer;
 import com.finagent.scope.ScopeEmptyException;
 import com.finagent.scope.ScopeKind;
 import com.finagent.scope.SelectableDocument;
@@ -40,12 +41,16 @@ class ChatControllerTest {
     private MockMvc mvc;
     private ChatService chatService;
     private DocumentRepository documents;
+    private ScopeAuthorizer authorizer;
 
     @BeforeEach
     void setUp() {
         chatService = mock(ChatService.class);
         documents = mock(DocumentRepository.class);
-        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents)).build();
+        authorizer = mock(ScopeAuthorizer.class);
+        // 默认「全都可读」，不关心 ACL 的用例就不用重复打桩
+        when(authorizer.filterReadable(any())).thenAnswer(inv -> inv.getArgument(0));
+        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents, authorizer)).build();
     }
 
     @Test
@@ -96,6 +101,20 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$[0].id").value(38))
                 .andExpect(jsonPath("$[0].docYear").value(2024))
                 .andExpect(jsonPath("$[0].chunkCount").value(630));
+    }
+
+    @Test
+    @DisplayName("GET /api/scope/documents 只返回 ACL 放行的文档（枚举泄漏点）")
+    void listsOnlyReadableDocuments() throws Exception {
+        when(documents.findSelectableDocuments()).thenReturn(List.of(
+                new SelectableDocument(7, "东方财富2025年年度报告", "300059", "东方财富", 2025, "ANNUAL", 181, 654),
+                new SelectableDocument(38, "东方财富2024年年度报告", "300059", "东方财富", 2024, "ANNUAL", 177, 630)));
+        when(authorizer.filterReadable(List.of(7L, 38L))).thenReturn(List.of(7L));
+
+        mvc.perform(get("/api/scope/documents"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(7));
     }
 
     @Test

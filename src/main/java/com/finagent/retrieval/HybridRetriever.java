@@ -359,7 +359,11 @@ public class HybridRetriever {
      * </ol>
      */
     static RetrievalFilters applyScope(RetrievalFilters base, ResolvedScope scope, List<String> warnings) {
-        if (scope == null || scope.kind() == ScopeKind.CORPUS || scope.isEmpty()) {
+        // CORPUS 只有在「ACL 没删过候选」时才能跳过 id 过滤：全库 ≠ 能看全。
+        // 阶段 8 之前 CORPUS 一定是全库，所以这条捷径当时等价于「不过滤」；
+        // 有了 ACL 之后，被卡过的 CORPUS 必须把 id 下推到 SQL，否则 ACL 只影响提示词、不影响能取到哪些块。
+        if (scope == null || scope.isEmpty()
+                || (scope.kind() == ScopeKind.CORPUS && !scope.aclNarrowed())) {
             return base;
         }
         List<Long> ids = scope.documentIds();

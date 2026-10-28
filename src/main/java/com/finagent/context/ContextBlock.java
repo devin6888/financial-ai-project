@@ -9,7 +9,7 @@ package com.finagent.context;
  *
  * @param evidenceNo 从 1 起，答案里用 [E1] 引用。模型只回编号，后端映射回 chunk ——
  *                   这样「引用必须真实存在」是结构性保证，而不是靠校验兜
- * @param role       HIT（检索命中）/ SIBLING（邻居补齐）/ PARENT_WHOLE（整段 Parent）
+ * @param role       HIT（检索命中）/ SIBLING（补齐的邻居或整段展开里的非命中子块）
  */
 public record ContextBlock(
         int evidenceNo,
@@ -35,7 +35,6 @@ public record ContextBlock(
 ) {
     public static final String ROLE_HIT = "HIT";
     public static final String ROLE_SIBLING = "SIBLING";
-    public static final String ROLE_PARENT_WHOLE = "PARENT_WHOLE";
 
     /** 换一个编号，其余不变（装配时先收集、最后统一编号）。 */
     public ContextBlock withEvidenceNo(int no) {

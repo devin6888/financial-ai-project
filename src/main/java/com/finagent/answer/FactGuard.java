@@ -26,6 +26,8 @@ import java.util.Set;
 @Component
 public class FactGuard {
 
+    public static final String WARNING_YEAR_MISSING = "fact_year_missing:";
+
     public Result guard(List<FactDto> facts, List<ContextBlock> blocks, QueryUnderstanding qu) {
         if (facts == null || facts.isEmpty()) {
             return Result.EMPTY;
@@ -49,42 +51,75 @@ public class FactGuard {
         StringBuilder note = new StringBuilder();
 
         for (List<FactDto> group : groups.values()) {
-            Set<Long> docs = new LinkedHashSet<>();
-            for (FactDto f : group) {
-                ContextBlock b = byNo.get(evidenceNo(f.evidence()));
-                if (b != null) {
-                    docs.add(b.documentId());
-                }
-            }
+            // 先按问题年份筛（2024 的题只留 period=2024 的那些），筛不到才谈「冲突」
             List<FactDto> chosen = group;
-            if (docs.size() > 1) {
-                List<FactDto> matched = questionYear == null ? List.of() : group.stream()
+            if (questionYear != null) {
+                List<FactDto> matched = group.stream()
                         .filter(f -> matchesYear(f, questionYear))
                         .toList();
                 if (!matched.isEmpty()) {
                     chosen = matched;
-                } else {
-                    cap = lowest(cap, AnswerResult.CONFIDENCE_LOW);
-                    addOnce(warnings, AnswerResult.WARNING_MULTI_DOC_CONFLICT);
-                    appendNote(note, "同一指标在多份报告中出现，无法判定应取哪一份");
                 }
             }
-            // 只比同期数值：2023 的 11,000 与 2024 的 12,000 不是「冲突」，是两年
-            Map<String, Set<String>> valuesByPeriod = new LinkedHashMap<>();
+            // 冲突的最小单位是「同指标 + 同期」，不是「同指标」：
+            // 2024 年报给 2024 的数、2025 年报给 2025 的数，这是对比题的正常形态，
+            // 当成冲突会把每道对比题都降成 low（2026-10-22 写跨年覆盖测试时踩到）。
+            Map<String, List<FactDto>> byPeriod = new LinkedHashMap<>();
             for (FactDto f : chosen) {
-                valuesByPeriod.computeIfAbsent(f.period() == null ? "" : f.period(), k -> new LinkedHashSet<>())
-                        .add(normalizeValue(f.value()));
+                byPeriod.computeIfAbsent(f.period() == null ? "" : f.period(), k -> new ArrayList<>()).add(f);
             }
-            boolean conflict = valuesByPeriod.values().stream().anyMatch(v -> v.size() > 1);
-            if (conflict) {
+            boolean multiDoc = false;
+            boolean valueMismatch = false;
+            for (List<FactDto> samePeriod : byPeriod.values()) {
+                Set<Long> docs = documentsOf(samePeriod, byNo);
+                if (docs.size() > 1) {
+                    multiDoc = true;
+                }
+                Set<String> values = new LinkedHashSet<>();
+                for (FactDto f : samePeriod) {
+                    values.add(normalizeValue(f.value()));
+                }
+                if (docs.size() > 1 && values.size() > 1) {
+                    valueMismatch = true;
+                }
+            }
+            if (multiDoc) {
                 cap = lowest(cap, AnswerResult.CONFIDENCE_LOW);
+                addOnce(warnings, AnswerResult.WARNING_MULTI_DOC_CONFLICT);
+                appendNote(note, "同一指标在多份报告中出现，无法判定应取哪一份");
+            }
+            if (valueMismatch) {
                 addOnce(warnings, AnswerResult.WARNING_VALUE_MISMATCH);
                 appendNote(note, "两份报告数值不一致");
             }
             kept.addAll(chosen);
         }
+        // 对比题（跨年）必须每年都有 fact：阶段 5 实测「2024 vs 2025 对比」只产出了 2025 一条，
+        // 前端表格会少一行，而 confidence 还是 high —— 这种「静默缺一半」必须变成可见的 warning。
+        if (qu != null && qu.yearRange() != null && qu.yearRange().length == 2
+                && qu.yearRange()[0] != qu.yearRange()[1]) {
+            for (int year = qu.yearRange()[0]; year <= qu.yearRange()[1]; year++) {
+                final int y = year;
+                boolean present = kept.stream().anyMatch(f -> matchesYear(f, y));
+                if (!present) {
+                    addOnce(warnings, WARNING_YEAR_MISSING + y);
+                    cap = lowest(cap, AnswerResult.CONFIDENCE_MEDIUM);
+                }
+            }
+        }
         return new Result(List.copyOf(kept), cap, List.copyOf(warnings),
                 note.isEmpty() ? null : note.toString());
+    }
+
+    private static Set<Long> documentsOf(List<FactDto> facts, Map<Integer, ContextBlock> byNo) {
+        Set<Long> docs = new LinkedHashSet<>();
+        for (FactDto f : facts) {
+            ContextBlock b = byNo.get(evidenceNo(f.evidence()));
+            if (b != null) {
+                docs.add(b.documentId());
+            }
+        }
+        return docs;
     }
 
     private static Integer singleYear(QueryUnderstanding qu) {

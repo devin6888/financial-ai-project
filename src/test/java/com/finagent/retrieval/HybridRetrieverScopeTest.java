@@ -113,6 +113,18 @@ class HybridRetrieverScopeTest {
         assertThat(lastFilters().documentIds()).isEmpty();
     }
 
+    @Test
+    @DisplayName("CORPUS 被 ACL 收窄后必须把 id 下推到 SQL（全库 ≠ 能看全）")
+    void corpusScopeNarrowedByAclPushesDocumentIds() {
+        ResolvedScope corpus = ResolvedScope.of(ScopeKind.CORPUS,
+                List.of(meta(7L, 2025), meta(38L, 2024)), ResolvedScope.REASON_SESSION, List.of())
+                .withAclNarrowed(true);
+
+        retriever.retrieveInScope(req(), corpus);
+
+        assertThat(lastFilters().documentIds()).containsExactly(7L, 38L);
+    }
+
     // ------------------------------------------------------------ QU 越界
 
     @Test

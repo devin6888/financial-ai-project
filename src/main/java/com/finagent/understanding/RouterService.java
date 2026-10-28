@@ -7,6 +7,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Year;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -24,6 +25,10 @@ import java.util.List;
  * 把 Semantic 误判成 Exact 会「只召回一个孤立段落、答不出因果关系、任务直接失败」（高）；
  * 反过来只是多召回、多花 Token，答案一般仍可接受（低）。
  * 降级必须往<b>误判代价最小</b>的方向走。
+ *
+ * <p><b>两个入口</b>：{@link #understand(String)} 单轮（阶段 4 起就没有变过语义）；
+ * {@link #understand(String, TurnContext)} 多轮，用会话上下文把「那净利润呢」补全成可独立检索的问题。
+ * 上下文为空时后者直接委托前者 —— 「无会话」与「阶段 8 的行为」必须是同一条代码路径。
  */
 @Service
 public class RouterService {
@@ -65,25 +70,53 @@ public class RouterService {
         }
 
         // 第 3 层：逐字段校验 —— 丢弃非法字段，而不是丢弃整个结果
-        QueryUnderstanding cleaned = validate(raw, query);
-        if (cleaned.docType() == null) {
-            // LLM 没给类型时用措辞补：这是确定性信息（「半年报」三个字就在问题里），
-            // 不该因为模型漏填而丢掉一条真过滤条件。
-            String byKeyword = DocTypes.detect(query);
-            if (byKeyword != null) {
-                cleaned = new QueryUnderstanding(cleaned.queryType(), cleaned.normalizedQuery(),
-                        cleaned.companyIds(), cleaned.yearRange(), cleaned.metrics(),
-                        cleaned.needMultiQuery(), cleaned.needDecompose(), byKeyword,
-                        cleaned.degraded(), cleaned.route());
-            }
-        }
+        QueryUnderstanding cleaned = withKeywordDocType(validate(raw, query), query);
 
         // 第 3 层续：字段完整性交叉验证（只对 ExactFact 生效）
         if (cleaned.queryType() == QueryType.EXACT_FACT && !isExactFactEvidenceSufficient(cleaned)) {
             log.info("判为 ExactFact 但三要素不全，降级为 SemanticExplanation：{}", query);
-            return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, cleaned.normalizedQuery(),
-                    cleaned.companyIds(), cleaned.yearRange(), cleaned.metrics(),
-                    cleaned.needMultiQuery(), cleaned.needDecompose(), true, "DEGRADED:weak_evidence");
+            return weakEvidence(cleaned);
+        }
+        return cleaned;
+    }
+
+    /**
+     * 多轮：先看规则命中（问题本身已经带了实体，不需要消解），否则让 LLM 带着对话背景解析。
+     *
+     * <p>为什么规则命中就<b>完全不做消解</b>：「600519 2025年营业收入」这种问题已经自足，
+     * 再做一次消解只增加一次模型调用与误补的风险 —— 规则路径的价值就是快且确定。
+     */
+    public QueryUnderstanding understand(String query, TurnContext ctx) {
+        if (ctx == null || ctx.isEmpty()) {
+            return understand(query);
+        }
+
+        QueryUnderstanding byRule = rule.tryRoute(query);
+        if (byRule != null) {
+            return byRule;
+        }
+
+        QueryUnderstanding raw;
+        try {
+            LlmRouter router = llm.getIfAvailable();
+            if (router == null) {
+                // 降级也要把上下文里确定的公司/年份补上：这比「什么都不补」好，
+                // 又比「让模型自由发挥」安全（设计对降级路径的要求）。
+                return fillFromContext(degraded(query, "llm_disabled"), ctx);
+            }
+            raw = router.route(query, ctx.render());
+        } catch (RuntimeException e) {
+            log.warn("带上下文的 Query Understanding 失败，降级：{}", e.toString());
+            return fillFromContext(degraded(query, "llm_failed"), ctx);
+        }
+
+        QueryUnderstanding cleaned = withKeywordDocType(validate(raw, query), query);
+        // 模型漏填公司/年份时用上下文补齐（只补槽位，不补指标 —— 指标是语义判断，补错会带偏检索）
+        cleaned = fillFromContext(cleaned, ctx);
+
+        if (cleaned.queryType() == QueryType.EXACT_FACT && !isExactFactEvidenceSufficient(cleaned)) {
+            log.info("判为 ExactFact 但三要素不全，降级为 SemanticExplanation：{}", query);
+            return weakEvidence(cleaned);
         }
         return cleaned;
     }
@@ -96,8 +129,15 @@ public class RouterService {
     QueryUnderstanding validate(QueryUnderstanding raw, String original) {
         QueryType type = raw.queryType() == null ? QueryType.SEMANTIC_EXPLANATION : raw.queryType();
 
+        // 只校验格式，不校验「库里有没有这家公司」：
+        // 2026-10-22 评测抓到 —— 问「五粮液2024年营业收入」，代码 000858 被这里静默丢掉，
+        // 于是检索拿不到任何公司约束，答案变成东方财富的数字。
+        // 「有没有这家公司」是作用域层该判的事（要能告诉用户「范围内没有」），不是解析层该抹掉的。
         List<String> companyIds = raw.companyIds() == null ? List.of()
-                : raw.companyIds().stream().filter(documents::companyExists).toList();
+                : raw.companyIds().stream()
+                        .filter(c -> c != null && c.length() == 6 && c.chars().allMatch(Character::isDigit))
+                        .distinct()
+                        .toList();
 
         int currentYear = Year.now().getValue();
         int[] years = raw.yearRange();
@@ -116,7 +156,92 @@ public class RouterService {
                 companyIds, years,
                 raw.metrics() == null ? List.of() : raw.metrics(),
                 raw.needMultiQuery(), raw.needDecompose(), docType,
-                raw.degraded(), raw.route());
+                raw.degraded(), raw.route(), raw.inferredFromContext());
+    }
+
+    /**
+     * LLM 没给报告类型时用措辞补：「半年报」三个字就在问题里，这是确定性信息，
+     * 不该因为模型漏填而丢掉一条真过滤条件。
+     */
+    private static QueryUnderstanding withKeywordDocType(QueryUnderstanding u, String query) {
+        if (u.docType() != null) {
+            return u;
+        }
+        String byKeyword = DocTypes.detect(query);
+        if (byKeyword == null) {
+            return u;
+        }
+        return new QueryUnderstanding(u.queryType(), u.normalizedQuery(), u.companyIds(),
+                u.yearRange(), u.metrics(), u.needMultiQuery(), u.needDecompose(), byKeyword,
+                u.degraded(), u.route(), u.inferredFromContext());
+    }
+
+    /**
+     * 用会话上下文补齐「槽位」（公司 / 年份），并把 normalizedQuery 改写成可独立检索的形态。
+     *
+     * <p>补全只发生在字段<b>缺失</b>时：模型已经给出的值一律不动 ——
+     * 用户这一轮明确说的，比上文推断的更可信。
+     */
+    static QueryUnderstanding fillFromContext(QueryUnderstanding base, TurnContext ctx) {
+        if (ctx == null || ctx.isEmpty()) {
+            return base;
+        }
+        boolean inferred = base.inferredFromContext();
+
+        List<String> companies = base.companyIds();
+        if ((companies == null || companies.isEmpty()) && ctx.companyCode() != null) {
+            companies = List.of(ctx.companyCode());
+            inferred = true;
+        }
+
+        int[] years = base.yearRange();
+        if (years == null && ctx.yearFrom() != null) {
+            int to = ctx.yearTo() == null ? ctx.yearFrom() : ctx.yearTo();
+            years = new int[]{Math.min(ctx.yearFrom(), to), Math.max(ctx.yearFrom(), to)};
+            inferred = true;
+        }
+
+        String normalized = base.normalizedQuery();
+        if (inferred) {
+            normalized = selfContained(ctx, normalized);
+        }
+        return new QueryUnderstanding(base.queryType(), normalized, companies, years, base.metrics(),
+                base.needMultiQuery(), base.needDecompose(), base.docType(), base.degraded(),
+                base.route(), inferred);
+    }
+
+    /**
+     * 把「那净利润呢」变成「东方财富（300059） 2025年 那净利润呢」。
+     *
+     * <p>只补公司与时年两个前缀，不动问题本身 —— 检索（dense + sparse）拿到的是
+     * 「实体齐全的原话」，而不是模型改写的句子，语义漂移最小。
+     */
+    static String selfContained(TurnContext ctx, String query) {
+        String q = query == null ? "" : query;
+        List<String> parts = new ArrayList<>();
+        String company = ctx.companyLabel();
+        // 名字或代码任一出现就当作「已经说了这家公司」：用户写「东方财富的净利润」
+        // 时不该再被加上「东方财富（300059）」前缀（重复实体只会稀释稀疏检索的命中）。
+        boolean companyPresent = (ctx.companyName() != null && q.contains(ctx.companyName()))
+                || (ctx.companyCode() != null && q.contains(ctx.companyCode()));
+        if (company != null && !companyPresent) {
+            parts.add(company);
+        }
+        String year = ctx.yearLabel();
+        if (year != null && !q.contains(year)) {
+            parts.add(year);
+        }
+        if (parts.isEmpty()) {
+            return q;
+        }
+        return String.join(" ", parts) + " " + q;
+    }
+
+    /** 判为 ExactFact 但三要素不全 → 降级（保留已经解析出的字段与 inferred 标记）。 */
+    private static QueryUnderstanding weakEvidence(QueryUnderstanding u) {
+        return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, u.normalizedQuery(),
+                u.companyIds(), u.yearRange(), u.metrics(), u.needMultiQuery(), u.needDecompose(),
+                u.docType(), true, "DEGRADED:weak_evidence", u.inferredFromContext());
     }
 
     static boolean isExactFactEvidenceSufficient(QueryUnderstanding u) {
@@ -128,6 +253,6 @@ public class RouterService {
     /** 兜底：保守策略 + degraded 标记。 */
     static QueryUnderstanding degraded(String query, String reason) {
         return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, query,
-                List.of(), null, List.of(), false, false, true, "DEGRADED:" + reason);
+                List.of(), null, List.of(), false, false, null, true, "DEGRADED:" + reason);
     }
 }

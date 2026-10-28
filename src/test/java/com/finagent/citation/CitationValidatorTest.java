@@ -136,12 +136,12 @@ class CitationValidatorTest {
     }
 
     @Test
-    @DisplayName("PARENT_WHOLE 块的 chunkId 等于父块 → parentChunkId 为 null，不报一个假父 id")
-    void parentWholeHasNoParentRef() {
-        ContextBlock whole = new ContextBlock(1, 500L, 500L, 7L, "东方财富2025年年度报告", "第八节", "第八节",
-                "整段正文", 1, 3, "TEXT", null, null, null, null, 0.9, 0, 1200, ContextBlock.ROLE_PARENT_WHOLE);
+    @DisplayName("没有父的块（parentId=0）→ parentChunkId 为 null，不报一个假父 id")
+    void orphanBlockHasNoParentRef() {
+        ContextBlock orphan = new ContextBlock(1, 500L, 0L, 7L, "东方财富2025年年度报告", "第八节", "第八节",
+                "正文", 1, 3, "TEXT", null, null, null, null, 0.9, 0, 1200, ContextBlock.ROLE_HIT);
 
-        var c = validator.validate(List.of(1), List.of(whole)).citations().get(0);
+        var c = validator.validate(List.of(1), List.of(orphan)).citations().get(0);
 
         assertThat(c.childChunkId()).isEqualTo(500L);
         assertThat(c.parentChunkId()).isNull();

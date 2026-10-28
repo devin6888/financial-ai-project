@@ -1,0 +1,22 @@
+# 只在 RLS 相关的集成/e2e 测试里激活：运行时用非 owner 角色，行级安全才真的生效。
+#
+# 为什么必须换角色：PostgreSQL 的表 owner 默认**绕过** RLS。用 finagent 连库时，
+# 即使策略写错也「看起来一切正常」——那是本阶段最容易出现的假绿。
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/finagent
+    username: finagent_app
+    password: finagent_app
+  flyway:
+    # 迁移必须用 owner：finagent_app 没有 DDL 权限。
+    # 注意：一旦单独给 flyway 指定 user/password，就必须同时给 url，
+    # 否则 Flyway 会试图用「没有 url」的组合建连，报 Unable to find suitable method for url。
+    url: jdbc:postgresql://localhost:5432/finagent
+    user: finagent
+    password: finagent
+    enabled: true
+
+finagent:
+  tenant:
+    # 0 = 不使用兜底租户：没有上下文就应该查不到任何行，这样 RLS 的 fail-closed 才可验证
+    fallback-tenant-id: 0

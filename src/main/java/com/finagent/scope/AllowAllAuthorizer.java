@@ -1,16 +1,17 @@
 package com.finagent.scope;
 
-import org.springframework.stereotype.Component;
-
 import java.util.List;
 
 /**
- * 阶段 5 的默认实现：不做任何过滤。
+ * 不做任何过滤的实现：只在「ACL 关闭」时生效（{@code finagent.tenant.acl-enabled=false}）。
  *
- * <p>阶段 8 接入真实 ACL 时，删掉这个类的 @Component 换成实现即可 ——
- * 调用方只依赖 {@link ScopeAuthorizer} 接口。
+ * <p>为什么保留它：test profile 下有 300+ 个既有测试不关心身份，逐个造 token 会淹没被测逻辑；
+ * 关掉 ACL 后它们仍然验「作用域解析 / 检索 / 答案」这些真正的被测点。代价是<b>测试环境不验 ACL</b>，
+ * 所以 ACL 必须有自己的数据库级测试（{@code AclScopeAuthorizerTest}）与越权 e2e（阶段 8 Task 8）。
+ *
+ * <p>装配位置见 {@link ScopeAuthorizerConfig}：由配置类 new，不用 {@code @Component}，
+ * 从结构上保证「任何 profile 下都只有一个 {@link ScopeAuthorizer}」。
  */
-@Component
 public class AllowAllAuthorizer implements ScopeAuthorizer {
 
     @Override

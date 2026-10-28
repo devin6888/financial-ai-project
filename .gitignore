@@ -15,17 +15,18 @@ target/
 # æœ¬åœ°å¯†é’¥ä¸è¿è¡Œæ•°æ®
 .env
 *.log
+logs/
 docker/volumes/
 
 # ç³»ç»Ÿæ–‡ä»¶
 .DS_Store
 Thumbs.db
 
-# Python£¨½âÎö·şÎñ£©
+# Python è™šæ‹Ÿç¯å¢ƒä¸ç¼“å­˜
 document-parser-service/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# ÁÙÊ±²úÎï
+# ä¸´æ—¶äº§ç‰©
 _tmp_*

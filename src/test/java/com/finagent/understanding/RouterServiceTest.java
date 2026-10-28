@@ -109,11 +109,21 @@ class RouterServiceTest {
     }
 
     @Test
-    void unknownCompanyIsDropped() {
-        when(documents.companyExists(anyString())).thenReturn(false);
+    void unknownCompanyCodeIsKeptForScopeCheck() {
+        // 保留而不是丢弃：作用域层要靠它判断「问的公司在不在范围内」并拒答
         LlmRouter bad = mock(LlmRouter.class);
         when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
                 QueryType.SEMANTIC_EXPLANATION, "q", List.of("999999"), null,
+                List.of("净利润"), false, false, false, "LLM"));
+
+        assertThat(serviceWith(bad).understand("某问题").companyIds()).containsExactly("999999");
+    }
+
+    @Test
+    void malformedCompanyCodeIsDropped() {
+        LlmRouter bad = mock(LlmRouter.class);
+        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "q", List.of("五粮液"), null,
                 List.of("净利润"), false, false, false, "LLM"));
 
         assertThat(serviceWith(bad).understand("某问题").companyIds()).isEmpty();

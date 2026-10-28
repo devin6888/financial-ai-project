@@ -2,6 +2,12 @@ spring:
   application:
     name: financial-agent
 
+  # 文件上传（阶段 7 REST）。年报 PDF 约 5 MB，Spring 默认 max-file-size=1MB 会拒收。
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 60MB
+
   datasource:
     url: jdbc:postgresql://localhost:5432/finagent
     username: finagent
@@ -13,6 +19,22 @@ spring:
     enabled: true
     locations: classpath:db/migration
     # 全新库（已 down -v），不需要 baseline-on-migrate
+
+  # Kafka（阶段 7：异步与任务化）。本机 Docker 单节点 KRaft。
+  # 用 Spring 标准键（而不是自定义 finagent.kafka.*），让 Boot 的 Kafka 自动配置直接消费，
+  # 免去手写 ProducerFactory/ConsumerFactory 接线。
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # 消费者组：listener 容器启动时必须要有 group.id（设计文档 §13 的 document-worker）
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:document-worker}
+    # 两个 listener 方法都声明了 Acknowledgment 参数，必须配 MANUAL/MANUAL_IMMEDIATE。
+    # 不配的话容器启动不报错，但**收到第一条消息时**才抛：
+    #   IllegalStateException: No Acknowledgment available as an argument,
+    #   the listener container must have a MANUAL AckMode to populate the Acknowledgment.
+    # 手动 ack 的语义：处理成功才提交位点 -> at-least-once；失败交给 DefaultErrorHandler 重试/进 DLQ。
+    listener:
+      ack-mode: manual
 
   ai:
     openai:
@@ -91,6 +113,46 @@ finagent:
     # Rerank 可降级，所以宁可快速失败：连接 2 s、读取 15 s
     connect-timeout: 2s
     read-timeout: 15s
+
+  # ---------- 租户与认证（阶段 8） ----------
+  # 认证默认开启：生产里「忘记开」比「忘记关」危险得多。
+  # 测试 profile 在 application-test.yml 里显式关掉（见该文件的注释）。
+  tenant:
+    auth-enabled: true
+    # 真实 ACL（租户内可见性）。默认开启；test profile 显式关掉。
+    acl-enabled: true
+    # 没有 ThreadLocal 上下文时的兜底租户（Kafka worker / CLI 用）。
+    # 仅供本机开发：生产应设为 0，让「无上下文」直接查不到任何行。
+    fallback-tenant-id: 1
+
+  # ---------- 异步任务（阶段 7） ----------
+  task:
+    parse-topic: document.parse
+    reindex-topic: document.reindex
+    dlq-suffix: .dlt
+    # 瞬时错误重试次数与基础间隔（指数退避在 RetryClassifier/ErrorHandler 里做）
+    max-retries: 3
+    backoff-ms: 1000
+
+  # ---------- 记忆（阶段 9） ----------
+  memory:
+    # 关掉之后行为与阶段 8 完全一致：不读会话消息、Prompt 里没有背景信息段。
+    enabled: true
+    # 所有比例的基数（模型窗口的估算值）。换模型时改这一处。
+    context-window-tokens: 8000
+    # 短期窗口：最近 6 轮（1 轮 = 用户 + 助手）
+    short-term-rounds: 6
+    short-term-ratio: 0.15
+    summary-ratio: 0.10
+    structured-ratio: 0.05
+    long-term-ratio: 0.05
+    evidence-ratio: 0.40
+    # 用户显式指令（偏好/硬约束）独立上限：只合并压缩，不丢弃（D10）
+    instruction-tokens: 600
+    # 长期记忆最多注入几条
+    long-term-max-items: 3
+    # 未汇总消息数超过这个值就触发摘要（1 轮 = 2 条）
+    summary-trigger-messages: 12
 
 server:
   port: 8080

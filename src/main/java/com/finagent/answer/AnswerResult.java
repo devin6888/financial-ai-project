@@ -33,6 +33,10 @@ public record AnswerResult(
     public static final String WARNING_MULTI_DOC_CONFLICT = "fact_multi_doc_conflict";
     public static final String WARNING_VALUE_MISMATCH = "fact_value_mismatch";
     public static final String WARNING_CITATIONS_DROPPED = "answer_citations_dropped";
+    /** 答案里的数字在被引证据里找不到 → 拒答（阶段 6 评测抓到模型编造员工总数）。 */
+    public static final String WARNING_ANSWER_UNGROUNDED = "answer_value_not_in_evidence";
+    /** 单条 fact 的数值在证据里找不到 → 丢弃该 fact。 */
+    public static final String WARNING_FACT_UNGROUNDED = "fact_value_not_in_evidence:";
 
     /** 数字事实一律来自 PDF 原文（用户 Q1=A：不接 FinancialFact）。 */
     public record Fact(String metric, String period, String value, String unit, String scope,

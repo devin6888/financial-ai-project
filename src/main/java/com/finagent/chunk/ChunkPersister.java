@@ -50,12 +50,19 @@ public class ChunkPersister {
                 Integer.class, documentId);
         int newVersion = (base == null ? 0 : base) + 1;
 
+        // 3) 租户从「所属文档」推导，不读 ThreadLocal：Kafka worker 与 CLI 没有 HTTP 上下文
+        Long tenantId = jdbc.queryForObject(
+                "SELECT tenant_id FROM document WHERE id = ?", Long.class, documentId);
+        if (tenantId == null) {
+            throw new IllegalStateException("文档 " + documentId + " 没有 tenant_id，拒绝写入切块");
+        }
+
         // 2) 写入：每个 group 插完 Parent 立刻用返回的 id 插它的 Child。
         //    这个两段式写法天然不需要暂存 parent id —— 初版用实例字段暂存是错的（评审 B5）。
         for (PlannedGroup g : plan.groups()) {
-            long parentId = chunks.insertParent(documentId, newVersion, g.parent(), parserVersion);
+            long parentId = chunks.insertParent(documentId, tenantId, newVersion, g.parent(), parserVersion);
             for (PlannedChild c : g.children()) {
-                chunks.insertChild(documentId, parentId, newVersion, c.chunk(),
+                chunks.insertChild(documentId, tenantId, parentId, newVersion, c.chunk(),
                         c.embedding(), c.embeddingTextHash(),
                         embeddingModel, embeddingVersion, parserVersion);
             }

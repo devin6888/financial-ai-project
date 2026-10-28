@@ -19,11 +19,18 @@ public final class AnswerPrompts {
             6. 只输出 JSON，不要 markdown 代码块。
             """;
 
+    /**
+     * 背景信息（记忆）插在【证据】之前。
+     *
+     * <p>为什么顺序是「问题 → 背景 → 证据」而不是「背景 → 问题」：
+     * 模型读到最后一段才是证据，紧贴它的就是问题，注意力不会被中间的长背景稀释；
+     * 背景放在证据之前也符合「先看上下文、再看事实」的阅读顺序。
+     */
     public static final String USER_TEMPLATE = """
             【问题】
             %s
 
-            【证据】
+            %s【证据】
             %s
 
             请严格按以下 JSON 输出（不要额外字段、不要代码块）：
@@ -41,6 +48,15 @@ public final class AnswerPrompts {
             """;
 
     public static String user(String question, ContextPackage pkg) {
-        return USER_TEMPLATE.formatted(question == null ? "" : question.trim(), pkg.text());
+        return user(question, pkg, null);
+    }
+
+    /**
+     * @param background 已渲染好的背景信息（记忆）；null / 空白表示没有，整段省略 ——
+     *                   不放「（无）」占位，占位会白占 token 还诱导模型编内容
+     */
+    public static String user(String question, ContextPackage pkg, String background) {
+        String bg = background == null || background.isBlank() ? "" : background.strip() + "\n\n";
+        return USER_TEMPLATE.formatted(question == null ? "" : question.trim(), bg, pkg.text());
     }
 }

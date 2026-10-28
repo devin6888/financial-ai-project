@@ -8,16 +8,19 @@ import java.util.List;
  * <p>为什么大多数字段可空：§9.14 要求「<b>单字段校验失败时丢弃该字段，而不是丢弃整个结果</b>」。
  * 所以这里必须允许部分缺失，由 {@link RouterService} 逐字段校验。
  *
- * @param queryType       判定的类型；无法判定时为 SEMANTIC_EXPLANATION
- * @param normalizedQuery 可独立检索的归一化查询（本阶段只做单轮，基本等于原文）
- * @param companyIds      命中的公司代码（已校验存在于 company 表）
- * @param yearRange       年份范围 [from, to]；单一年份则 from == to
- * @param metrics         命中的财务指标名
- * @param needMultiQuery  是否需要多查询扩展（§9.6：本阶段只判定不执行）
- * @param needDecompose   是否需要查询分解
- * @param docType         报告类型：ANNUAL / SEMI_ANNUAL / Q1 / Q3；未指明为 null
- * @param degraded        是否走了降级路径
- * @param route           走了哪条：RULE / LLM / DEGRADED:原因
+ * @param queryType          判定的类型；无法判定时为 SEMANTIC_EXPLANATION
+ * @param normalizedQuery    可独立检索的归一化查询（多轮时由指代消解补全，单轮基本等于原文）
+ * @param companyIds         命中的公司代码
+ * @param yearRange          年份范围 [from, to]；单一年份则 from == to
+ * @param metrics            命中的财务指标名
+ * @param needMultiQuery     是否需要多查询扩展（§9.6：本阶段只判定不执行）
+ * @param needDecompose      是否需要查询分解
+ * @param docType            报告类型：ANNUAL / SEMI_ANNUAL / Q1 / Q3；未指明为 null
+ * @param degraded           是否走了降级路径
+ * @param route              走了哪条：RULE / LLM / DEGRADED:原因 / NONE
+ * @param inferredFromContext 公司或年份是否来自<b>上文补全</b>（不是用户这一轮说的）
+ * @param needLongTermMemory 是否需要召回长期记忆（用户偏好/习惯类问题）。阶段 9 Task 8 的 Gate
+ *                           一半靠这个词，另一半靠规则词典 —— 两者任一命中就召回
  */
 public record QueryUnderstanding(
         QueryType queryType,
@@ -29,19 +32,39 @@ public record QueryUnderstanding(
         boolean needDecompose,
         String docType,
         boolean degraded,
-        String route
+        String route,
+        boolean inferredFromContext,
+        boolean needLongTermMemory
 ) {
     /**
-     * 兼容阶段 4 的 9 参调用点（docType 之前不存在）。
-     *
-     * <p>保留而不是逐个改调用点，是因为那 30 处调用点里没有一处与 docType 相关 ——
-     * 改它们只会制造 diff，不会增加任何信息。
+     * 兼容阶段 9 Task 5 的 11 参调用点（needLongTermMemory 之前不存在）。
      */
+    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyIds,
+                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
+                              boolean needDecompose, String docType, boolean degraded, String route,
+                              boolean inferredFromContext) {
+        this(queryType, normalizedQuery, companyIds, yearRange, metrics, needMultiQuery,
+                needDecompose, docType, degraded, route, inferredFromContext, false);
+    }
+    /**
+     * 兼容阶段 4~9 的 10 参调用点（inferredFromContext 之前不存在）。
+     *
+     * <p>保留而不是逐个改调用点，是因为那些调用点没有一处与「是否来自上下文」相关 ——
+     * 它们本来就只处理单轮问题，答案恒为 false。
+     */
+    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyIds,
+                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
+                              boolean needDecompose, String docType, boolean degraded, String route) {
+        this(queryType, normalizedQuery, companyIds, yearRange, metrics, needMultiQuery,
+                needDecompose, docType, degraded, route, false, false);
+    }
+
+    /** 兼容阶段 4 的 9 参调用点（docType 之前不存在）。 */
     public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyIds,
                               int[] yearRange, List<String> metrics, boolean needMultiQuery,
                               boolean needDecompose, boolean degraded, String route) {
         this(queryType, normalizedQuery, companyIds, yearRange, metrics, needMultiQuery,
-                needDecompose, null, degraded, route);
+                needDecompose, null, degraded, route, false, false);
     }
 
     /** Sparse 路是否需要走精确子串模式（有实体才走得通）。 */
@@ -59,6 +82,18 @@ public record QueryUnderstanding(
         return docType != null && !docType.isBlank();
     }
 
+    /** 拷一份并改 inferredFromContext（record 没有 setter，只能整份重建）。 */
+    public QueryUnderstanding withInferredFromContext(boolean inferred) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyIds, yearRange, metrics,
+                needMultiQuery, needDecompose, docType, degraded, route, inferred, needLongTermMemory);
+    }
+
+    /** 拷一份并改 needLongTermMemory（Gate 判定后回写，便于 trace 看到最终结论）。 */
+    public QueryUnderstanding withNeedLongTermMemory(boolean need) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyIds, yearRange, metrics,
+                needMultiQuery, needDecompose, docType, degraded, route, inferredFromContext, need);
+    }
+
     /**
      * 「不使用 QU」的基线：原样检索，Sparse 走词级召回。
      *
@@ -68,12 +103,12 @@ public record QueryUnderstanding(
      */
     public static QueryUnderstanding none(String query) {
         return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, query,
-                List.of(), null, List.of(), false, false, null, false, "NONE");
+                List.of(), null, List.of(), false, false, null, false, "NONE", false, false);
     }
 
     /** QU 自身异常时的保守结果：语义解释 + degraded。 */
     public static QueryUnderstanding failed(String query, String reason) {
         return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, query,
-                List.of(), null, List.of(), false, false, null, true, "DEGRADED:" + reason);
+                List.of(), null, List.of(), false, false, null, true, "DEGRADED:" + reason, false, false);
     }
 }

@@ -2,6 +2,8 @@
 
 > **For agentic workers:** 本环境未安装 superpowers 执行子技能，采用「每个任务由子代理独立执行 + 主代理在任务间验收」替代。步骤用复选框（- [ ]）语法跟踪。
 
+> 📖 术语：本文出现的缩写（Parent/Child、embedding、RRF、QU、HNSW、e2e……）在 `docs/术语表.md` 有中文全称、为什么需要它、在本项目里长什么样。写法约定见 `docs/文档写作规范.md`。
+
 **Goal:** 把阶段 2 产出的 NormalizedDocument 切成 Parent/Child，对 Child 调百炼 text-embedding-v4（1024 维）写入 pgvector，并用 chunk 版本化实现可回滚的重切/重嵌入。
 
 **Architecture:** 切块与入库全在 Java 侧完成（Python 只负责解析，阶段 2 已定）。嵌入走 Spring AI 的 EmbeddingModel 抽象，但**批量必须自己控**（百炼单请求上限 10 行）。入库采用「新版本写入 → 校验 → 原子切换 document.active_chunk_version → 旧版本标 SUPERSEDED」，检索永远只读 active 版本的 ACTIVE chunk。

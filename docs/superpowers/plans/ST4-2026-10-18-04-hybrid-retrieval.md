@@ -2,6 +2,8 @@
 
 > **For agentic workers:** 本环境未安装 superpowers 执行子技能，采用「每个任务由子代理独立执行 + 主代理在任务间验收」替代。步骤用复选框跟踪。
 
+> 📖 术语：本文出现的缩写（Parent/Child、embedding、RRF、QU、HNSW、e2e……）在 `docs/术语表.md` 有中文全称、为什么需要它、在本项目里长什么样。写法约定见 `docs/文档写作规范.md`。
+
 **Goal:** 先把问题解析成可检索的结构（Query Understanding），再做 Dense + Sparse 双路召回、RRF 融合、百炼 qwen3-rerank 精排，并保证任何一环失败都能降级——给定一个自然语言问题，返回排序正确的 Child chunk。
 
 **Architecture:** 四段解耦。**Query Understanding** 先用「规则快路径 + LLM 结构化输出」把问题解析成实体/年份/类型（四层防线 + 保守降级）；**Dense** 走 pgvector 余弦距离；**Sparse** 按 QU 结果走两种模式（有实体走精确子串、无实体走 FTS + OR）；两路按**排名**用 RRF 融合；最后交给自定义 RerankModel 精排。所有候选单元都是 **CHILD**（§9.1），Parent 只做上下文。

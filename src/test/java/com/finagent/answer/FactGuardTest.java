@@ -61,6 +61,36 @@ class FactGuardTest {
         assertThat(r.warnings()).isEmpty();
     }
 
+    @Test
+    @DisplayName("跨年对比题只给了一个年份的 fact → fact_year_missing + 降 medium")
+    void flagsMissingYearInComparison() {
+        var r = guard.guard(List.of(fact("2025", "16,067,741,039.51", "E1")),
+                List.of(block(1, 7)), qu(2024, 2025));
+
+        assertThat(r.warnings()).contains("fact_year_missing:2024");
+        assertThat(r.confidenceCap()).isEqualTo(AnswerResult.CONFIDENCE_MEDIUM);
+    }
+
+    @Test
+    @DisplayName("两份文档分别给不同年份 → 不是冲突，不降置信")
+    void differentPeriodsAreNotConflict() {
+        var r = guard.guard(List.of(fact("2024", "11,604,343,090.16", "E1"), fact("2025", "16,067,741,039.51", "E2")),
+                List.of(block(1, 38), block(2, 7)), qu(2024, 2025));
+
+        assertThat(r.facts()).hasSize(2);
+        assertThat(r.warnings()).doesNotContain("fact_multi_doc_conflict", "fact_value_mismatch");
+        assertThat(r.confidenceCap()).isEqualTo(AnswerResult.CONFIDENCE_HIGH);
+    }
+
+    @Test
+    @DisplayName("跨年对比题两个年份都有 → 不报")
+    void noYearWarningWhenBothPresent() {
+        var r = guard.guard(List.of(fact("2024", "11,604,343,090.16", "E1"), fact("2025", "16,067,741,039.51", "E2")),
+                List.of(block(1, 38), block(2, 7)), qu(2024, 2025));
+
+        assertThat(r.warnings()).isEmpty();
+    }
+
     private static FactDto fact(String period, String value, String evidence) {
         return new FactDto("营业总收入", period, value, "元", "合并", evidence);
     }

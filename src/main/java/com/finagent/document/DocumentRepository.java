@@ -10,6 +10,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * document 表的仓储。
@@ -26,14 +27,20 @@ public class DocumentRepository {
         this.jdbc = jdbc;
     }
 
-    /** 幂等登记公司，返回 id。 */
-    public long upsertCompany(String code, String name, String market) {
+    /**
+     * 幂等登记公司，返回 id。
+     *
+     * <p>tenantId 由调用方显式传入，**不读 ThreadLocal**：上传接口有 HTTP 上下文，
+     * 而 CLI 与测试调用的 {@code parseAndStore} 没有 —— 让它猜只会变成「有时 401、有时写错租户」。
+     * 唯一约束是 (tenant_id, code)：不同租户可以有同一个公司代码。
+     */
+    public long upsertCompany(String code, String name, String market, long tenantId) {
         Long id = jdbc.queryForObject("""
-                INSERT INTO company (code, name, market)
-                VALUES (?, ?, ?)
-                ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+                INSERT INTO company (code, name, market, tenant_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (tenant_id, code) DO UPDATE SET name = EXCLUDED.name
                 RETURNING id
-                """, Long.class, code, name, market);
+                """, Long.class, code, name, market, tenantId);
         return id == null ? -1L : id;
     }
 
@@ -48,17 +55,19 @@ public class DocumentRepository {
     public long upsertDocument(long companyId, String docType, Integer docYear, String title,
                                String objectKey, String contentHash) {
         Long id = jdbc.queryForObject("""
-                INSERT INTO document (company_id, doc_type, doc_year, title, object_key,
+                INSERT INTO document (company_id, tenant_id, doc_type, doc_year, title, object_key,
                                       content_hash, parse_status)
-                VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
-                ON CONFLICT (content_hash) DO UPDATE
+                SELECT c.id, c.tenant_id, ?, ?, ?, ?, ?, 'PENDING'
+                  FROM company c
+                 WHERE c.id = ?
+                ON CONFLICT (tenant_id, content_hash) DO UPDATE
                     SET object_key   = EXCLUDED.object_key,
                         title        = EXCLUDED.title,
                         parse_status = 'PENDING',
                         parse_job_id = NULL,
                         parse_error  = NULL
                 RETURNING id
-                """, Long.class, companyId, docType, docYear, title, objectKey, contentHash);
+                """, Long.class, docType, docYear, title, objectKey, contentHash, companyId);
         return id == null ? -1L : id;
     }
 
@@ -120,6 +129,63 @@ public class DocumentRepository {
                         (Integer) rs.getObject("pages_parsed"),
                         rs.getString("parse_error"),
                         rs.getString("title")), documentId);
+    }
+
+    /**
+     * 读回异步解析所需的入参：PDF 对象键、内容哈希、标题。
+     *
+     * <p>阶段 7 把「登记 + 同步解析」拆成「登记（同步）+ 投递事件（异步）」，
+     * worker 收到事件后只有 documentId，要靠本方法把 PDF 从 COS 读回来再解析。
+     */
+    public ParseInput findParseInput(long documentId) {
+        return jdbc.queryForObject("""
+                SELECT id, object_key, content_hash, title
+                  FROM document
+                 WHERE id = ?
+                """, (rs, n) -> new ParseInput(
+                        rs.getLong("id"),
+                        rs.getString("object_key"),
+                        rs.getString("content_hash"),
+                        rs.getString("title")), documentId);
+    }
+
+    /**
+     * 按 content_hash 找「已完成入库」的文档（DONE 且有 ACTIVE chunk 版本）。
+     *
+     * <p>阶段 7 上传链路的幂等快路径：同一份 PDF 重复上传时，若已解析且已入库，
+     * 直接返回已有 id，不再重新解析（181 页要 50 分钟，重复解析纯属浪费）。
+     *
+     * @return 命中时返回 document id，否则 {@link Optional#empty()}
+     */
+    public Optional<Long> findCompletedIdByContentHash(String contentHash) {
+        List<Long> ids = jdbc.query("""
+                SELECT id FROM document
+                 WHERE content_hash = ?
+                   AND parse_status = 'DONE'
+                   AND active_chunk_version IS NOT NULL
+                 ORDER BY id
+                """, (rs, n) -> rs.getLong("id"), contentHash);
+        return ids.isEmpty() ? Optional.empty() : Optional.of(ids.get(0));
+    }
+
+    /**
+     * 单文档的状态详情（GET /api/documents/{id} 用）。
+     *
+     * <p>LEFT JOIN company 带出公司代码/名称，前端据此展示「哪家公司的哪份报告、
+     * 解析到哪一步」。company 不存在时 code/name 为 null。
+     *
+     * @return 文档不存在时返回 {@link Optional#empty()}
+     */
+    public Optional<DocumentDetail> findDetail(long documentId) {
+        List<DocumentDetail> rows = jdbc.query("""
+                SELECT d.id, d.parse_status, d.active_chunk_version, d.title, d.pages_parsed,
+                       d.parse_error, d.parsed_object_key, d.parser, d.parser_version,
+                       d.doc_year, d.doc_type, c.code, c.name
+                  FROM document d
+                  LEFT JOIN company c ON c.id = d.company_id
+                 WHERE d.id = ?
+                """, DETAIL_MAPPER, documentId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
     /**
@@ -316,4 +382,32 @@ public class DocumentRepository {
     /** 在途文档的最小投影。 */
     public record InFlightDocument(long documentId, String contentHash, String jobId) {
     }
+
+    /** 异步解析入参：PDF 对象键、内容哈希、标题（阶段 7 worker 用）。 */
+    public record ParseInput(long documentId, String objectKey, String contentHash,
+                             String title) {
+    }
+
+    /** 单文档的状态详情投影（GET /api/documents/{id} 用）。 */
+    public record DocumentDetail(long id, String parseStatus, Integer activeChunkVersion,
+                                 String title, Integer pagesParsed, String parseError,
+                                 String parsedObjectKey, String parser, String parserVersion,
+                                 Integer docYear, String docType, String companyCode,
+                                 String companyName) {
+    }
+
+    private static final RowMapper<DocumentDetail> DETAIL_MAPPER = (rs, n) -> new DocumentDetail(
+            rs.getLong("id"),
+            rs.getString("parse_status"),
+            (Integer) rs.getObject("active_chunk_version"),
+            rs.getString("title"),
+            (Integer) rs.getObject("pages_parsed"),
+            rs.getString("parse_error"),
+            rs.getString("parsed_object_key"),
+            rs.getString("parser"),
+            rs.getString("parser_version"),
+            (Integer) rs.getObject("doc_year"),
+            rs.getString("doc_type"),
+            rs.getString("code"),
+            rs.getString("name"));
 }

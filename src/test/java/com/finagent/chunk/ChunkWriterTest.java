@@ -37,10 +37,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @ActiveProfiles("test")
 class ChunkWriterTest {
 
-    /** 假模型：不打网络，回固定维度的零向量。 */
+    /** 假模型：不打网络，回固定维度的零向量。CALLS 记录 embed 被调用次数（增量重嵌断言用）。 */
     static class FakeModel implements EmbeddingModel {
+        static final java.util.concurrent.atomic.AtomicInteger CALLS =
+                new java.util.concurrent.atomic.AtomicInteger();
+
         @Override
         public List<float[]> embed(List<String> texts) {
+            CALLS.incrementAndGet();
             List<float[]> out = new ArrayList<>();
             for (int i = 0; i < texts.size(); i++) {
                 out.add(new float[1024]);
@@ -77,12 +81,13 @@ class ChunkWriterTest {
     @BeforeEach
     void createDocument() {
         String hash = "test-" + UUID.randomUUID();
+        // tenant_id 是 NOT NULL（V9）：测试 profile 连 owner，不走 RLS，但约束照样生效
         jdbc.update("""
-                INSERT INTO document (doc_type, title, object_key, content_hash, parse_status)
-                VALUES ('ANNUAL', '切块测试文档', 'test/x.pdf', ?, 'DONE')
+                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status)
+                VALUES (1, 'ANNUAL', '切块测试文档', 'test/x.pdf', ?, 'DONE')
                 """, hash);
         documentId = jdbc.queryForObject(
-                "SELECT id FROM document WHERE content_hash = ?", Long.class, hash);
+                "SELECT id FROM document WHERE tenant_id = 1 AND content_hash = ?", Long.class, hash);
     }
 
     @AfterEach
@@ -108,6 +113,28 @@ class ChunkWriterTest {
     /** 1 个 Parent + 3 个 Child 的最小批次。 */
     private static List<ParentGroup> groups(Chunk parent) {
         return List.of(new ParentGroup(parent, List.of(), List.of()));
+    }
+
+
+    @Test
+    void writtenChunksInheritTenantFromDocument() {
+        writer.writeVersion(documentId, "标题", groups(parent(0)),
+                List.of(List.of(child(0, "b0"), child(1, "b1"))), "2.138.0");
+
+        Long docTenant = jdbc.queryForObject(
+                "SELECT tenant_id FROM document WHERE id = ?", Long.class, documentId);
+        List<Long> chunkTenants = jdbc.queryForList(
+                "SELECT DISTINCT tenant_id FROM document_chunk WHERE document_id = ?",
+                Long.class, documentId);
+
+        // 写路径不从调用方拿 tenant_id，而是从 document 行推导：子行永远不会挂到别的租户
+        assertThat(chunkTenants).containsExactly(docTenant);
+
+        Integer mismatched = jdbc.queryForObject("""
+                SELECT count(*) FROM document_chunk c JOIN document d ON d.id = c.document_id
+                 WHERE c.tenant_id <> d.tenant_id
+                """, Integer.class);
+        assertThat(mismatched).isZero();
     }
 
     @Test
@@ -154,5 +181,21 @@ class ChunkWriterTest {
         assertThat(chunks.activeVersion(documentId)).isEqualTo(v1);
         assertThat(chunks.countActiveInVersion(documentId, v1)).isEqualTo(2);
         assertThat(chunks.countAll(documentId, v1 + 1)).isZero();
+    }
+
+    @Test
+    void unchangedChildrenReuseVectorsWithoutApiCall() {
+        // 版本 1：2 个子块，需要真嵌一次
+        writer.writeVersion(documentId, "标题", groups(parent(0)),
+                List.of(List.of(child(0, "b0"), child(1, "b1"))), "2.138.0");
+        int callsAfterV1 = FakeModel.CALLS.get();
+
+        // 版本 2：同样 2 个子块（内容不变 → hash 相同）→ 全部复用，不应再调 API
+        int v2 = writer.writeVersion(documentId, "标题", groups(parent(0)),
+                List.of(List.of(child(0, "b0"), child(1, "b1"))), "2.138.0");
+
+        assertThat(v2).isEqualTo(2);
+        assertThat(FakeModel.CALLS.get()).isEqualTo(callsAfterV1);
+        assertThat(chunks.countChildrenWithoutEmbedding(documentId, v2)).isZero();
     }
 }

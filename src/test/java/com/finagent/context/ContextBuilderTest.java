@@ -167,8 +167,8 @@ class ContextBuilderTest {
     }
 
     @Test
-    @DisplayName("COMPLEX_ANALYSIS + Parent ≤ 1500 token → 整段 Parent")
-    void complexAnalysisTakesWholeParent() {
+    @DisplayName("COMPLEX_ANALYSIS + 整节 ≤ 1500 token → 整段展开为子块，不用父块 content")
+    void complexAnalysisTakesWholeSection() {
         long parent = 100L;
         ChunkView p = parentView(parent, 1200, "整段 Parent 正文");
         ChunkView child = view(1, parent, 5, 300, "片段");
@@ -176,10 +176,13 @@ class ContextBuilderTest {
 
         ContextPackage pkg = builder.build("q", QueryType.COMPLEX_ANALYSIS, List.of(hit(child, 0.9)), null);
 
+        // 整段给的是子块（命中 → HIT），不是父块
         assertThat(pkg.blocks()).hasSize(1);
-        assertThat(pkg.blocks().get(0).role()).isEqualTo(ContextBlock.ROLE_PARENT_WHOLE);
-        assertThat(pkg.blocks().get(0).chunkId()).isEqualTo(parent);
-        assertThat(pkg.text()).contains("整段 Parent 正文");
+        assertThat(pkg.blocks().get(0).role()).isEqualTo(ContextBlock.ROLE_HIT);
+        assertThat(pkg.blocks().get(0).chunkId()).isEqualTo(child.id());
+        assertThat(pkg.text()).contains("片段");
+        // 父块 content 永不进提示词
+        assertThat(pkg.text()).doesNotContain("整段 Parent 正文");
     }
 
     @Test
@@ -255,6 +258,44 @@ class ContextBuilderTest {
         assertThat(pkg.blocks()).hasSize(1);
         assertThat(pkg.warnings()).contains("context_parent_missing");
         assertThat(pkg.text()).contains("页码未知").contains("孤立块");
+    }
+
+    @Test
+    @DisplayName("COMPLEX_ANALYSIS + 命中表格块 → 整段展开后表格内容仍在（修整段丢表）")
+    void complexAnalysisKeepsTableInWholeSection() {
+        long parent = 100L;
+        ChunkView text = view(1, parent, 0, 300, "正文段");
+        ChunkView table = new ChunkView(2, 7, parent, "CHILD", "TABLE",
+                "第二节 公司简介和主要财务指标 § 六、分季度主要财务指标",
+                "六、分季度主要财务指标", "| 营业收入 | 3,485,587,013.94 |", 7, 7, 300, 1,
+                "分季度主要财务指标", "元", "[\"项目\",\"金额\"]", null, "东方财富2025年年度报告");
+        stubViews(List.of(parentView(parent, 600, "parent"), text, table), List.of(text, table));
+
+        ContextPackage pkg = builder.build("q", QueryType.COMPLEX_ANALYSIS, List.of(hit(table, 0.9)), null);
+
+        assertThat(pkg.blocks()).extracting(ContextBlock::chunkId).containsExactly(1L, 2L);
+        assertThat(pkg.blocks().get(1).role()).isEqualTo(ContextBlock.ROLE_HIT);
+        assertThat(pkg.text()).contains("表：分季度主要财务指标").contains("3,485,587,013.94");
+    }
+
+    @Test
+    @DisplayName("COMPLEX_ANALYSIS + 整节子块和 > 1500 → 退回精确路径，不整段")
+    void bigSectionFallsBackToPrecisePath() {
+        long parent = 100L;
+        List<ChunkView> children = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            children.add(view(i + 1, parent, i, 400, "第" + i + "段"));
+        }
+        ChunkView hitView = children.get(1);
+        stubViews(List.of(parentView(parent, 2000, "parent")), children);
+
+        ContextPackage pkg = builder.build("q", QueryType.COMPLEX_ANALYSIS, List.of(hit(hitView, 0.9)), null);
+
+        // 4 × 400 = 1600 > 1500 → 整段不触发，退回精确路径：命中块 + ±1 邻居 = 3 块，第 4 块被丢
+        assertThat(pkg.blocks()).extracting(ContextBlock::chunkId).containsExactly(1L, 2L, 3L);
+        assertThat(pkg.blocks()).extracting(ContextBlock::role)
+                .containsExactly(ContextBlock.ROLE_SIBLING, ContextBlock.ROLE_HIT, ContextBlock.ROLE_SIBLING);
+        assertThat(pkg.parentsExpanded()).isEqualTo(1);
     }
 
     // ------------------------------------------------------------ helpers

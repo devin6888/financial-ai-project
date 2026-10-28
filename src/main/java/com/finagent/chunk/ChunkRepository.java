@@ -25,36 +25,58 @@ public class ChunkRepository {
         return v == null ? 0 : v;
     }
 
-    public long insertParent(long documentId, int chunkVersion, Chunk c, String parserVersion) {
+    /**
+     * 读旧 ACTIVE 版本的 CHILD 向量（契约 C10 的复用源）。
+     *
+     * <p>只取 CHILD：Parent 不存向量。embedding 用 {@code ::text} 读出来再解析成 float[] ——
+     * 项目没有引入 pgvector-jdbc，这是用标准 JDBC 读 vector 的最小代价方案。
+     * 一次重切读 ~654 行 × 4KB ≈ 2.6MB，远小于重嵌 654 块要花的 ~60 秒。
+     */
+    public List<ChildEmbedding> findActiveChildEmbeddings(long documentId, int chunkVersion) {
+        return jdbc.query("""
+                SELECT embedding_text_hash, embedding_model, embedding_version,
+                       embedding::text AS emb
+                  FROM document_chunk
+                 WHERE document_id = ? AND chunk_version = ? AND chunk_level = 'CHILD'
+                   AND status = 'ACTIVE'
+                """, (rs, n) -> new ChildEmbedding(
+                        rs.getString("embedding_text_hash"),
+                        rs.getString("embedding_model"),
+                        rs.getString("embedding_version"),
+                        parseVectorLiteral(rs.getString("emb"))), documentId, chunkVersion);
+    }
+
+    public long insertParent(long documentId, long tenantId, int chunkVersion, Chunk c,
+                             String parserVersion) {
         Long id = jdbc.queryForObject("""
-                INSERT INTO document_chunk (document_id, parent_id, chunk_level, chunk_type,
+                INSERT INTO document_chunk (document_id, tenant_id, parent_id, chunk_level, chunk_type,
                     section_path, title, content, page_start, page_end, source_block_ids,
                     bbox, token_count, chunk_index, status, parser_version,
                     chunk_strategy_version, chunk_version)
-                VALUES (?, NULL, 'PARENT', ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, 'ACTIVE', ?, ?, ?)
+                VALUES (?, ?, NULL, 'PARENT', ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, 'ACTIVE', ?, ?, ?)
                 RETURNING id
                 """, Long.class,
-                documentId, c.type().name(), c.sectionPathText(), c.title(), c.content(),
+                documentId, tenantId, c.type().name(), c.sectionPathText(), c.title(), c.content(),
                 c.pageStart(), c.pageEnd(), c.sourceBlockIds(), c.bboxJson(),
                 c.tokenCount(), c.chunkIndex(), parserVersion, ChunkStrategy.VERSION, chunkVersion);
         return id == null ? -1L : id;
     }
 
-    public long insertChild(long documentId, long parentId, int chunkVersion, Chunk c,
+    public long insertChild(long documentId, long tenantId, long parentId, int chunkVersion, Chunk c,
                             float[] embedding, String embeddingTextHash,
                             String embeddingModel, String embeddingVersion, String parserVersion) {
         Long id = jdbc.queryForObject("""
-                INSERT INTO document_chunk (document_id, parent_id, chunk_level, chunk_type,
+                INSERT INTO document_chunk (document_id, tenant_id, parent_id, chunk_level, chunk_type,
                     section_path, title, content, page_start, page_end, source_block_ids,
                     bbox, token_count, chunk_index, status, parser_version,
                     chunk_strategy_version, chunk_version, caption, unit, currency,
                     headers_json, related_footnote_ids, embedding, embedding_model,
                     embedding_version, embedding_text_hash)
-                VALUES (?, ?, 'CHILD', ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, 'ACTIVE', ?, ?, ?,
+                VALUES (?, ?, ?, 'CHILD', ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, 'ACTIVE', ?, ?, ?,
                         ?, ?, ?, ?::jsonb, ?, ?::vector, ?, ?, ?)
                 RETURNING id
                 """, Long.class,
-                documentId, parentId, c.type().name(), c.sectionPathText(), c.title(), c.content(),
+                documentId, tenantId, parentId, c.type().name(), c.sectionPathText(), c.title(), c.content(),
                 c.pageStart(), c.pageEnd(), c.sourceBlockIds(), c.bboxJson(),
                 c.tokenCount(), c.chunkIndex(), parserVersion, ChunkStrategy.VERSION, chunkVersion,
                 c.caption(), c.unit(), c.currency(), c.headersJson(), c.relatedFootnoteIds(),
@@ -287,5 +309,35 @@ public class ChunkRepository {
             sb.append(v[i]);
         }
         return sb.append(']').toString();
+    }
+
+    /**
+     * pgvector 字面量 "[1.0,2.0,...]" → float[]（{@link #toVectorLiteral} 的逆操作）。
+     *
+     * <p>为什么需要：增量重嵌要复用旧向量，而用标准 JDBC 读 vector 只有 {@code embedding::text}
+     * 这一条路（项目没引入 pgvector-jdbc）。解析一次 ~654 行远比重新调 654 次 embedding API 便宜。
+     */
+    public static float[] parseVectorLiteral(String literal) {
+        if (literal == null || literal.isBlank()) {
+            return null;
+        }
+        String s = literal.trim();
+        if (s.startsWith("[") && s.endsWith("]")) {
+            s = s.substring(1, s.length() - 1);
+        }
+        if (s.isBlank()) {
+            return new float[0];
+        }
+        String[] parts = s.split(",");
+        float[] out = new float[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            out[i] = Float.parseFloat(parts[i].trim());
+        }
+        return out;
+    }
+
+    /** 旧版本 CHILD 的向量投影（契约 C10 的复用源）。 */
+    public record ChildEmbedding(String embeddingTextHash, String embeddingModel,
+                                 String embeddingVersion, float[] embedding) {
     }
 }

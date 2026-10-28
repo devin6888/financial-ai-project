@@ -18,5 +18,51 @@ services:
       timeout: 3s
       retries: 20
 
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: finagent-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft 单节点（无 Zookeeper），broker+controller 合一。
+      # 用 apache 官方镜像（本机已缓存），CLUSTER_ID 必须显式给（base64 编码的 16 字节 UUID）。
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 关掉自动建 topic：topic 一律由应用侧 KafkaAdmin（NewTopic bean）创建
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_CLUSTER_ID: CW6EHO1injFi0bHSXddEBA
+      # ---- 资源占用（开发用单节点，数据量 KB 级，不需要生产规格） ----
+      # 镜像默认堆 -Xmx1G -Xms1G，实测 RSS 956MB。单节点 + 4 个 topic + 每 topic 1 分区，256M 足够。
+      KAFKA_HEAP_OPTS: "-Xmx256m -Xms256m"
+      # 镜像默认 log.dirs=/tmp/kafka-logs —— 在容器可写层里，volume 是空的（实测 4.0K）。
+      # 改到挂载点，数据才真正持久化，且不占容器层。
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # 开发期不必留 7 天；segment 64MB（默认 1GB）让过期清理更及时，少占缓存与磁盘
+      KAFKA_LOG_RETENTION_HOURS: "24"
+      KAFKA_LOG_SEGMENT_BYTES: "67108864"
+      # __consumer_offsets 默认 50 分区，每个分区都开一组日志+索引文件；单消费者组 1 个就够
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: "1"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      # 不要用 kafka-broker-api-versions.sh：那是个 Java 客户端，每 10 秒起一个新 JVM，
+      # 是 CPU 尖峰（实测 69%）和内存抖动的主要来源。nc -z 只做一次 TCP 握手。
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
 volumes:
   pgdata:
+  kafkadata:

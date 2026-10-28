@@ -18,6 +18,18 @@ spring:
     password: finagent
 
 finagent:
+  # 记忆默认关掉：会话类测试自己显式打开（properties = "finagent.memory.enabled=true"），
+  # 这样其余 300+ 用例的 Prompt 与阶段 8 完全一致。
+  memory:
+    enabled: false
   chat:
     # 测试不写 logs/chat-trace.jsonl，避免每跑一次测试就往仓库里加文件
     trace-file: target/test-chat-trace.jsonl
+  tenant:
+    # 测试 profile 关闭认证：300+ 个既有测试不关心身份，逐个造 token 会淹没被测逻辑。
+    # 代价是「测试环境不验认证」，所以认证由 AuthenticationFilterTest 覆盖，
+    # 跨租户隔离与 ACL 由 rls profile 的 RlsEnforcementTest / TenantIsolationE2ETest 覆盖。
+    auth-enabled: false
+    # 同理关掉 ACL（否则每个聊天类测试都要先造授权行）。
+    # 真实 ACL 由 AclScopeAuthorizerTest（本文件里用 properties 单独打开开关）与阶段 8 越权 e2e 覆盖。
+    acl-enabled: false

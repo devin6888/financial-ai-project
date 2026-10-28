@@ -5,8 +5,10 @@
 - 设计文档：`金融研报智能分析Agent_系统架构设计_v0.10.docx`
 - 开发路线图与阶段计划：`docs/superpowers/plans/`
 - 环境搭建手册：`docs/阶段1-环境搭建手册.md`
+- **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
+- 文档写作规范：`docs/文档写作规范.md`
 
-**当前进度：阶段 1（基础设施与骨架）已完成并通过验收。**
+**当前进度：阶段 8（权限与多租户）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`。
 
 ---
 
@@ -19,7 +21,7 @@
 ## 快速开始
 
 ```bash
-docker compose up -d          # 启动 PostgreSQL（含 pgvector + zhparser）
+docker compose up -d          # 启动 PostgreSQL（含 pgvector + zhparser）与 Kafka
 bash scripts/verify-db.sh     # 断言验证：6 项检查，全 PASS 才算通过
 mvn test                     # 集成测试
 ```
@@ -121,7 +123,15 @@ financial-ai-project/
 │       └── 02-schema.sql              # 4 张业务表
 ├── scripts/verify-db.sh               # 数据库断言脚本
 ├── docs/
-│   ├── 阶段1-环境搭建手册.md
+│   ├── 术语表.md                      # 所有缩写的解释（先读这份）
+│   ├── 文档写作规范.md                # 报告/计划怎么写才看得懂
+│   ├── 阶段1~8-*.md                   # 各阶段报告
+│   ├── 技术选型.md                    # 选了什么 / 没选什么 / 为什么 / 何时该改
+│   │                                  #   附录 A：为什么不用 ORM（MyBatis-Plus / JPA 实测对照）
+│   ├── 关键契约.md                    # C1~C11 跨阶段不变式（C11 = 认证/租户/可见性）
+│   ├── pgvector-工作机制.md           # 向量库机制与实测
+│   ├── PG文本索引-tsv与trgm.md        # 中文全文检索机制与实测
+│   ├── 权限与多租户-工作机制.md       # 认证 / 租户 / RLS / ACL 四层机制与实测
 │   └── superpowers/plans/             # 路线图与各阶段计划
 ├── src/main/java/com/finagent/        # Spring Boot 应用
 ├── src/main/resources/application.yml
@@ -136,42 +146,153 @@ financial-ai-project/
 
 ### 启动
 
-@@@powershell
+```powershell
 cd document-parser-service
 $env:HF_ENDPOINT = 'https://hf-mirror.com'   # 必须！本机 huggingface.co 不可达
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-@@@
+```
 
 ### 接口
 
 | 接口 | 用途 |
 |---|---|
-| @@GET /health@@ | 健康检查 |
-| @@POST /parse@@ | 同步解析，小页范围与手工验证用 |
-| @@POST /jobs@@ | **提交作业**，立即返回 @@job_id@@（202）。长文档走这条 |
-| @@GET /jobs/{id}@@ | 查询状态、耗时、错误与结果 |
+| GET /health | 健康检查 |
+| POST /parse | 同步解析，小页范围与手工验证用 |
+| POST /jobs | **提交作业**，立即返回 job_id（202）。长文档走这条 |
+| GET /jobs/{id} | 查询状态、耗时、错误与结果 |
 
-> **为什么有 @@/jobs@@**：181 页约 25 分钟。同步 HTTP 在这个量级上是缺陷 ——
+> **为什么有 /jobs**：181 页约 25 分钟。同步 HTTP 在这个量级上是缺陷 ——
 > 网络抖动全部重来、worker 被占死、客户端看不到进度。作业化之后提交耗时从
-> 15.6 秒（3 页同步）降到 **0.07 秒**。阶段 7 会用 Kafka 把这一层换成事件驱动。
+> 15.6 秒（3 页同步）降到 **0.07 秒**。阶段 7 已用 Kafka 把这一层换成事件驱动（见下节）。
 
 ### 端到端验证
 
-@@@powershell
+```powershell
 # 1) 启动解析服务（见上）
 # 2) 跑端到端：COS -> Java -> Python -> 产物回 COS -> 更新 document
 . .\scripts\load-env.ps1
 mvn -B -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=FullDocumentPipelineTest test
-@@@
+```
 
-> @@-Dsurefire.excludedGroups=@@ **不能省**：@@-Dgroups=e2e@@ 是包含语义，
-> 而配置里的 @@excludedGroups@@ 仍在生效，两者叠加会一条都不跑。
+> -Dsurefire.excludedGroups= **不能省**：-Dgroups=e2e 是包含语义，
+> 而配置里的 excludedGroups 仍在生效，两者叠加会一条都不跑。
 
 ### 数据库迁移
 
-从阶段 2 起 schema 由 **Flyway** 管理，只有一个来源：@@src/main/resources/db/migration/@@。
+从阶段 2 起 schema 由 **Flyway** 管理，只有一个来源：src/main/resources/db/migration/。
 
-**改表只需新增 @@V*.sql@@，不要再 @@docker compose down -v@@。**
+**改表只需新增 V*.sql，不要再 docker compose down -v。**
+
+## 阶段 7：异步任务化（Kafka）
+
+解析与重索引不再是「测试里手动调的两个方法」，而是两条 Kafka 事件：
+
+| Topic | 谁投 | 谁消费 | 干什么 |
+|---|---|---|---|
+| `document.parse` | `POST /api/documents` | `DocumentParseListener` | 从 COS 读回 PDF → Docling 解析 → 切块 → 增量嵌入 → 入库 |
+| `document.reindex` | 人工投递（后续可加计划任务） | `DocumentReindexListener` | 从已存解析产物重切 + 增量重嵌，**不重新解析 PDF** |
+
+失败处理：瞬时错误（超时、COS 5xx）重试 3 次、间隔 1 秒；仍失败或业务/数据错误 → 消息进
+`document.parse.dlt` / `document.reindex.dlt`，同时 `task_message` 表留一行（事件去重 + 失败原因）。
+
+### 上传并轮询
+
+```powershell
+. .\scripts\load-env.ps1
+
+# 上传（multipart）。docType 只能是 ANNUAL / SEMI_ANNUAL / Q1 / Q3
+curl.exe -X POST http://localhost:8080/api/documents `
+  -F "file=@docs/东方财富2025年年度报告.pdf" `
+  -F "companyCode=300059" -F "companyName=东方财富" -F "market=SH" `
+  -F "docType=ANNUAL" -F "docYear=2025" -F "title=东方财富2025年年度报告"
+# -> {"documentId":7,"parseStatus":"DONE"}   同一份 PDF 重复上传命中幂等快路径，0 秒返回
+
+# 查状态与元数据
+curl.exe http://localhost:8080/api/documents/7
+```
+
+> **幂等快路径**：`content_hash` 已解析完成且存在 ACTIVE chunk 时，直接返回旧 `documentId`，
+> 不落 COS、不投递、不解析。反过来说 —— 想真正触发一次解析，必须传一份**内容不同**的 PDF：
+> 181 页在 CPU 上的 Docling 约 50 分钟，别拿大文件试速度。
+
+### 验证
+
+```powershell
+. .\scripts\load-env.ps1
+mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=DocumentTaskE2ETest"
+```
+
+四个用例约 35 秒跑完：上传幂等（同 hash 只一次解析）、状态查询（DONE + 公司信息）、
+真重索引（版本号恰好 +1，654 个块 100% 复用旧向量、0 次 embedding 调用）、
+坏消息进 DLQ 后改 documentId 重放（`FAILED` → `SUCCESS`）。
+
+> Kafka 按**开发规格**配置：堆 256M（镜像默认 1G）、健康检查用 `nc -z`（不用 Java 客户端，否则每 10 秒起一个 JVM）、
+> 数据落在 `kafkadata` 卷上（镜像默认写 `/tmp/kafka-logs`，容器一重建就丢）。实测常驻内存 **约 260MB**、空闲 CPU **< 3%**。
+> 代价：日志只保留 24 小时 —— 想看更久的死信要把 `KAFKA_LOG_RETENTION_HOURS` 改回去。
+
+机制细节、实测数字与已知限制见 `docs/阶段7-异步任务化报告.md`。
+
+## 阶段 8：权限与多租户（认证 / RLS / ACL）
+
+所有对外端点都要带 `Authorization: Bearer <token>`。**身份只从 token 来** ——
+请求体或查询串里塞 `tenantId` / `userId` 一律无效（有专门的测试盯着这一条）。
+
+| 层 | 管什么 | 破了会怎样 | 失败时返回 |
+|---|---|---|---|
+| ① 认证 | 有没有身份、token 是否有效 | 谁都能读 | **401** `AUTH_REQUIRED` / `AUTH_INVALID` |
+| ② 租户（数据库 RLS） | 跨租户读写（硬边界） | 跨客户数据泄漏 | 查不到任何行（不是报错，是空） |
+| ③ ACL（应用层） | 同租户内的公司级授权 / 私有文档 | 同事之间互相看到不该看的 | **409** `SCOPE_EMPTY`，或列表里少几份 |
+
+### 本地体验用的三个 token（V8 种子数据）
+
+| token | 用户 | 角色 | 能看到什么 |
+|---|---|---|---|
+| `dev-admin-token` | admin | ADMIN | 租户 1 的全部文档 |
+| `dev-analyst-token` | analyst | ANALYST | 只有 300059（东方财富）的两份年报 |
+| `dev-outsider-token` | outsider | VIEWER | 什么都没有（无任何授权）→ 409 |
+
+```powershell
+# 有权限：正常回答，带引用
+curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
+  -H "Authorization: Bearer dev-analyst-token" -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
+
+# 没带 token：401
+curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
+  -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
+
+# 同租户但无授权：409（正文里一个数字都没有）
+curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
+  -H "Authorization: Bearer dev-outsider-token" -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
+```
+
+### 开关（只用于本地调试）
+
+| 配置 | 默认 | 作用 |
+|---|---|---|
+| `finagent.tenant.auth-enabled` | `true` | 关掉后不校验 token。**只给本地调试**，对外必须为 true |
+| `finagent.tenant.acl-enabled` | `true` | 关掉后装配「全部放行」的实现。测试 profile 默认关（否则每个聊天测试都要先造授权行） |
+
+> 关掉 ACL 的代价：**测试环境不验 ACL**。所以 ACL 有独立的数据库级测试（`AclScopeAuthorizerTest`、
+> `ScopeResolverAclTest`）和真 HTTP 越权用例（`TenantIsolationE2ETest`、`ZeroLeakGateTest`）。
+
+### 验证
+
+```powershell
+. .\scripts\load-env.ps1
+mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=TenantIsolationE2ETest,ZeroLeakGateTest"
+```
+
+7 个用例（约 60 秒，其中一条调真模型）：
+
+1. 同租户无授权 → 409，正文无数字；
+2. 传他人 `documentId` → 409，不返回引用；
+3. 跨租户枚举文档 → `[]`；
+4. 跨租户查详情 → **404**（不是 403：403 等于确认这个 id 存在）；
+5. 请求体伪造 `tenantId` → 结果不变；
+6. 对照组：分析师能正常拿到带引用的答案；
+7. 零泄漏门限：对象键 / 他人标题 / 他人正文片段，命中数全为 0。
+
+机制细节见 `docs/权限与多租户-工作机制.md`，实测数字与已知限制见 `docs/阶段8-权限与多租户报告.md`。
 
 ## 已知限制（阶段 1）
 

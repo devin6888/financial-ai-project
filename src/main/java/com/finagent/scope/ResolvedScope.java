@@ -20,7 +20,17 @@ import java.util.Set;
  */
 public record ResolvedScope(ScopeKind kind, List<DocMeta> documents,
                             String resolverVersion, String effectiveReason,
-                            List<String> warnings) {
+                            List<String> warnings,
+                            /**
+                             * 解析过程中 ACL 是否真的删掉过候选文档。
+                             *
+                             * <p>为什么需要它：检索层对 CORPUS 有一条优化——「全库」时不把
+                             * 几百个 document id 拼进 IN 子句（否则优化器会放弃索引）。但有了 ACL
+                             * 之后，「全库」不再等于「能看全」：analyst 的 CORPUS 只应取到被授权的那几份。
+                             * 用这个标记把「没被 ACL 卡过」（可继续跳过 id 过滤）与「被卡过」
+                             * （必须把 id 下推到 SQL）区分开，优化与安全都不丢。
+                             */
+                            boolean aclNarrowed) {
 
     /** 解析算法版本。算法改了要 +1，历史 trace 才能解释「当时为什么解析成这几份」。 */
     public static final String RESOLVER_VERSION = "scope-v1";
@@ -38,7 +48,15 @@ public record ResolvedScope(ScopeKind kind, List<DocMeta> documents,
 
     public static ResolvedScope of(ScopeKind kind, List<DocMeta> documents, String reason,
                                    List<String> warnings) {
-        return new ResolvedScope(kind, documents, RESOLVER_VERSION, reason, warnings);
+        return new ResolvedScope(kind, documents, RESOLVER_VERSION, reason, warnings, false);
+    }
+
+    /** 标记「ACL 删掉过候选」。幂等：值没变时返回 this，避免无意义的新对象。 */
+    public ResolvedScope withAclNarrowed(boolean narrowed) {
+        if (this.aclNarrowed == narrowed) {
+            return this;
+        }
+        return new ResolvedScope(kind, documents, resolverVersion, effectiveReason, warnings, narrowed);
     }
 
     public List<Long> documentIds() {
@@ -100,11 +118,12 @@ public record ResolvedScope(ScopeKind kind, List<DocMeta> documents,
         List<String> next = new ArrayList<>(warnings);
         next.add("scope_extended_to_" + merged.size());
         return new ResolvedScope(kind, new ArrayList<>(merged.values()), resolverVersion,
-                reason == null ? effectiveReason : reason, next);
+                reason == null ? effectiveReason : reason, next, aclNarrowed);
     }
 
     /** 供日志与 trace 的一行摘要。 */
     public String summary() {
-        return kind + "[" + size() + "] " + documentIds() + " " + effectiveReason;
+        return kind + "[" + size() + "] " + documentIds() + " " + effectiveReason
+                + (aclNarrowed ? " aclNarrowed" : "");
     }
 }

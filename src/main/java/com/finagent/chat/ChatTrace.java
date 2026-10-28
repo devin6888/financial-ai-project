@@ -15,6 +15,7 @@ public record ChatTrace(
         String traceId,
         RetrievalTrace retrieval,
         ScopeTrace scope,
+        MemoryTrace memory,
         int contextBlocks,
         int contextTokens,
         int citationsEmitted,
@@ -25,6 +26,15 @@ public record ChatTrace(
 ) {
     public ChatTrace {
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        memory = memory == null ? MemoryTrace.EMPTY : memory;
+    }
+
+    /** 兼容阶段 8 之前的 10 参调用点（那时还没有记忆段）。 */
+    public ChatTrace(String traceId, RetrievalTrace retrieval, ScopeTrace scope, int contextBlocks,
+                     int contextTokens, int citationsEmitted, int citationsDropped, long contextMs,
+                     long answerMs, List<String> warnings) {
+        this(traceId, retrieval, scope, MemoryTrace.EMPTY, contextBlocks, contextTokens,
+                citationsEmitted, citationsDropped, contextMs, answerMs, warnings);
     }
 
     public long totalMs() {

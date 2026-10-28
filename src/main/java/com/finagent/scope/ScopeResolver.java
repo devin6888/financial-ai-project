@@ -7,8 +7,10 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 把请求里的"意图"翻译成确定的文档集合。
@@ -54,14 +56,31 @@ public class ScopeResolver {
         };
     }
 
-    /** C 模式：全库。文档数为 0 说明知识库是空的，这是部署问题不是用户问题，但仍要报出来。 */
+    /**
+     * C 模式：全库。
+     *
+     * <p>「全库」指<b>当前账号能看到的全库</b>：先取可检索文档，再过 ACL。
+     * RLS 只保证不跨租户，同一租户内谁能看哪份文档由 ACL 决定，所以这一步不能省。
+     *
+     * <p>过滤后为空要报错而不是返回空列表：空列表在检索层的语义是「不过滤 = 全库」，
+     * 静默放宽比报错危险得多（与 {@link ScopeEmptyException} 的注释同一条理由）。
+     */
     public ResolvedScope resolveCorpus() {
-        List<DocMeta> docs = documents.findRetrievable(null, null, null, null, null);
-        if (docs.isEmpty()) {
+        List<DocMeta> candidates = documents.findRetrievable(null, null, null, null, null);
+        if (candidates.isEmpty()) {
             throw new ScopeEmptyException("知识库中没有可检索的文档", List.of("scope_corpus_empty"));
         }
-        log.debug("作用域解析：CORPUS -> {} 份文档", docs.size());
-        return ResolvedScope.of(ScopeKind.CORPUS, docs, ResolvedScope.REASON_SESSION, List.of());
+        List<String> warnings = new ArrayList<>();
+        List<DocMeta> docs = aclFilter(candidates, warnings);
+        if (docs.isEmpty()) {
+            warnings.add("scope_acl_filtered_all");
+            throw new ScopeEmptyException("知识库中没有当前账号可检索的文档", warnings);
+        }
+        boolean narrowed = docs.size() < candidates.size();
+        log.debug("作用域解析：CORPUS -> {} 份文档（候选 {}，ACL 收窄={}）",
+                docs.size(), candidates.size(), narrowed);
+        return ResolvedScope.of(ScopeKind.CORPUS, docs, ResolvedScope.REASON_SESSION, warnings)
+                .withAclNarrowed(narrowed);
     }
 
     /**
@@ -79,7 +98,9 @@ public class ScopeResolver {
         List<Long> readable = authorizer.filterReadable(requested);
         List<String> warnings = new ArrayList<>();
         if (readable.size() < requested.size()) {
-            warnings.add("scope_unauthorized_" + (requested.size() - readable.size()));
+            // 同 aclFilter：警告里不带条数，避免把「有多少份看不见」写进响应正文
+            log.debug("请求的 {} 份文档中 {} 份无权限", requested.size(), requested.size() - readable.size());
+            warnings.add("scope_unauthorized");
         }
 
         Map<Long, DocumentRepository.DocStatus> status = new LinkedHashMap<>();
@@ -113,8 +134,10 @@ public class ScopeResolver {
         if (docs.size() > properties.getDocumentsSoftLimit()) {
             warnings.add("scope_over_soft_limit_" + docs.size() + "_gt_" + properties.getDocumentsSoftLimit());
         }
-        log.debug("作用域解析：DOCUMENTS {} -> {} 份", requested, docs.size());
-        return ResolvedScope.of(ScopeKind.DOCUMENTS, docs, ResolvedScope.REASON_SESSION, warnings);
+        boolean narrowed = readable.size() < requested.size();
+        log.debug("作用域解析：DOCUMENTS {} -> {} 份（ACL 收窄={}）", requested, docs.size(), narrowed);
+        return ResolvedScope.of(ScopeKind.DOCUMENTS, docs, ResolvedScope.REASON_SESSION, warnings)
+                .withAclNarrowed(narrowed);
     }
 
     /**
@@ -129,13 +152,21 @@ public class ScopeResolver {
         if (q.isEmpty()) {
             warnings.add("scope_filter_empty_all_corpus");
         }
-        List<DocMeta> docs = documents.findRetrievable(null, q.companyCodes(), q.years(),
+        List<DocMeta> candidates = documents.findRetrievable(null, q.companyCodes(), q.years(),
                 q.docTypes(), q.industries());
-        if (docs.isEmpty()) {
+        if (candidates.isEmpty()) {
             throw new ScopeEmptyException("筛选条件没有匹配到任何可检索文档：" + describe(q), warnings);
         }
-        log.debug("作用域解析：FILTER {} -> {} 份", describe(q), docs.size());
-        return ResolvedScope.of(ScopeKind.FILTER, docs, ResolvedScope.REASON_SESSION, warnings);
+        List<DocMeta> docs = aclFilter(candidates, warnings);
+        if (docs.isEmpty()) {
+            warnings.add("scope_acl_filtered_all");
+            throw new ScopeEmptyException("筛选条件匹配到的文档当前账号都不可读：" + describe(q), warnings);
+        }
+        boolean narrowed = docs.size() < candidates.size();
+        log.debug("作用域解析：FILTER {} -> {} 份（候选 {}，ACL 收窄={}）",
+                describe(q), docs.size(), candidates.size(), narrowed);
+        return ResolvedScope.of(ScopeKind.FILTER, docs, ResolvedScope.REASON_SESSION, warnings)
+                .withAclNarrowed(narrowed);
     }
 
     /**
@@ -164,6 +195,26 @@ public class ScopeResolver {
         String reason = turnOnly ? ResolvedScope.REASON_TURN_ONLY : ResolvedScope.REASON_SESSION_EXTENSION;
         log.debug("作用域扩展：{} + {} -> {}", present, added.size(), reason);
         return current.withDocuments(added, reason);
+    }
+
+    /**
+     * 把候选文档按 ACL 过一遍，保持原有顺序。
+     *
+     * <p>为什么放在「取到可检索文档之后」而不是把 ACL 条件下推进 {@code findRetrievable}：
+     * 现在租户内只有个位数文档，先取再过滤最直白；文档数上到几百时再把 ACL 子查询下推
+     * （见 ST8 §7 R3 的已知限制）。
+     */
+    private List<DocMeta> aclFilter(List<DocMeta> candidates, List<String> warnings) {
+        List<Long> ids = candidates.stream().map(DocMeta::id).toList();
+        Set<Long> readable = new LinkedHashSet<>(authorizer.filterReadable(ids));
+        List<DocMeta> kept = candidates.stream().filter(d -> readable.contains(d.id())).toList();
+        if (kept.size() < candidates.size()) {
+            // 警告里故意不带数字：带数字等于告诉调用方「你还有 N 份看不到的文档」，
+            // 属于「存在性」泄漏。精确条数写服务端日志，给运维看。
+            log.debug("ACL 隐藏了 {} 份文档（候选 {} 条）", candidates.size() - kept.size(), candidates.size());
+            warnings.add("scope_acl_hidden");
+        }
+        return kept;
     }
 
     private static String describe(ScopeQuery q) {

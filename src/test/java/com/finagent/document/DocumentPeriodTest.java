@@ -89,9 +89,9 @@ class DocumentPeriodTest {
     private long insert(String docType, Integer year) {
         String hash = "period-test-" + UUID.randomUUID();
         Long id = jdbc.queryForObject(
-                "INSERT INTO document (company_id, doc_type, doc_year, title, object_key, "
+                "INSERT INTO document (tenant_id, company_id, doc_type, doc_year, title, object_key, "
                         + "content_hash, parse_status, version) "
-                        + "VALUES (7, ?, ?, 'period-test', 'test/key', ?, 'DONE', 1) "
+                        + "VALUES (1, 7, ?, ?, 'period-test', 'test/key', ?, 'DONE', 1) "
                         + "RETURNING id",
                 Long.class, docType, year, hash);
         created.add(id);

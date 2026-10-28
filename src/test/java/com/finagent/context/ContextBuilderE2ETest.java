@@ -85,24 +85,27 @@ class ContextBuilderE2ETest {
     }
 
     @Test
-    @DisplayName("短 Parent + COMPLEX_ANALYSIS → 整段 Parent；evidenceNo 连续")
-    void shortParentWholeForComplexAnalysis() {
+    @DisplayName("短 Parent（子块 token 和 ≤ 1500）+ COMPLEX_ANALYSIS → 整段展开为子块，父块 content 不出现")
+    void shortSectionWholeForComplexAnalysis() {
         Long parentId = jdbc.queryForObject(
-                "SELECT dc.parent_id FROM document_chunk dc WHERE dc.document_id = ? AND dc.chunk_level = 'CHILD'"
-                        + " AND dc.status = 'ACTIVE' AND dc.parent_id IS NOT NULL"
-                        + " AND (SELECT token_count FROM document_chunk p WHERE p.id = dc.parent_id) <= 1500"
-                        + " ORDER BY dc.parent_id LIMIT 1",
+                "SELECT parent_id FROM document_chunk WHERE document_id = ? AND chunk_level = 'CHILD'"
+                        + " AND status = 'ACTIVE' AND parent_id IS NOT NULL"
+                        + " GROUP BY parent_id HAVING sum(token_count) <= 1500"
+                        + " ORDER BY parent_id LIMIT 1",
                 Long.class, DOC_2025);
         assertThat(parentId).isNotNull();
-        Long childId = jdbc.queryForObject(
+        List<Long> childIds = jdbc.queryForList(
                 "SELECT id FROM document_chunk WHERE parent_id = ? AND status = 'ACTIVE'"
-                        + " ORDER BY chunk_index LIMIT 1", Long.class, parentId);
+                        + " ORDER BY chunk_index", Long.class, parentId);
+        assertThat(childIds).isNotEmpty();
 
-        ContextPackage pkg = builder.build("整体经营情况如何", QueryType.COMPLEX_ANALYSIS, hitsOf(List.of(childId)), null);
+        ContextPackage pkg = builder.build("整体经营情况如何", QueryType.COMPLEX_ANALYSIS, hitsOf(List.of(childIds.get(0))), null);
 
         assertThat(pkg.blocks()).isNotEmpty();
-        assertThat(pkg.blocks().get(0).role()).isEqualTo(ContextBlock.ROLE_PARENT_WHOLE);
-        assertThat(pkg.blocks().get(0).chunkId()).isEqualTo(parentId);
+        // 整段展开 = 该父块下全部子块（正文+表格），父块 content 永不进提示词
+        assertThat(pkg.blocks()).extracting(ContextBlock::chunkId).containsAll(childIds);
+        assertThat(pkg.blocks()).hasSameSizeAs(childIds);
+        assertThat(pkg.blocks()).allSatisfy(b -> assertThat(b.chunkId()).isNotEqualTo(parentId));
         for (int i = 0; i < pkg.blocks().size(); i++) {
             assertThat(pkg.blocks().get(i).evidenceNo()).isEqualTo(i + 1);
         }

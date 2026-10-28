@@ -90,9 +90,9 @@ public class CitationValidator {
                 b.sectionPath());
     }
 
-    /** PARENT_WHOLE 块的 chunkId 就是父块本身，此时不该再报一个「父 id」。 */
+    /** 块没有父（孤立命中，parentId=0）时不报「父 id」。 */
     private static Long parentIdOf(ContextBlock b) {
-        if (b.parentId() <= 0 || b.parentId() == b.chunkId()) {
+        if (b.parentId() <= 0) {
             return null;
         }
         return b.parentId();

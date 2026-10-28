@@ -129,11 +129,44 @@ class AnswerServiceTest {
                 """);
 
         AnswerResult r = service.answer("2024年营业总收入", null,
-                pkg(block(1, 101, 38, 47, "TEXT"), block(2, 102, 7, 47, "TEXT")));
+                pkg(block(1, 101, 38, 47, "TEXT"),
+                        block(2, 102, 7, 47, "TEXT", "营业总收入 12,000,000,000.00")));
 
         assertThat(r.confidence()).isEqualTo("low");
         assertThat(r.warnings()).contains("fact_multi_doc_conflict", "fact_value_mismatch");
         assertThat(r.note()).contains("不一致");
+    }
+
+    @Test
+    @DisplayName("答案里的数字在证据里找不到 → 拒答（模型编造员工总数）")
+    void refusesFabricatedNumber() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"2024年员工总数为5,560人 [E1]",
+                 "facts":[{"metric":"员工总数","period":"2024","value":"5,560","unit":"人",
+                           "scope":"合并","evidence":"E1"}],
+                 "usedEvidence":["E1"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("2024年员工总数", null, pkg(block(1, 101, 7, 47, "TABLE")));
+
+        assertThat(r.sufficient()).isFalse();
+        assertThat(r.confidence()).isEqualTo("insufficient");
+        assertThat(r.warnings()).anyMatch(w -> w.startsWith("answer_value_not_in_evidence"));
+        assertThat(r.facts()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("模型自己算的增长率不算编造：只校验报告式数字")
+    void allowsComputedRatio() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"营业总收入 12,084,594,947.22 元，同比增长 38.4% [E1]",
+                 "facts":[],"usedEvidence":["E1"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("2024年营业总收入", qu(2024, 2024), pkg(block(1, 101, 38, 47, "TABLE")));
+
+        assertThat(r.sufficient()).isTrue();
+        assertThat(r.confidence()).isEqualTo("high");
     }
 
     @Test
@@ -182,8 +215,12 @@ class AnswerServiceTest {
     }
 
     private static ContextBlock block(int no, long id, long docId, int page, String type) {
+        return block(no, id, docId, page, type, "营业总收入 12,084,594,947.22");
+    }
+
+    private static ContextBlock block(int no, long id, long docId, int page, String type, String content) {
         return new ContextBlock(no, id, 500L, docId, "东方财富2025年年度报告", "第二节 > 六、主要会计数据",
-                "六、主要会计数据", "营业总收入 16,067,741,039.51", page, page, type, "主要会计数据", "元",
+                "六、主要会计数据", content, page, page, type, "主要会计数据", "元",
                 null, null, 0.9, 10, 100, ContextBlock.ROLE_HIT);
     }
 }

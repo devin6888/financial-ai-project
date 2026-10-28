@@ -31,7 +31,7 @@ import java.util.Set;
  * <ol>
  *   <li><b>Parent 内二次选择</b>：只保留命中分 ≥ 0.6 × 组内最高分的块（§9.15）——</li>
  *   <li><b>补邻居</b>：命中块前后各 1 个 chunkIndex，保证句子不断在半句上；</li>
- *   <li><b>整段 Parent</b>：只有 COMPLEX_ANALYSIS 且 Parent ≤ 1500 token 才整段给；</li>
+ *   <li><b>整段展开</b>：只有 COMPLEX_ANALYSIS 且该节全部子块 token 和 ≤ 1500 才整段给（正文+表格）；</li>
  *   <li><b>预算裁剪</b>：超预算整块出局，<b>绝不截断字符串</b>（截断会把数字切成两半）。</li>
  * </ol>
  *
@@ -74,13 +74,10 @@ public class ContextBuilder {
             scoreById.put(h.chunkId(), h.rerankScore() == null ? 0.0 : h.rerankScore());
         }
 
-        // 1) 两次批量查询：命中块本身 + 它们的 Parent（整段展开要用），以及所有 Parent 的 Child
+        // 1) 两次批量查询：命中块本身，以及它们所属 Parent 的全部 Child
         Set<Long> ids = new LinkedHashSet<>();
         for (RetrievedChunk h : hits) {
             ids.add(h.chunkId());
-            if (h.parentId() > 0) {
-                ids.add(h.parentId());
-            }
         }
         Map<Long, ChunkView> viewById = new LinkedHashMap<>();
         for (ChunkView v : chunks.findViewsByIds(new ArrayList<>(ids))) {
@@ -111,7 +108,6 @@ public class ContextBuilder {
             long parentId = e.getKey();
             List<RetrievedChunk> groupHits = e.getValue();
             double maxScore = groupHits.stream().mapToDouble(h -> scoreById.get(h.chunkId())).max().orElse(0.0);
-            ChunkView parentView = parentId > 0 ? viewById.get(parentId) : null;
             List<ChunkView> children = childrenByParent.getOrDefault(parentId, List.of());
 
             boolean expanded = !children.isEmpty();
@@ -122,12 +118,27 @@ public class ContextBuilder {
                 parentsExpanded++;
             }
 
-            // 3a) 整段 Parent：只有复杂分析且 Parent 本身不大，才值得整段给
-            if (queryType == QueryType.COMPLEX_ANALYSIS && parentView != null
-                    && parentView.tokenCount() <= props.getParentWholeMaxTokens()) {
-                groups.add(new Group(maxScore, List.of(toBlock(parentView, scoreById.getOrDefault(parentView.id(), maxScore),
-                        ContextBlock.ROLE_PARENT_WHOLE))));
-                continue;
+            // 3a) 整段展开：只有复杂分析、且有子块、且全部子块 token 和不超过上限，才整节给模型。
+            //     必须用子块组装而不是父块 content —— 父块 content 只含正文不含表格，
+            //     整段若只用父块会把命中的表格丢掉（这正是 parent.content 不进提示词的原因）。
+            if (queryType == QueryType.COMPLEX_ANALYSIS && expanded) {
+                int wholeTokens = children.stream().mapToInt(ChunkView::tokenCount).sum();
+                if (wholeTokens <= props.getParentWholeMaxTokens()) {
+                    List<ChunkView> ordered = new ArrayList<>(children);
+                    ordered.sort(Comparator.comparingInt(ChunkView::chunkIndex));
+                    Set<Long> hitIds = new LinkedHashSet<>();
+                    for (RetrievedChunk h : groupHits) {
+                        hitIds.add(h.chunkId());
+                    }
+                    List<ContextBlock> blocks = new ArrayList<>();
+                    for (ChunkView v : ordered) {
+                        String role = hitIds.contains(v.id()) ? ContextBlock.ROLE_HIT : ContextBlock.ROLE_SIBLING;
+                        blocks.add(toBlock(v, scoreById.getOrDefault(v.id(), 0.0), role));
+                    }
+                    groups.add(new Group(maxScore, blocks));
+                    continue;
+                }
+                // 整节太大：回退到下面的精确路径（二次选择 + 邻居）
             }
 
             // 3b) 组内二次选择：>= 0.6 × 组内最高分。未精排（分数全 0）时阈值也是 0，

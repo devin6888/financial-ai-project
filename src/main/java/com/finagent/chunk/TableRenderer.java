@@ -3,7 +3,10 @@ package com.finagent.chunk;
 import com.finagent.document.DocumentModel;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 表格 -> markdown。
@@ -48,7 +51,12 @@ public final class TableRenderer {
      */
     public static List<List<String>> toGrid(DocumentModel.Table table) {
         int rows = Math.max(table.num_rows(), 1);
-        int cols = Math.max(table.num_cols(), 1);
+        int numCols = Math.max(table.num_cols(), 1);
+        List<DocumentModel.Cell> cells =
+                table.cells() == null ? List.of() : table.cells();
+        Normalized normalized = normalize(cells, numCols);
+        int cols = normalized.cols();
+
         List<List<String>> grid = new ArrayList<>(rows);
         for (int r = 0; r < rows; r++) {
             List<String> row = new ArrayList<>(cols);
@@ -57,10 +65,14 @@ public final class TableRenderer {
             }
             grid.add(row);
         }
-        if (table.cells() == null) {
-            return grid;
-        }
-        for (DocumentModel.Cell cell : table.cells()) {
+        // 【阶段 6 员工表丢数值的根因】单列单元格（col_span=1）先落位，
+        // 跨列 span 后落位 —— 否则重叠的跨列标签会先占住数值格，数值被「只填空白格」跳过。
+        List<DocumentModel.Cell> ordered = new ArrayList<>(normalized.cells());
+        ordered.sort(Comparator
+                .comparingInt((DocumentModel.Cell c) -> Math.max(c.col_span(), 1))
+                .thenComparingInt(DocumentModel.Cell::row)
+                .thenComparingInt(DocumentModel.Cell::col));
+        for (DocumentModel.Cell cell : ordered) {
             String text = escape(cell.text());
             int rs = Math.max(cell.row_span(), 1);
             int cs = Math.max(cell.col_span(), 1);
@@ -78,6 +90,68 @@ public final class TableRenderer {
             }
         }
         return grid;
+    }
+
+    private record Normalized(List<DocumentModel.Cell> cells, int cols) {
+    }
+
+    /**
+     * 折叠 Docling TableFormer 偶发的「整列重复 span」（把 2 列表误判成 3 列）。
+     *
+     * <p>判定（保守）：只有当<b>每一行</b>都存在「跨列格 + 同文本重叠格」时，才认为整张表
+     * 被凭空多判了一列，此时去重并把列号紧凑重排；否则原样返回 —— 单列优先落位已经能保住
+     * 数值，不去冒险动合法的合并单元格（部分合并可能只出现在表头一两行，误判会错列）。
+     */
+    static Normalized normalize(List<DocumentModel.Cell> cells, int numCols) {
+        if (cells.isEmpty() || numCols <= 1) {
+            return new Normalized(cells, numCols);
+        }
+        Map<Integer, List<DocumentModel.Cell>> byRow = new TreeMap<>();
+        for (DocumentModel.Cell c : cells) {
+            byRow.computeIfAbsent(c.row(), k -> new ArrayList<>()).add(c);
+        }
+
+        List<List<DocumentModel.Cell>> dedupedRows = new ArrayList<>();
+        int nonEmptyRows = 0;
+        int rowsWithDup = 0;
+        int maxCols = 1;
+        for (Map.Entry<Integer, List<DocumentModel.Cell>> e : byRow.entrySet()) {
+            List<DocumentModel.Cell> rowCells = e.getValue();
+            rowCells.sort(Comparator.comparingInt(DocumentModel.Cell::col));
+            nonEmptyRows++;
+            List<DocumentModel.Cell> deduped = new ArrayList<>();
+            boolean rowDuped = false;
+            for (DocumentModel.Cell c : rowCells) {
+                if (!deduped.isEmpty()) {
+                    DocumentModel.Cell prev = deduped.get(deduped.size() - 1);
+                    int prevSpan = Math.max(prev.col_span(), 1);
+                    // 与前一个格重叠（落在其 span 内）且文本相同 → span 被重复物化，丢弃
+                    if (c.col() < prev.col() + prevSpan && c.text().equals(prev.text())) {
+                        rowDuped = true;
+                        continue;
+                    }
+                }
+                deduped.add(c);
+            }
+            if (rowDuped) {
+                rowsWithDup++;
+            }
+            dedupedRows.add(deduped);
+            maxCols = Math.max(maxCols, deduped.size());
+        }
+        // 只有每一行都去重、且去重后确实少了一列，才紧凑重排；否则不动。
+        if (rowsWithDup == 0 || rowsWithDup != nonEmptyRows || maxCols >= numCols) {
+            return new Normalized(cells, numCols);
+        }
+        List<DocumentModel.Cell> out = new ArrayList<>();
+        for (List<DocumentModel.Cell> rowCells : dedupedRows) {
+            for (int i = 0; i < rowCells.size(); i++) {
+                DocumentModel.Cell c = rowCells.get(i);
+                int span = (i + 1 < rowCells.size()) ? 1 : Math.max(1, maxCols - i);
+                out.add(new DocumentModel.Cell(c.text(), c.row(), i, c.row_span(), span));
+            }
+        }
+        return new Normalized(out, maxCols);
     }
 
     static int colsOf(List<List<String>> grid) {
