@@ -125,6 +125,13 @@ finagent:
     # 仅供本机开发：生产应设为 0，让「无上下文」直接查不到任何行。
     fallback-tenant-id: 1
 
+  # ---------- 登录（阶段 10 §11） ----------
+  # 会话 token 默认 7 天；登录失败按「用户名 + IP」节流（内存计数，重启清零）。
+  auth:
+    session-ttl-hours: 168
+    max-login-failures: 10
+    failure-window-minutes: 15
+
   # ---------- 异步任务（阶段 7） ----------
   task:
     parse-topic: document.parse

@@ -163,6 +163,44 @@ class ConversationControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    @DisplayName("改名 → 200 + 新标题")
+    void renameReturnsNewTitle() throws Exception {
+        when(conversations.rename(11L, "东方财富 2025 年报")).thenReturn(conversation(11L, "东方财富 2025 年报"));
+
+        mvc.perform(patch("/api/conversations/11").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"东方财富 2025 年报\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversationId").value(11))
+                .andExpect(jsonPath("$.title").value("东方财富 2025 年报"));
+
+        verify(conversations).rename(11L, "东方财富 2025 年报");
+    }
+
+    @Test
+    @DisplayName("改名传空标题 → 400（不回落成「新会话」）")
+    void renameBlankTitleIs400() throws Exception {
+        when(conversations.rename(11L, " "))
+                .thenThrow(new IllegalArgumentException("标题不能为空"));
+
+        mvc.perform(patch("/api/conversations/11").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\" \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("BAD_REQUEST"))
+                .andExpect(jsonPath("$.message").value("标题不能为空"));
+    }
+
+    @Test
+    @DisplayName("改名 → 找不到会话 → 404")
+    void renameUnknownConversationIs404() throws Exception {
+        when(conversations.rename(99L, "x")).thenThrow(new ConversationNotFoundException(99L));
+
+        mvc.perform(patch("/api/conversations/99").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"x\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("CONVERSATION_NOT_FOUND"));
+    }
+
     private static ConversationContext context() {
         return new ConversationContext(11L, 1L, 2L, "300059", "东方财富", 2025, 2025,
                 List.of(7L), "营业总收入", "{}", OffsetDateTime.parse("2026-10-27T12:00:00+08:00"));

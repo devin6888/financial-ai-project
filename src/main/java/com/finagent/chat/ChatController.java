@@ -37,6 +37,9 @@ public class ChatController {
         this.authorizer = authorizer;
     }
 
+    /**
+     * 对话入口
+     */
     @PostMapping("/api/chat")
     public ResponseEntity<Object> chat(@RequestBody(required = false) ChatRequest request) {
         if (request == null || request.question().isBlank()) {

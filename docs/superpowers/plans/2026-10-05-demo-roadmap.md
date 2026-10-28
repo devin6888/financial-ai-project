@@ -27,7 +27,8 @@
 | **7** | 异步与任务化 | Kafka + Worker + 幂等 + DLQ；解析链路改为事件驱动 | 2,3 | 已完成（`docs/阶段7-异步任务化报告.md`） |
 | **8** | 权限与多租户 | ACL 模型 + tenant 行级隔离 + 越权用例集（验收零泄漏） | 7 | 已完成（`docs/阶段8-权限与多租户报告.md`） |
 | **9** | Memory 与会话 | 四层 Memory + Retrieval Gate + 按需 Long-term Memory 召回 | 8 | 已完成（见 `docs/阶段9-Memory与会话报告.md`） |
-| **10** | Agent 工作流 | LangGraph4j State/Node/Reducer/Checkpoint + HITL interrupt/resume | 9 | 待写 |
+| **10** | Web 前端 | 浏览器里完成「提问 → 带页码引用 → 多轮追问 → 上传文档」，不再需要 curl | 9 | 已完成（`docs/阶段10-前端报告.md`，验收清单 `docs/阶段10-前端验收清单.md`；**前端源码在独立仓库** `D:\Project\myproject\financial-ai-web`，见 ST10 §7.2。2026-10-28 晚按「演示级」重做视觉，设计方向与实测见报告 §10、计划 §10；同晚补账号密码登录与默认演示用户 demo / demo123456，见报告 §11、计划 §11、契约 C14；再补视觉第二轮「正文 960px / 提问右对齐气泡 / 全站圆角」，见报告 §12、计划 §12） |
+| **11** | Agent 工作流 | LangGraph4j State/Node/Reducer/Checkpoint + HITL interrupt/resume | 10 | 待写（原设计文档里的「阶段 10」，因前端插入而顺延，见 ST10 §8 的 D1） |
 
 ## 阶段边界说明（容易踩的地方）
 
@@ -51,7 +52,8 @@
 | 7 | **事件驱动**：幂等消费者、DLQ、重放；Kafka 与状态机为什么不能互相替代 |
 | 8 | **多租户隔离**：RLS + 应用层双重防线、越权负样本测试 |
 | 9 | **Memory 分层**：为什么长期记忆要按需召回而不是每轮检索；冲突与遗忘策略 |
-| 10 | **Agent 编排**：显式 State + Reducer、Checkpoint、HITL interrupt/resume |
+| 10 | **前端工程判断**：为什么用官方脚手架不用后台模板（实测 41,250 行 vs 23 文件）、为什么不用 axios / markdown 渲染器、按需引入把 1 MB 压到 237 KB、答案 tokenizer 为什么永不 innerHTML |
+| 11 | **Agent 编排**：显式 State + Reducer、Checkpoint、HITL interrupt/resume |
 
 ## 两个前置决策（开始阶段 1 之前需要确认）
 
@@ -70,7 +72,9 @@
 - 阶段 7 详细计划：`ST7-2026-10-26-07-async-task.md`
 - 阶段 8 详细计划：`ST8-2026-10-27-08-auth-multitenant.md`（9 个任务全部完成；Task 5~9 的执行口径见其 §7 的 R1~R6 修订）
 - 阶段 9 详细计划：`ST9-2026-10-27-09-memory-session.md`（9 个任务全部完成；执行口径见其 §10~§15 的六次执行前修订，偏差登记见 §7）
-- 阶段 10 详细计划：待阶段 9 交付后编写（Agent 工作流的假设依赖会话与 Memory 的实际产出）
+- 阶段 10 详细计划：`ST10-2026-10-28-10-web-ui.md`（Web 前端；Task 0 后端 3 端点 + Task 1~8 前端；执行口径见 §7.1 的 R1~R5，偏差登记见 §7）
+- 阶段 11：待写
+- 阶段 11 详细计划：待阶段 10 交付后编写（Agent 工作流的假设依赖会话、Memory 与界面的实际产出）
 
 ## 文档约定
 
@@ -79,6 +83,14 @@
 - 写法、结构、检查清单见 `docs/文档写作规范.md`。
 - **计划先行（硬规则）**：任何代码改动之前，先把「改哪些文件 / 为什么 / 怎么验收」写进对应阶段计划（在该计划末尾追加 `## 执行前修订` 一节）或在对话里确认方案，**再动手**。方案与计划原文冲突时以修订节为准，原文保留以便对照「为什么改主意」。
 
+## 技术债（收尾阶段统一处理，先记录不清理）
+
+> 用户 2026-10-28 决定：这些都不影响功能与演示，等所有阶段做完再一起处理，避免中途改动引发回归。
+
+| # | 技术债 | 现状（已审计） | 处理方式 |
+| --- | --- | --- | --- |
+| 1 | 兼容构造器梯度 | 5 个 record 共 **9 个**兼容构造器、**62 处**调用点；生产代码只占 4 处（`RouterService.java:269`、`RuleBasedRouter.java:58` 用 `QueryUnderstanding` 10 参；`ChatService.java:192`、`:344` 用 `ChatResponse` 10 参），其余 58 处都是测试夹具 | 全删 + `QueryUnderstanding` 加命名工厂 `singleTurn(type, query, codes, years, metrics, docType, degraded, route)`，调用点补 `null` / `List.of()`；改完跑全量测试 + `GoldenSetTest` |
+| 2 | `document_chunk` 旧版本无限增长 | 每重切一次 +758 行 / 约 +3.5 MB；document 7 现存 v1~v9 共 9 版，v1~v8 全部 SUPERSEDED，无保留策略 | 加保留策略（只留最近 N 版 + 归档表），或重切后异步清理 SUPERSEDED 行；注意 `memory_event` / 引用快照会引用旧 chunk id，清理前要先确认引用方 |
 ## 与设计文档的偏差登记
 
 实施过程中若发现设计文档的假设不成立，**不要偷偷改代码绕过**，登记在这里并回写设计文档：

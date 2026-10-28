@@ -14,8 +14,7 @@ public record ChatScope(ScopeKind kind, List<Long> documentIds, ScopeQuery query
 
     public ChatScope {
         kind = kind == null ? ScopeKind.CORPUS : kind;
-        documentIds = documentIds == null ? List.of()
-                : documentIds.stream().filter(Objects::nonNull).distinct().toList();
+        documentIds = documentIds == null ? List.of() : documentIds.stream().filter(Objects::nonNull).distinct().toList();
         query = query == null ? ScopeQuery.empty() : query;
     }
 

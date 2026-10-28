@@ -36,15 +36,33 @@ public class AuthenticationFilter extends OncePerRequestFilter {
     private static final String BEARER = "Bearer ";
 
     private final ApiTokenRepository tokens;
+    private final ApiSessionRepository sessions;
 
-    public AuthenticationFilter(ApiTokenRepository tokens) {
+    public AuthenticationFilter(ApiTokenRepository tokens, ApiSessionRepository sessions) {
         this.tokens = tokens;
+        this.sessions = sessions;
     }
 
-    /** /error 是容器内部转发：再拦一次会把 401 变成「401 的 401」。 */
+    /**
+     * 只保护 {@code /api/**}，其余一律放行。
+     *
+     * <p>两个理由：
+     * <ul>
+     *   <li><b>静态资源不拦</b>：阶段 10 把前端产物放进 {@code static/}，单端口部署。
+     *       若这里拦 {@code /}，浏览器拿到 401 就不会执行 JS，用户连登录框都看不到 ——
+     *       实测过，不是推测。静态文件本身不含业务数据，鉴权点在 API。</li>
+     *   <li><b>/error 不拦</b>：容器内部转发，再拦一次会把 401 变成「401 的 401」。</li>
+     *   <li><b>/api/auth/login 不拦</b>：登录本身没有 token 可带，拦了就没法登录。
+     *       只放这一个路径，登出（DELETE /api/auth/session）仍然要求已登录。</li>
+     * </ul>
+     */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().startsWith("/error");
+        String uri = request.getRequestURI();
+        if (!uri.startsWith("/api/")) {
+            return true;
+        }
+        return uri.equals("/api/auth/login");
     }
 
     @Override
@@ -56,7 +74,13 @@ public class AuthenticationFilter extends OncePerRequestFilter {
             return;
         }
         String token = header.substring(BEARER.length()).trim();
-        Optional<CurrentUser> user = tokens.findByTokenHash(ApiTokenRepository.sha256Hex(token));
+        String hash = ApiTokenRepository.sha256Hex(token);
+        // 两条路：预置 token（dev-analyst-token 这类，测试与老链接用）→ 登录签发的会话 token
+        Optional<CurrentUser> user = tokens.findByTokenHash(hash);
+        if (user.isEmpty()) {
+            user = sessions.findByTokenHash(hash);
+            user.ifPresent(u -> sessions.touch(hash));
+        }
         if (user.isEmpty()) {
             reject(response, "AUTH_INVALID", "token 无效或已停用");
             return;

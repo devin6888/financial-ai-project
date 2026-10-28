@@ -92,8 +92,7 @@ public class ChatService {
 
         // 会话：先做归属校验（不是自己的一律 404），再用会话配置兜底作用域。
         // 顺序不能反：先解析作用域的话，别人会话里的文档范围会被当成自己的授权来用。
-        Conversation conversation = request.conversationId() == null
-                ? null : conversations.requireOwned(request.conversationId());
+        Conversation conversation = request.conversationId() == null ? null : conversations.requireOwned(request.conversationId());
         ChatScope requestedScope = conversations.effectiveScope(request.scope(), conversation);
         ResolvedScope scope = scopeResolver.resolve(requestedScope);
         // 背景信息在「归属校验之后」装配：别人的会话连读都不该读

@@ -8,7 +8,7 @@
 - **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
 - 文档写作规范：`docs/文档写作规范.md`
 
-**当前进度：阶段 9（会话与记忆）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`。
+**当前进度：阶段 10（Web 前端）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`。
 
 ---
 
@@ -125,10 +125,10 @@ financial-ai-project/
 ├── docs/
 │   ├── 术语表.md                      # 所有缩写的解释（先读这份）
 │   ├── 文档写作规范.md                # 报告/计划怎么写才看得懂
-│   ├── 阶段1~8-*.md                   # 各阶段报告
+│   ├── 阶段1~10-*.md                  # 各阶段报告（阶段 10 另有一份前端验收清单）
 │   ├── 技术选型.md                    # 选了什么 / 没选什么 / 为什么 / 何时该改
 │   │                                  #   附录 A：为什么不用 ORM（MyBatis-Plus / JPA 实测对照）
-│   ├── 关键契约.md                    # C1~C11 跨阶段不变式（C11 = 认证/租户/可见性）
+│   ├── 关键契约.md                    # C1~C13 跨阶段不变式（C12 记忆 / C13 公司名→代码）
 │   ├── pgvector-工作机制.md           # 向量库机制与实测
 │   ├── PG文本索引-tsv与trgm.md        # 中文全文检索机制与实测
 │   ├── 权限与多租户-工作机制.md       # 认证 / 租户 / RLS / ACL 四层机制与实测
@@ -362,6 +362,96 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ETest
 
 机制与设计取舍见 `docs/阶段9-Memory与会话报告.md`，契约条款见 `docs/关键契约.md`（C12）。
 
+
+## 阶段 10：Web 前端（不再用 curl 才能问问题）
+
+阶段 1~9 的全部能力都只有 API。阶段 10 加了浏览器界面：**四页**（问答 / 文档 / 记忆 / 登录），技术栈 Vue 3 + TypeScript + Vite + Element Plus，产物直接输出到 `src/main/resources/static`，单端口即可使用。
+
+> 为什么自己写而不套后台模板：实测 `vue-pure-admin` 是 41,250 行 src、64 个运行时依赖，而我们要写的只有 4 页 + 1 个 API 客户端（约 3,100 行，含 24 个文件）。脚手架用官方的 `create-vue --bare`（23 个文件、0 业务代码），模板不用。实测数据与取舍见 `docs/阶段10-前端报告.md`。
+
+![问答页](docs/screenshots/chat-answer.png)
+
+> 界面是「纸墨·朱批」：暖米纸面 + 发丝线 + 宋体答案 + 朱砂只用于强调。三栏 = 68px 图标条 / 248px 会话栏 / 主区（正文 960px）/ 424px **浮层**证据面板（打开时盖在正文右侧，不挤压正文）（截图 1440×980，脚本 `target/ui-shots.js` 生成）。
+
+| 页面 | 地址 | 能做什么 |
+|---|---|---|
+| 概览 | `#/overview` | 4 个 KPI（可检索文档 / 活跃子块 / 我的会话 / 长期记忆）、语料状态、最近会话、长期记忆；数据来自 `GET /api/stats`，只统计当前账号可读的文档 |
+| 问答 | `#/chat`、`#/chat/{id}` | 提问、追问、引用卡片、数值表、诊断面板、作用域三模式、会话改名/删除 |
+| 文档 | `#/documents` | 上传 PDF（带进度）、看 PENDING/PARSING/DONE/FAILED、2 秒自动刷新 |
+| 记忆 | `#/memories` | 写/删长期偏好（同 key 自动升版本）、按类型筛选 |
+| 登录 | `#/login` | **用户名 + 密码登录**（默认账号已填好），也可切到 API token 方式粘贴脚本用的 token |
+
+> **前端是独立仓库**：`D:\Project\myproject\financial-ai-web`（与本仓库 `financial-ai-project` 平级）。2026-10-28 从本仓库的 `web/` 拆出——前端有自己的 `package.json` / 锁文件 / IDE 配置，独立仓库能单独 clone、单独发版，也不让 `node_modules` 混进后端的 `git status`。两边的连接只有一个：`financial-ai-web/vite.config.ts` 的 `build.outDir` 指回本仓库的 `src/main/resources/static`。
+
+### 默认账号
+
+登录页默认填好这个账号，点「进入工作台」即可（密码由 V11 迁移用 PostgreSQL `pgcrypto` 的 bcrypt 存哈希，登录成功才签发会话 token）：
+
+| 账号 | 密码 | 角色 | 能看到 |
+| --- | --- | --- | --- |
+| `demo` | `demo123456` | ADMIN + ANALYST | 本租户全部文档（两份东方财富年报）、记忆、会话 |
+
+改密码 = 改库：`UPDATE app_user SET password_hash = crypt('新密码', gen_salt('bf', 10)) WHERE username = 'demo';`。
+登录接口与撤销机制见 `docs/关键契约.md`（C14）；想对比权限差异时，登录页切到「API token」仍可用三个 `dev-*` 种子 token。
+
+### 两条跑法
+
+**A. 开发模式（前端热更新，改完立刻看到）**
+
+```powershell
+# 终端 1：后端
+. .\scripts\load-env.ps1
+mvn spring-boot:run
+
+# 终端 2：前端（Vite，5173；/api 自动代理到 8080）
+# 前端是独立仓库，与本仓库平级：D:\Project\myproject\financial-ai-web
+cd ..\financial-ai-web
+npm install        # 首次；走该仓库 .npmrc 里的 registry.npmmirror.com
+npm run dev
+```
+
+打开 <http://localhost:5173>。开发模式不需要给后端加 CORS：Vite 代理把 `/api` 转到 8080，浏览器眼里始终同源。
+
+**B. 单端口（一条命令打包，打开 8080 就能用）**
+
+```powershell
+.\scripts\build-ui.ps1      # npm ci（首次）+ npm run build，产物落到 src/main/resources/static
+. .\scripts\load-env.ps1
+mvn spring-boot:run          # 打开 http://localhost:8080
+```
+
+`mvn -B clean package` 产出的 jar 里已含 `BOOT-INF/classes/static/`，`java -jar` 一样可用。
+
+> 改了前端但只跑 `mvn package`（不 clean）时，`target/classes` 里会残留旧 hash 的 chunk —— `build-ui.ps1` 已经会先删掉 `target/classes/static`，手工打包时请用 `clean`。
+
+### 五分钟演示路线（面试用）
+
+1. 登录页直接用默认账号 `demo / demo123456` 登录 → 概览；先说清「这些数字来自真实可检索语料，不是写死的；换 outsider 账号会变成 0」。
+2. 问答页点示例问题「东方财富 2025 年营业总收入是多少？」→ 答案 + 数值表 + 证据 chip + 右侧面板（页码 / 章节 / 块 id）。
+3. 追问「那净利润呢？」→ 界面提示主语来自上文（`query_inferred_from_context`），不是模型猜的。
+4. 展开「诊断」→ 查询理解路由、Dense/Sparse 召回条数、精排状态、分项耗时（这是最难造假的部分）。
+5. 文档页看 PENDING→DONE 四态；记忆页写「回答先给结论」再问一句，观察它进背景信息、但不产生引用。
+
+| 概览 | 登录 |
+| --- | --- |
+| ![概览](docs/screenshots/overview.png) | ![登录](docs/screenshots/login.png) |
+
+设计与实测（三栏宽度、字体命中、去重、无溢出）见 `docs/阶段10-前端报告.md` §10。
+
+### 界面上三个值得注意的地方
+
+1. **引用是可点的**：答案里的 `[E1]` 是按钮，点它高亮下方对应证据卡（文档名 / 页码 / 章节 / 类型 / chunk id）。若模型没在正文标编号，卡片上方会明确写出「正文未标注编号」—— 界面**不替模型补标**，补标等于编造归因。
+2. **诊断面板**（默认折叠）暴露检索细节：查询理解路由、dense/sparse 召回条数、rerank 状态、各段耗时、记忆闸门是否命中。答案不对时先看这里。
+3. **作用域改完从下一轮生效**：后端 `request.scope` 优先，会话只在创建时存一份默认范围（见 C12）。界面上有这句提示。
+
+### 验证
+
+```powershell
+cd web
+npx vitest run        # 7 个前端单测（答案 tokenizer：引用/粗体/列表/未闭合/HTML 原文/空串）
+```
+
+界面的手工验收清单（10 条，含四类失败态与三种作用域）在 `docs/阶段10-前端验收清单.md`，每条都写了实测输出。
 
 ## 已知限制（阶段 1）
 

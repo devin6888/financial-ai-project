@@ -28,5 +28,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# 前端（阶段 10）：源码是独立仓库 financial-ai-web（与仓库平级），
+# 这里只需忽略它构建出来的产物 —— 直接落到 Spring Boot 静态目录，不入库（计划 ST10 §8 D7）
+src/main/resources/static/
+
 # 临时产物
 _tmp_*

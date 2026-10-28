@@ -104,6 +104,19 @@ public class ConversationController {
         return contextView(contexts.patch(conversation, body));
     }
 
+    /**
+     * 改会话标题。
+     *
+     * <p>注意与 {@code PATCH /api/conversations/{id}/context} 的区别：那条改的是
+     * 结构化上下文（公司/年份），这条改的是标题。两条都叫 PATCH，路径不同，别合并 ——
+     * 合并后「只想改名」的请求会顺带清掉上下文。
+     */
+    @PatchMapping("/api/conversations/{id}")
+    public ConversationView rename(@PathVariable("id") long id,
+                                   @RequestBody(required = false) RenameConversation body) {
+        return view(conversations.rename(id, body == null ? null : body.title()));
+    }
+
     /** 逻辑删除：status='DELETED'，消息与摘要保留（审计与回溯要用）。 */
     @DeleteMapping("/api/conversations/{id}")
     public ResponseEntity<Void> delete(@PathVariable("id") long id) {
@@ -118,6 +131,14 @@ public class ConversationController {
         body.put("error", "CONVERSATION_NOT_FOUND");
         body.put("message", "会话不存在或无权访问");
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Object> badRequest(IllegalArgumentException e) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", "BAD_REQUEST");
+        body.put("message", e.getMessage());
+        return ResponseEntity.badRequest().body(body);
     }
 
     @ExceptionHandler(UnauthorizedException.class)
@@ -150,6 +171,9 @@ public class ConversationController {
     }
 
     public record CreateConversation(String title, ChatScope scope) { }
+
+    /** 只接受标题；带别的字段会被忽略（Jackson 未开 FAIL_ON_UNKNOWN_PROPERTIES）。 */
+    public record RenameConversation(String title) { }
 
     public record ConversationView(long conversationId, String title, String status, ChatScope scope,
                                    OffsetDateTime createdAt, OffsetDateTime updatedAt) { }

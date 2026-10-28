@@ -127,6 +127,54 @@ class ConversationServiceTest {
     }
 
     @Test
+    @DisplayName("改名：标题立即生效，且不会被下一轮问题覆盖")
+    void renameUpdatesTitleAndSurvivesNextTurn() {
+        Conversation conversation = service.create(ConversationService.DEFAULT_TITLE, ChatScope.corpus());
+
+        Conversation renamed = service.rename(conversation.id(), "  东方财富 2025 年报  ");
+
+        assertThat(renamed.title()).isEqualTo("东方财富 2025 年报");
+        ChatResponse response = new ChatResponse(false, "证据不足", List.of(), List.of(), "LOW",
+                null, null, List.of(), null, null);
+        service.recordTurn(renamed, "随便问问", response, ResolvedScope.of(ScopeKind.CORPUS, List.of(),
+                ResolvedScope.REASON_SESSION, List.of()));
+
+        assertThat(service.requireOwned(conversation.id()).title()).isEqualTo("东方财富 2025 年报");
+    }
+
+    @Test
+    @DisplayName("改名超 60 字被截断（与新建会话同一口径）")
+    void renameTruncatesToSixty() {
+        Conversation conversation = service.create("test-conv-long", ChatScope.corpus());
+        String longTitle = "长".repeat(80);
+
+        Conversation renamed = service.rename(conversation.id(), longTitle);
+
+        assertThat(renamed.title()).hasSize(60);
+    }
+
+    @Test
+    @DisplayName("改名传空 → IllegalArgumentException（映射成 400）")
+    void renameRejectsBlankTitle() {
+        Conversation conversation = service.create("test-conv-blank", ChatScope.corpus());
+
+        assertThatThrownBy(() -> service.rename(conversation.id(), "   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("标题不能为空");
+    }
+
+    @Test
+    @DisplayName("改别人的会话 → 404")
+    void renameOtherUsersConversationIs404() {
+        TenantContext.set(ADMIN);
+        Conversation admins = service.create("test-conv-admin-rename", ChatScope.corpus());
+
+        TenantContext.set(ANALYST);
+        assertThatThrownBy(() -> service.rename(admins.id(), "抢改"))
+                .isInstanceOf(ConversationNotFoundException.class);
+    }
+
+    @Test
     @DisplayName("请求带 scope 用它，不带用会话配置")
     void effectiveScopePrefersRequest() {
         Conversation conversation = service.create("test-conv-scope", ChatScope.documents(List.of(7L)));

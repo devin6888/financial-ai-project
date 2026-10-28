@@ -7,6 +7,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -328,6 +329,50 @@ public class DocumentRepository {
                 rs.getLong("chunk_count")));
     }
 
+    /**
+     * 全部文档（含未解析完成、解析失败的），阶段 10 文档页用。
+     *
+     * <p>为什么不能复用 {@link #findSelectableDocuments()}：那个方法按「DONE + 有 ACTIVE
+     * 块版本」过滤，语义是「能检索的文档」。文档页要看的是「我传了哪些、卡在哪一步」——
+     * 用可检索列表会让 PENDING / PARSING / FAILED 的文档在界面上直接消失，用户既不知道
+     * 在等什么，也不知道该不该重传。
+     *
+     * <p>chunkCount 同样只数 CHILD 的 ACTIVE 行（理由见 findSelectableDocuments）。
+     * 未解析完成的文档 active_chunk_version 为 null，子查询自然得 0。
+     *
+     * <p>租户边界由 RLS 保证（V8 的 p_document_tenant），这里不写 tenant_id 条件 ——
+     * 写了会变成「应用层以为在隔离、实际另一条路径忘了写就漏」的两套口径。
+     */
+    public List<DocumentRow> listDocuments(int limit) {
+        int safe = limit <= 0 ? 50 : Math.min(limit, 200);
+        return jdbc.query("""
+                SELECT d.id, d.title, c.code AS company_code, c.name AS company_name,
+                       d.doc_year, d.doc_type, d.parse_status, d.pages_parsed, d.parse_error,
+                       d.active_chunk_version, d.created_at,
+                       (SELECT count(*) FROM document_chunk dc
+                         WHERE dc.document_id = d.id
+                           AND dc.chunk_level = 'CHILD'
+                           AND dc.status = 'ACTIVE'
+                           AND dc.chunk_version = d.active_chunk_version) AS chunk_count
+                  FROM document d
+                  LEFT JOIN company c ON c.id = d.company_id
+                 ORDER BY d.created_at DESC NULLS LAST, d.id DESC
+                 LIMIT ?
+                """, (rs, i) -> new DocumentRow(
+                rs.getLong("id"),
+                rs.getString("title"),
+                rs.getString("company_code"),
+                rs.getString("company_name"),
+                rs.getObject("doc_year", Integer.class),
+                rs.getString("doc_type"),
+                rs.getString("parse_status"),
+                rs.getObject("pages_parsed", Integer.class),
+                rs.getString("parse_error"),
+                rs.getObject("active_chunk_version", Integer.class),
+                rs.getLong("chunk_count"),
+                rs.getObject("created_at", OffsetDateTime.class)), safe);
+    }
+
     public List<DocStatus> findStatusByIds(List<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return List.of();
@@ -390,6 +435,19 @@ public class DocumentRepository {
     /** 异步解析入参：PDF 对象键、内容哈希、标题（阶段 7 worker 用）。 */
     public record ParseInput(long documentId, String objectKey, String contentHash,
                              String title) {
+    }
+
+    /**
+     * 文档列表行（GET /api/documents 用）。
+     *
+     * @param parseStatus PENDING / PARSING / DONE / FAILED —— 前端四态各有各的显示
+     * @param chunkCount  ACTIVE 版本的 CHILD 块数；未解析完成时为 0
+     */
+    public record DocumentRow(long id, String title, String companyCode, String companyName,
+                              Integer docYear, String docType, String parseStatus,
+                              Integer pagesParsed, String parseError,
+                              Integer activeChunkVersion, long chunkCount,
+                              OffsetDateTime createdAt) {
     }
 
     /** 单文档的状态详情投影（GET /api/documents/{id} 用）。 */

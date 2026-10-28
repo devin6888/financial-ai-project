@@ -83,6 +83,30 @@ public class ConversationService {
         repository.markDeleted(conversationId);
     }
 
+    /**
+     * 用户显式改名（阶段 10 前端要用；此前 renameTitle 只被 recordTurn 内部调用）。
+     *
+     * <p>为什么空标题返回 400 而不是回落成 {@link #DEFAULT_TITLE}：改名是显式动作，
+     * 静默改成「新会话」的表现是「保存了又好像没保存」，用户无从判断。新建会话才该回落。
+     *
+     * <p>截断规则与 {@link #create} 一致（60 字），避免同一个字段两条长度口径。
+     */
+    @Transactional
+    public Conversation rename(long conversationId, String title) {
+        requireOwned(conversationId);
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("标题不能为空");
+        }
+        String normalized = title.strip();
+        if (normalized.length() > TITLE_MAX) {
+            normalized = normalized.substring(0, TITLE_MAX);
+        }
+        repository.renameTitle(conversationId, normalized);
+        CurrentUser user = TenantContext.require();
+        return repository.findOwned(conversationId, user.tenantId(), user.userId())
+                .orElseThrow(() -> new ConversationNotFoundException(conversationId));
+    }
+
     /** 这一轮实际生效的作用域：请求给了就用请求的，否则用会话配置。 */
     public ChatScope effectiveScope(ChatScope requested, Conversation conversation) {
         if (requested != null) {

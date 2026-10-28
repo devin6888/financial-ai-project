@@ -17,13 +17,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 不启动 Spring：直接 new 出 Filter，用模拟请求验证四种分支。 */
+/** 不启动 Spring：直接 new 出 Filter，用模拟请求验证各个分支。 */
 class AuthenticationFilterTest {
 
     private final ApiTokenRepository tokens = mock(ApiTokenRepository.class);
-    private final AuthenticationFilter filter = new AuthenticationFilter(tokens);
+    private final ApiSessionRepository sessions = mock(ApiSessionRepository.class);
+    private final AuthenticationFilter filter = new AuthenticationFilter(tokens, sessions);
 
     @AfterEach
     void clear() {
@@ -45,6 +48,7 @@ class AuthenticationFilterTest {
     @Test
     void invalidTokenIs401() throws Exception {
         when(tokens.findByTokenHash(anyString())).thenReturn(Optional.empty());
+        when(sessions.findByTokenHash(anyString())).thenReturn(Optional.empty());
         MockHttpServletRequest request = Get("/api/chat");
         request.addHeader("Authorization", "Bearer garbage");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -71,6 +75,23 @@ class AuthenticationFilterTest {
 
         assertEquals("analyst", seen.get());
         assertNull(TenantContext.current(), "请求结束后必须清空，否则线程复用会串身份");
+        verify(sessions, never()).findByTokenHash(anyString());
+    }
+
+    @Test
+    void sessionTokenIsAcceptedWhenNoSeedTokenMatches() throws Exception {
+        CurrentUser demo = new CurrentUser(25L, 1L, "demo", "演示用户", Set.of("ADMIN", "ANALYST"));
+        String hash = ApiTokenRepository.sha256Hex("session-token");
+        when(tokens.findByTokenHash(hash)).thenReturn(Optional.empty());
+        when(sessions.findByTokenHash(hash)).thenReturn(Optional.of(demo));
+        MockHttpServletRequest request = Get("/api/me");
+        request.addHeader("Authorization", "Bearer session-token");
+        AtomicReference<String> seen = new AtomicReference<>();
+
+        filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(TenantContext.require().username()));
+
+        assertEquals("demo", seen.get());
+        verify(sessions).touch(hash);
     }
 
     @Test
@@ -85,6 +106,24 @@ class AuthenticationFilterTest {
         };
         assertThrows(IllegalStateException.class, () -> filter.doFilter(request, new MockHttpServletResponse(), boom));
         assertNull(TenantContext.current());
+    }
+
+    @Test
+    void onlyApiPathsAreFiltered() {
+        // 静态资源必须匿名可取：单端口部署时 index.html 拿不到就没人能看到登录框
+        assertTrue(filter.shouldNotFilter(Get("/")), "根路径是 index.html");
+        assertTrue(filter.shouldNotFilter(Get("/index.html")));
+        assertTrue(filter.shouldNotFilter(Get("/assets/index-abc.js")));
+        assertTrue(filter.shouldNotFilter(Get("/error")), "容器内部转发不能再拦");
+        assertTrue(!filter.shouldNotFilter(Get("/api/chat")), "API 必须受保护");
+        assertTrue(!filter.shouldNotFilter(Get("/api/documents/7")));
+    }
+
+    @Test
+    void loginIsPublicButLogoutIsNot() {
+        // 登录没有 token 可带；登出必须已登录，否则任何人都能撤销别人的会话
+        assertTrue(filter.shouldNotFilter(Get("/api/auth/login")));
+        assertTrue(!filter.shouldNotFilter(Get("/api/auth/session")));
     }
 
     private static MockHttpServletRequest Get(String uri) {
