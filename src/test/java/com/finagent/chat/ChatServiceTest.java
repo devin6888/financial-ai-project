@@ -77,7 +77,7 @@ class ChatServiceTest {
             return session == null ? null : session.scope();
         });
         memoryAssembler = mock(MemoryAssembler.class);
-        when(memoryAssembler.assemble(any())).thenReturn(MemoryContext.EMPTY);
+        when(memoryAssembler.assembleMemory(any())).thenReturn(MemoryContext.EMPTY);
         conversationContexts = mock(ConversationContextService.class);
         summarizer = mock(com.finagent.memory.ConversationSummarizer.class);
         longTermMemory = mock(com.finagent.memory.LongTermMemoryService.class);
@@ -93,7 +93,9 @@ class ChatServiceTest {
         when(scopeResolver.resolve(any())).thenReturn(scope());
         when(router.understand(anyString())).thenReturn(qu());
         when(router.understand(anyString(), any())).thenReturn(qu());
-        when(retriever.retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class)))
+        // 阶段 13 起 ChatService 走 4 参重载（带进度回调），这里连回调一起桩掉
+        when(retriever.retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class),
+                any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class)))
                 .thenReturn(new HybridRetriever.Result(List.of(), retrievalTrace()));
         when(contextBuilder.build(anyString(), any(QueryType.class), any(), any())).thenReturn(ContextPackage.empty());
         when(answerService.answer(anyString(), any(), any(), any())).thenReturn(answer());
@@ -165,7 +167,7 @@ class ChatServiceTest {
         assertThat(r.warnings()).contains("company_unresolved");
         assertThat(r.answer()).contains("000858");
         verify(retriever, org.mockito.Mockito.never())
-                .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class));
+                .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
     }
 
     @Test
@@ -181,7 +183,7 @@ class ChatServiceTest {
         assertThat(r.warnings()).doesNotContain("company_unresolved");
         // 检索拿到的公司代码必须是查库得到的那家：Sparse 精确模式靠 companyCodes 拼词
         ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
-        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
         assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059");
         assertThat(quCaptor.getValue().companyMentions()).containsExactly("东方财富");
     }
@@ -200,7 +202,7 @@ class ChatServiceTest {
         assertThat(r.warnings()).contains("company_unresolved");
         assertThat(r.answer()).contains("五粮液");
         verify(retriever, org.mockito.Mockito.never())
-                .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class));
+                .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
     }
 
     @Test
@@ -222,7 +224,7 @@ class ChatServiceTest {
 
         assertThat(r.warnings()).doesNotContain("company_unresolved");
         ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
-        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
         assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059", "300033");
     }
 
@@ -236,7 +238,7 @@ class ChatServiceTest {
         ChatResponse r = service.ask(new ChatRequest("2024年营业总收入是多少？", ChatScope.documents(38L), "ASK"));
 
         ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
-        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
         assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059");
         assertThat(r.warnings()).contains("company_from_scope");
     }
@@ -257,7 +259,7 @@ class ChatServiceTest {
         ChatResponse r = service.ask(new ChatRequest("2024年营业总收入是多少？", ChatScope.documents(38L), "ASK"));
 
         ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
-        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class), any(com.finagent.retrieval.RetrievalProgress.class));
         assertThat(quCaptor.getValue().companyCodes()).isEmpty();
         assertThat(r.warnings()).doesNotContain("company_from_scope");
     }
@@ -282,7 +284,7 @@ class ChatServiceTest {
         ChatResponse r = service.ask(new ChatRequest("2024年营业总收入", ChatScope.documents(38L), "ASK", 5L));
 
         verify(conversations).requireOwned(5L);
-        verify(memoryAssembler).assemble(session);
+        verify(memoryAssembler).assembleMemory(session);
         verify(conversationContexts).applyTurn(org.mockito.ArgumentMatchers.eq(session), any(), any());
         verify(conversations).recordTurn(org.mockito.ArgumentMatchers.eq(session),
                 org.mockito.ArgumentMatchers.eq("2024年营业总收入"), any(), any());
@@ -314,7 +316,7 @@ class ChatServiceTest {
 
         verify(conversations, org.mockito.Mockito.never()).requireOwned(any());
         verify(conversations, org.mockito.Mockito.never()).recordTurn(any(), anyString(), any(), any());
-        verify(memoryAssembler, org.mockito.Mockito.never()).assemble(any());
+        verify(memoryAssembler, org.mockito.Mockito.never()).assembleMemory(any());
         verify(conversationContexts, org.mockito.Mockito.never()).applyTurn(any(), any(), any());
     }
 
@@ -327,7 +329,7 @@ class ChatServiceTest {
         when(conversationContexts.find(5L)).thenReturn(java.util.Optional.of(
                 new com.finagent.memory.ConversationContext(5L, 1L, 2L, "300059", "东方财富",
                         2025, 2025, List.of(38L), "营业总收入", "{}", null)));
-        when(memoryAssembler.assemble(session)).thenReturn(new MemoryContext("背景", MemoryContext.Stats.EMPTY,
+        when(memoryAssembler.assembleMemory(session)).thenReturn(new MemoryContext("背景", MemoryContext.Stats.EMPTY,
                 List.of(new com.finagent.understanding.ContextTurn("东方财富2025年营业收入是多少", "1200 亿 [E1]"))));
 
         service.ask(new ChatRequest("那净利润呢？", null, "ASK", 5L));
@@ -357,7 +359,8 @@ class ChatServiceTest {
 
         verify(retriever).retrieve(org.mockito.ArgumentMatchers.argThat(
                         req -> "东方财富（300059） 2025年 那净利润呢".equals(req.query())),
-                any(QueryUnderstanding.class), any(ResolvedScope.class));
+                any(QueryUnderstanding.class), any(ResolvedScope.class),
+                any(com.finagent.retrieval.RetrievalProgress.class));
         assertThat(r.warnings()).contains("query_inferred_from_context");
         verify(answerService).answer(org.mockito.ArgumentMatchers.eq("那净利润呢"), any(), any(), any());
     }
@@ -454,6 +457,67 @@ class ChatServiceTest {
         ChatResponse response = service.ask(new ChatRequest("以后回答按什么格式", null, null, null));
 
         assertThat(response.warnings()).contains("instruction_overflow");
+    }
+
+    // ------------------------------------------------------------ 流式（阶段 12）
+
+    @Test
+    @DisplayName("流式：事件顺序 stage → meta → stage → delta* → final，final 与返回值同一份")
+    void streamsMetaDeltasThenFinal() {
+        when(contextBuilder.build(anyString(), any(QueryType.class), any(), any()))
+                .thenReturn(new ContextPackage("证据文本", List.of(block()), 100, List.of(), 1, 0));
+        when(answerService.answerStreaming(anyString(), any(), any(), any(), any()))
+                .thenAnswer(inv -> {
+                    @SuppressWarnings("unchecked")
+                    java.util.function.Consumer<String> onDelta = inv.getArgument(4);
+                    onDelta.accept("营业总收入 ");
+                    onDelta.accept("16,067,741,039.51 元 [E1]");
+                    return answer();
+                });
+        java.util.List<ChatStreamEvent> events = new java.util.ArrayList<>();
+
+        ChatResponse response = service.askStreaming(
+                new ChatRequest("2025年营业总收入", ChatScope.documents(7L), "ASK"), events::add);
+
+        // 阶段 13：understanding 在 prepare 之前，retrieving 在检索之前，generating 在 meta 之后。
+        // 这个用例的 retriever 是 mock、不触发进度回调，所以没有 reranking。
+        assertThat(events).extracting(ChatStreamEvent::event)
+                .containsExactly(ChatStreamEvent.STAGE, ChatStreamEvent.STAGE, ChatStreamEvent.META,
+                        ChatStreamEvent.STAGE, ChatStreamEvent.DELTA,
+                        ChatStreamEvent.DELTA, ChatStreamEvent.FINAL);
+        assertThat(events.get(6).data()).isSameAs(response);
+        assertThat(response.trace().traceId()).isEqualTo(((java.util.Map<?, ?>) events.get(2).data()).get("traceId"));
+    }
+
+    @Test
+    @DisplayName("流式：公司不在范围内时只有 stage(understanding) + final（没有证据可展示）")
+    void refusalSendsOnlyFinal() {
+        when(router.understand(anyString())).thenReturn(quWithMention("五粮液"));
+        java.util.List<ChatStreamEvent> events = new java.util.ArrayList<>();
+
+        ChatResponse response = service.askStreaming(
+                new ChatRequest("五粮液2024年营业收入", null, null, null), events::add);
+
+        assertThat(response.warnings()).contains("company_unresolved");
+        // 拒答发生在检索之前：understanding 已发，retrieving 还没来得及发，更不能有 generating
+        assertThat(events).extracting(ChatStreamEvent::event)
+                .containsExactly(ChatStreamEvent.STAGE, ChatStreamEvent.FINAL);
+        assertThat(events.get(0).data()).isEqualTo(java.util.Map.of(
+                "phase", ChatStreamEvent.PHASE_UNDERSTANDING, "label", "正在理解问题", "detail", java.util.Map.of()));
+        verify(answerService, org.mockito.Mockito.never())
+                .answerStreaming(anyString(), any(), any(), any(), any());
+    }
+
+    private static QueryUnderstanding quWithMention(String name) {
+        return new QueryUnderstanding(QueryType.EXACT_FACT, name + "2024年营业收入", List.of(), new int[]{2024, 2024},
+                List.of("营业收入"), false, false, null, false, "LLM", false, false, List.of(name));
+    }
+
+    private static com.finagent.context.ContextBlock block() {
+        return new com.finagent.context.ContextBlock(1, 7216L, 500L, 7L, "东方财富2025年年度报告",
+                "第二节 > 六、主要会计数据", "六、主要会计数据", "营业总收入 16,067,741,039.51",
+                7, 7, "TABLE", "主要会计数据", "元", null, null, 0.9, 10, 100,
+                com.finagent.context.ContextBlock.ROLE_HIT);
     }
 
     private static com.finagent.memory.LongTermMemory memory() {

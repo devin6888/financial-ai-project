@@ -282,6 +282,51 @@ public class ChunkRepository {
                             String docTitle) {
     }
 
+
+    /**
+     * 文档页「看切块」用的轻量列表：只给缩略文本，不把 700 token 的正文全传一遍。
+     *
+     * <p>排序规则对演示很关键：先是 Parent，再是它下面的 Child（按 chunk_index）。
+     * 前端因此可以直接按 parent_id 分组渲染，不需要二次排序。
+     */
+    public List<ChunkBrief> listActiveChunks(long documentId, int chunkVersion, int limit, int offset) {
+        int safeLimit = Math.max(1, Math.min(1000, limit));
+        int safeOffset = Math.max(0, offset);
+        return jdbc.query("""
+                SELECT dc.id, dc.parent_id, dc.chunk_level, dc.chunk_type, dc.section_path, dc.title,
+                       dc.page_start, dc.page_end, dc.token_count, dc.chunk_index,
+                       dc.bbox::text AS bbox_json,
+                       left(dc.content, 220) AS preview,
+                       length(dc.content) AS content_length
+                  FROM document_chunk dc
+                 WHERE dc.document_id = ? AND dc.chunk_version = ? AND dc.status = 'ACTIVE'
+                 ORDER BY CASE dc.chunk_level WHEN 'PARENT' THEN 0 ELSE 1 END,
+                          dc.parent_id NULLS FIRST, dc.chunk_index
+                 LIMIT ? OFFSET ?
+                """, (rs, n) -> new ChunkBrief(
+                        rs.getLong("id"),
+                        (Long) rs.getObject("parent_id"),
+                        rs.getString("chunk_level"),
+                        rs.getString("chunk_type"),
+                        rs.getString("section_path"),
+                        rs.getString("title"),
+                        (Integer) rs.getObject("page_start"),
+                        (Integer) rs.getObject("page_end"),
+                        rs.getInt("token_count"),
+                        rs.getInt("chunk_index"),
+                        rs.getString("bbox_json"),
+                        rs.getString("preview"),
+                        rs.getInt("content_length")),
+                documentId, chunkVersion, safeLimit, safeOffset);
+    }
+
+    /** 切块可视化的一行（不含完整正文）。 */
+    public record ChunkBrief(long id, Long parentId, String chunkLevel, String chunkType,
+                            String sectionPath, String title, Integer pageStart, Integer pageEnd,
+                            int tokenCount, int chunkIndex, String bboxJson, String preview,
+                            int contentLength) {
+    }
+
     /** 清理某个版本（测试与失败恢复用）。 */
     public int deleteVersion(long documentId, int chunkVersion) {
         return jdbc.update(

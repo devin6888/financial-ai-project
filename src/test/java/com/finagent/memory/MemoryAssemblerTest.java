@@ -35,7 +35,7 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
 
-        assertThat(assembler.assemble(null)).isEqualTo(MemoryContext.EMPTY);
+        assertThat(assembler.assembleMemory(null)).isEqualTo(MemoryContext.EMPTY);
         verify(shortTerm, never()).load(anyLong());
         verify(shortTerm, never()).load(anyLong(), anyLong());
     }
@@ -46,7 +46,7 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(false));
 
-        assertThat(assembler.assemble(conversation(1L))).isEqualTo(MemoryContext.EMPTY);
+        assertThat(assembler.assembleMemory(conversation(1L))).isEqualTo(MemoryContext.EMPTY);
         verify(shortTerm, never()).load(anyLong(), anyLong());
     }
 
@@ -61,7 +61,7 @@ class MemoryAssemblerTest {
                         null, "{}", "t", 6, OffsetDateTime.now())), 11, 2));
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
 
-        MemoryContext memory = assembler.assemble(conversation(7L));
+        MemoryContext memory = assembler.assembleMemory(conversation(7L));
 
         assertThat(memory.text()).contains("用户：第一个问题").contains("助手：第一个回答");
         assertThat(memory.stats().shortTermMessages()).isEqualTo(2);
@@ -76,7 +76,7 @@ class MemoryAssemblerTest {
         when(shortTerm.load(7L, 0L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
 
-        assertThat(assembler.assemble(conversation(7L))).isEqualTo(MemoryContext.EMPTY);
+        assertThat(assembler.assembleMemory(conversation(7L))).isEqualTo(MemoryContext.EMPTY);
     }
 
     @Test
@@ -88,7 +88,7 @@ class MemoryAssemblerTest {
         when(shortTerm.load(7L, 20L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
 
-        MemoryContext memory = assembler.assemble(conversation(7L));
+        MemoryContext memory = assembler.assembleMemory(conversation(7L));
 
         assertThat(memory.text()).contains("此前对话摘要").contains("1200 亿");
         assertThat(memory.stats().summaryChars()).isEqualTo("用户问过 2024 年营业收入，答 1200 亿。".length());
@@ -101,7 +101,7 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         when(shortTerm.load(7L, 0L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
-        MemoryContext base = assembler.assemble(conversation(7L));
+        MemoryContext base = assembler.assembleMemory(conversation(7L));
 
         MemoryAssembler.WithLongTerm merged = assembler.withLongTerm(base, List.of(
                 memory(LongTermMemory.TYPE_INSTRUCTION, "answer.style", "回答先给结论"),
@@ -121,7 +121,7 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         when(shortTerm.load(7L, 0L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
-        MemoryContext base = assembler.assemble(conversation(7L));
+        MemoryContext base = assembler.assembleMemory(conversation(7L));
         String longInstruction = "回答必须先给结论再给证据".repeat(60);
 
         MemoryAssembler.WithLongTerm merged = assembler.withLongTerm(base, List.of(
@@ -138,7 +138,7 @@ class MemoryAssemblerTest {
         when(shortTerm.load(7L, 0L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository,
                 renderer, props(true, 0.0001));
-        MemoryContext base = assembler.assemble(conversation(7L));
+        MemoryContext base = assembler.assembleMemory(conversation(7L));
 
         MemoryAssembler.WithLongTerm merged = assembler.withLongTerm(base, List.of(
                 memory(LongTermMemory.TYPE_INSTRUCTION, "answer.style", "回答先给结论"),
@@ -153,7 +153,7 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         when(shortTerm.load(7L, 0L)).thenReturn(ShortTermMemory.Window.EMPTY);
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
-        MemoryContext base = assembler.assemble(conversation(7L));
+        MemoryContext base = assembler.assembleMemory(conversation(7L));
 
         MemoryAssembler.WithLongTerm merged = assembler.withLongTerm(base, List.of());
 

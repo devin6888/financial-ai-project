@@ -10,7 +10,7 @@ import java.util.List;
  * 装配这一轮注入 Prompt 的背景信息。
  *
  * <p>阶段 9 分任务逐步填满四层（Task 3 短期 → Task 4 结构化 → Task 6 摘要 → Task 8 长期），
- * 但<b>入口只有这一个</b>：ChatService 只调 {@link #assemble(Conversation)}，以后加层不用
+ * 但<b>入口只有这一个</b>：ChatService 只调 {@link #assembleMemory(Conversation)}，以后加层不用
  * 再改编排代码。
  *
  * <p>两层之间不重叠是硬要求：短期窗口只取摘要指针<b>之后</b>的消息，
@@ -35,22 +35,29 @@ public class MemoryAssembler {
         this.props = props;
     }
 
-    public MemoryContext assemble(Conversation conversation) {
+    public MemoryContext assembleMemory(Conversation conversation) {
         if (conversation == null || !props.enabled()) {
             return MemoryContext.EMPTY;
         }
+        // 会话摘要
         ConversationSummary summary = summaryRepository.find(conversation.id()).orElse(null);
-        ShortTermMemory.Window window = shortTerm.load(conversation.id(),
-                ConversationSummarizer.untilOf(summary));
-        String structured = structured(conversation.id());
+        // 压缩会话摘要
         String summaryText = summaryText(summary);
-        MemorySections sections = new MemorySections(structured, summaryText, window.messages(),
-                List.of());
+
+        //短期会话，最近几轮的会话信息
+        ShortTermMemory.Window window = shortTerm.load(conversation.id(), ConversationSummarizer.untilOf(summary));
+
+        //会话的结构化信息
+        String structured = structured(conversation.id());
+
+        MemorySections sections = new MemorySections(structured, summaryText, window.messages(), List.of());
         if (sections.isBlank()) {
             return MemoryContext.EMPTY;
         }
-        String text = renderer.render(sections);
-        return new MemoryContext(text, new MemoryContext.Stats(
+
+        // 组装四层会话记忆的提示词
+        String memoryPrompt = renderer.render(sections);
+        return new MemoryContext(memoryPrompt, new MemoryContext.Stats(
                 window.messages().size(), window.dropped(),
                 summaryText == null ? 0 : summaryText.length(), 0, false), window.turns(), sections);
     }

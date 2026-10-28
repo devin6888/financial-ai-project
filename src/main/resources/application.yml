@@ -93,6 +93,13 @@ finagent:
     # trace 一行一条 JSON；置空则关闭落盘
     trace-file: logs/chat-trace.jsonl
 
+  # ---------- 流式问答（阶段 12，契约 C15） ----------
+  # timeout-ms 是「浏览器还在等」的兜底；ping-ms 必须小于常见网关 60 秒的空闲超时，
+  # 否则检索 + 生成之间没有事件的时间段会被中间层当成死连接掐掉。
+  stream:
+    timeout-ms: 180000
+    ping-ms: 15000
+
   # ---------- 上下文装配（§9.8 / §9.15，阶段 5） ----------
   # max-tokens 6000：qwen-plus 32k，证据占 6k 给答案与推理留足空间。
   # min-score-factor 0.6：§9.15 原文的阈值，Parent 内低于 0.6×最高分的块不送。

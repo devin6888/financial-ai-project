@@ -50,7 +50,10 @@ class ChatControllerTest {
         authorizer = mock(ScopeAuthorizer.class);
         // 默认「全都可读」，不关心 ACL 的用例就不用重复打桩
         when(authorizer.filterReadable(any())).thenAnswer(inv -> inv.getArgument(0));
-        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents, authorizer)).build();
+        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents, authorizer,
+                java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor(),
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(),
+                new StreamProperties(180_000L, 15_000L))).build();
     }
 
     @Test

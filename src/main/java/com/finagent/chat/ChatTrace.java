@@ -22,6 +22,8 @@ public record ChatTrace(
         int citationsDropped,
         long contextMs,
         long answerMs,
+        // QU（查询理解）耗时；阶段 13 起记录，0 表示未采集。
+        long quMs,
         List<String> warnings
 ) {
     public ChatTrace {
@@ -34,10 +36,19 @@ public record ChatTrace(
                      int contextTokens, int citationsEmitted, int citationsDropped, long contextMs,
                      long answerMs, List<String> warnings) {
         this(traceId, retrieval, scope, MemoryTrace.EMPTY, contextBlocks, contextTokens,
-                citationsEmitted, citationsDropped, contextMs, answerMs, warnings);
+                citationsEmitted, citationsDropped, contextMs, answerMs, 0, warnings);
     }
 
+    /** 兼容阶段 12 的 11 参调用点（那时还没有 QU 计时）。 */
+    public ChatTrace(String traceId, RetrievalTrace retrieval, ScopeTrace scope, MemoryTrace memory,
+                     int contextBlocks, int contextTokens, int citationsEmitted, int citationsDropped,
+                     long contextMs, long answerMs, List<String> warnings) {
+        this(traceId, retrieval, scope, memory, contextBlocks, contextTokens, citationsEmitted,
+                citationsDropped, contextMs, answerMs, 0, warnings);
+    }
+
+    /** 端到端总耗时：QU + 检索（含精排）+ 上下文装配 + 生成。 */
     public long totalMs() {
-        return (retrieval == null ? 0 : retrieval.totalMs()) + contextMs + answerMs;
+        return quMs + (retrieval == null ? 0 : retrieval.totalMs()) + contextMs + answerMs;
     }
 }

@@ -58,6 +58,39 @@ class AnswerServiceTest {
     }
 
     @Test
+    @DisplayName("正文里的跳号编号被重排成 1..n：模型写 [E2][E7]，citations 只有 2 条 → [E1][E2]")
+    void renumbersSkippedCitationMarkers() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"营业总收入 12,084,594,947.22 元 [E2]，净利润 3,000 万元 [E7]",
+                 "facts":[],"usedEvidence":["E2","E7"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("2024年营业总收入", qu(2024, 2024),
+                pkg(block(1, 101, 38, 47, "TABLE"), block(2, 102, 38, 48, "TABLE"),
+                        block(3, 103, 38, 49, "TABLE"), block(4, 104, 38, 50, "TABLE"),
+                        block(5, 105, 38, 51, "TABLE"), block(6, 106, 38, 52, "TABLE"),
+                        block(7, 107, 38, 53, "TABLE")));
+
+        assertThat(r.citations()).extracting(Citation::childChunkId).containsExactly(102L, 107L);
+        assertThat(r.answer()).contains("[E1]").contains("[E2]").doesNotContain("[E7]");
+    }
+
+    @Test
+    @DisplayName("越界编号在正文里被删掉，不留点不开的死链")
+    void dropsOutOfRangeMarker() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"营业总收入 12,084,594,947.22 元 [E1][E9]",
+                 "facts":[],"usedEvidence":["E1","E9"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("2024年营业总收入", qu(2024, 2024),
+                pkg(block(1, 101, 38, 47, "TABLE")));
+
+        assertThat(r.citations()).hasSize(1);
+        assertThat(r.answer()).contains("[E1]").doesNotContain("E9");
+    }
+
+    @Test
     @DisplayName("sufficient=false → 直接返回，不做 facts 校验、不带引用")
     void insufficientAnswer() {
         when(generator.complete(anyString(), anyString())).thenReturn("""

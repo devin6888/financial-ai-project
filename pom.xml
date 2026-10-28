@@ -85,6 +85,14 @@
       <artifactId>spring-boot-kafka</artifactId>
     </dependency>
 
+    <!-- PDF 单页渲染（阶段 12：点引用看原文页图）。3.0.5 是 3.0.x 线当前版本；
+         Spring Boot BOM 不托管 pdfbox，必须显式写版本。 -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.5</version>
+    </dependency>
+
     <!-- 腾讯云 COS 对象存储（设计文档 §14：经 ObjectStorage 抽象访问，便于替换） -->
     <dependency>
       <groupId>com.qcloud</groupId>

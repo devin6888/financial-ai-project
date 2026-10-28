@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * 答案生成：一次 LLM 调用 + 三层后端校验。
@@ -70,12 +71,63 @@ public class AnswerService {
             dto = parser.parse(raw);
         } catch (RuntimeException e) {
             log.warn("答案生成失败，降级为 error：{}", e.getMessage());
-            return new AnswerResult(false,
-                    "答案生成失败：模型输出无法解析。请重试，或缩小问题范围。",
-                    List.of(), List.of(), AnswerResult.CONFIDENCE_ERROR, null,
-                    List.of(AnswerResult.WARNING_GENERATION_FAILED), 0);
+            return generationFailed();
+        }
+        return evaluate(dto, qu, pkg);
+    }
+
+    /**
+     * 流式答案：与 {@link #answer} <b>同一次调用、同一份 JSON</b>，只把 answer 字段边生成边推给前端。
+     *
+     * <p>三条不变量（都有单测）：
+     * <ol>
+     *   <li>delta 按顺序拼接 === 最终 answer 字段的值（提取器不做改写，只解码转义）；</li>
+     *   <li>中间不校验、不下结论：引用越界 / 数字落空都在流结束后由 {@link #evaluate} 统一处理，
+     *       前端收到 final 事件必须用最终结果替换已渲染文本；</li>
+     *   <li>证据包为空时<b>不调模型</b>，与 {@link #answer} 的拒答路径完全一致。</li>
+     * </ol>
+     *
+     * @param onDelta 增量回调，可能被调用 0 次（模型只给 note、或输出被截断）
+     */
+    public AnswerResult answerStreaming(String question, QueryUnderstanding qu, ContextPackage pkg,
+                                        MemoryContext memory, Consumer<String> onDelta) {
+        if (pkg == null || pkg.isEmpty()) {
+            log.debug("证据包为空，拒答（不调模型）：question={}", question);
+            return AnswerResult.refuse(AnswerResult.WARNING_NO_EVIDENCE,
+                    "在所选范围内没有找到相关证据，无法回答该问题。可以放宽研究范围后重试。");
         }
 
+        AnswerFieldExtractor extractor = new AnswerFieldExtractor();
+        StringBuilder raw = new StringBuilder();
+        AnswerDto dto;
+        try {
+            generator.stream(AnswerPrompts.SYSTEM,
+                    AnswerPrompts.user(question, pkg, memory == null ? null : memory.text()),
+                    chunk -> {
+                        raw.append(chunk);
+                        String delta = extractor.feed(chunk);
+                        if (!delta.isEmpty()) {
+                            onDelta.accept(delta);
+                        }
+                    });
+            dto = parser.parse(raw.toString());
+        } catch (RuntimeException e) {
+            log.warn("流式答案生成失败，降级为 error：{}", e.getMessage());
+            return generationFailed();
+        }
+        return evaluate(dto, qu, pkg);
+    }
+
+    /** 生成失败的统一降级：绝不退回「无引用的自由文本」。 */
+    private static AnswerResult generationFailed() {
+        return new AnswerResult(false,
+                "答案生成失败：模型输出无法解析。请重试，或缩小问题范围。",
+                List.of(), List.of(), AnswerResult.CONFIDENCE_ERROR, null,
+                List.of(AnswerResult.WARNING_GENERATION_FAILED), 0);
+    }
+
+    /** 拿到结构化答案之后的四层校验（流式与非流式共用这一个实现，行为不可能分叉）。 */
+    private AnswerResult evaluate(AnswerDto dto, QueryUnderstanding qu, ContextPackage pkg) {
         List<String> warnings = new ArrayList<>();
         if (!dto.sufficient()) {
             // 模型自己说「答不了」时，也必须给用户一句能读的话 + 一个机器可读的原因。
@@ -104,6 +156,11 @@ public class AnswerService {
                 citationValidator.validate(parseEvidence(dto.usedEvidence()), pkg.blocks());
         warnings.addAll(citations.warnings());
 
+        // 把正文里的原始编号（可能跳号，如 [E2][E7][E11]）重排成 1..n，
+        // 让「正文角标 = citations 下标 + 1」这条契约（C7）真正成立。
+        // 不重排的话，前端点 [E7] 会去找第 7 条引用 —— 数组只有 4 条，点了没反应。
+        String answerText = renumberCitations(dto.answer(), parseEvidence(dto.usedEvidence()), pkg.blocks().size());
+
         String confidence = normalizeConfidence(dto.confidence());
         confidence = lower(confidence, guarded.confidenceCap());
         if (!citations.dropped().isEmpty()) {
@@ -120,7 +177,7 @@ public class AnswerService {
         // 2026-10-22 评测抓到 —— 问「2024年员工总数」，模型答「5,560 人」并给了引用，
         // 但库里 0 个 chunk 含 5,560 / 1,226 / 4,334：引用是真的，数字是编的。
         // 引用校验管不了这件事（编号合法），只有拿数字回查正文才能发现。
-        Grounding grounding = ground(dto.answer(), guarded.facts(), citations.citations(), pkg.blocks());
+        Grounding grounding = ground(answerText, guarded.facts(), citations.citations(), pkg.blocks());
         warnings.addAll(grounding.warnings());
         confidence = lower(confidence, grounding.confidenceCap());
         if (grounding.allUngrounded()) {
@@ -138,13 +195,50 @@ public class AnswerService {
                 .toList();
 
         return new AnswerResult(true,
-                dto.answer() == null ? "" : dto.answer(),
+                answerText == null ? "" : answerText,
                 outFacts,
                 citations.citations(),
                 confidence,
                 mergeNote(dto.note(), guarded.note()),
                 List.copyOf(warnings),
                 citations.dropped().size());
+    }
+
+    // ------------------------------------------------------------ 引用编号重排
+
+    private static final java.util.regex.Pattern CITE_MARK = java.util.regex.Pattern.compile("\\[E(\\d+)]");
+
+    /**
+     * 正文编号 → 连续编号。
+     *
+     * <p>模型引用的是「提示词里的证据号」（E1..E20），而我们只把用到的证据收进 citations，
+     * 顺序是首次出现顺序。例如模型写 [E2][E7] 而 citations 只有 2 条时，
+     * 必须改写成 [E1][E2]，否则前端点角标找不到对应证据。
+     *
+     * <p>被剔除的编号（越界 / 编造）在正文里直接删掉：留着等于给用户一个点不开的死链。
+     */
+    static String renumberCitations(String answer, List<Integer> emitted, int blockCount) {
+        if (answer == null || answer.isEmpty()) {
+            return answer;
+        }
+        List<Integer> order = new ArrayList<>();
+        if (emitted != null) {
+            for (Integer no : emitted) {
+                if (no != null && no >= 1 && no <= blockCount && !order.contains(no)) {
+                    order.add(no);
+                }
+            }
+        }
+        java.util.regex.Matcher m = CITE_MARK.matcher(answer);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            int old = Integer.parseInt(m.group(1));
+            int index = order.indexOf(old);
+            String replacement = index >= 0 ? "[E" + (index + 1) + "]" : "";
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     // ------------------------------------------------------------ 数字落地校验

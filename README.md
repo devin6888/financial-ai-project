@@ -8,7 +8,7 @@
 - **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
 - 文档写作规范：`docs/文档写作规范.md`
 
-**当前进度：阶段 10（Web 前端）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`。
+**当前进度：阶段 13（首屏反馈：状态行 / 证据先行）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`、阶段 12 `docs/阶段12-体验补强报告.md`、阶段 13 `docs/阶段13-首屏时延报告.md`。
 
 ---
 
@@ -125,10 +125,10 @@ financial-ai-project/
 ├── docs/
 │   ├── 术语表.md                      # 所有缩写的解释（先读这份）
 │   ├── 文档写作规范.md                # 报告/计划怎么写才看得懂
-│   ├── 阶段1~10-*.md                  # 各阶段报告（阶段 10 另有一份前端验收清单）
+│   ├── 阶段1~13-*.md                  # 各阶段报告（阶段 10 另有一份前端验收清单）
 │   ├── 技术选型.md                    # 选了什么 / 没选什么 / 为什么 / 何时该改
 │   │                                  #   附录 A：为什么不用 ORM（MyBatis-Plus / JPA 实测对照）
-│   ├── 关键契约.md                    # C1~C13 跨阶段不变式（C12 记忆 / C13 公司名→代码）
+│   ├── 关键契约.md                    # C1~C16 跨阶段不变式（C12 记忆 / C13 公司名→代码 / C14 登录 / C15 流式 / C16 首屏）
 │   ├── pgvector-工作机制.md           # 向量库机制与实测
 │   ├── PG文本索引-tsv与trgm.md        # 中文全文检索机制与实测
 │   ├── 权限与多租户-工作机制.md       # 认证 / 租户 / RLS / ACL 四层机制与实测
@@ -447,11 +447,72 @@ mvn spring-boot:run          # 打开 http://localhost:8080
 ### 验证
 
 ```powershell
-cd web
-npx vitest run        # 7 个前端单测（答案 tokenizer：引用/粗体/列表/未闭合/HTML 原文/空串）
+cd ..\financial-ai-web   # 前端独立仓库
+npx vitest run           # 16 个前端单测（答案 tokenizer 7 + SSE 解析 9）
 ```
 
 界面的手工验收清单（10 条，含四类失败态与三种作用域）在 `docs/阶段10-前端验收清单.md`，每条都写了实测输出。
+
+## 阶段 12：体验补强（流式 / 引用点开原文 / 切块可视）
+
+阶段 10 让界面「能用」，阶段 12 让它「敢拿去演示」。触发点是 `docs/竞品对比与技术债.md` 的结论：与 RAGFlow / FastGPT 的差距集中在三项**用户看得见**的能力上 —— 回答是憋 8 秒一次蹦出来的、引用给了页码但点不开、切块只有数据库里的行。
+
+| 加的什么 | 以前 | 现在 |
+|---|---|---|
+| 流式输出 | 等 7~11 秒，屏幕静止，后面整段出现 | 首字 **7.87 秒**、逐字到达（实测 60 个 delta），结束用 `final` 整条替换 |
+| 引用点开原文 | 只有「第 66 页」这行字 | 点 `[E1]` → 后端把第 66 页渲成 PNG（1240×1754），朱砂框落在该块真实位置 |
+| 切块可视 | 只有 `chunk_index` / `token_count` | 文档页「看切块」抽屉：104 个父块 / 630 个子块，选中即看正文 + 原文位置 |
+
+![原文高亮](docs/screenshots/page-highlight.png)
+
+![切块抽屉](docs/screenshots/chunk-browser.png)
+
+### 流式接口
+
+```powershell
+$body = '{"question":"东方财富2025年营业总收入是多少"}'
+curl.exe -N -X POST http://localhost:8080/api/chat/stream `
+  -H "Authorization: Bearer dev-analyst-token" `
+  -H "Content-Type: application/json" --data $body
+```
+
+| 事件 | 什么时候发 | 里面有什么 |
+|---|---|---|
+| `meta` | 检索完、模型开始生成前 | traceId、作用域、证据清单（编号 / 块 id / 页码 / 章节 / 类型）、上下文 token 数 |
+| `delta` | 模型每吐一段 | `{text}`；**这里的编号是临时编号**，会被 `final` 重排 |
+| `final` | 四层校验全部完成 | 与 `POST /api/chat` 逐字段相同的完整响应（引用 / 置信度 / 警告 / 诊断 / messageId） |
+| `error` | 任一阶段失败 | `{code, message}` |
+| `: ping` | 每 15 秒 | 注释行，防中间层空闲断流 |
+
+> 前端只用两件事：`delta` 让字动起来，`final` 覆盖真相。流式不可用（404 / 断流 / 5xx）时自动回落一次到 `POST /api/chat`；`409 SCOPE_EMPTY` 与 `401` 是业务结论，不回落。
+
+### 两个新端点
+
+| 端点 | 作用 | 规则 |
+|---|---|---|
+| `GET /api/documents/{id}/pages/{page}?dpi=150` | 渲出 PDF 某页的 PNG | 先过 ACL；不可读 / 越界 / 无对象键 **全部同一个 404**（403 等于确认存在）；dpi 夹紧 72~300；进程内 LRU 48 页 |
+| `GET /api/documents/{id}/chunks?limit=800&offset=0` | 当前 ACTIVE 版本的切块扁平列表 | Parent 在前、Child 紧随；只带 220 字缩略；不可读返回空数组 |
+
+### 演示时怎么讲这三项
+
+1. **流式**：「你现在看到的字是模型一个字一个字吐的，不是我编好的动画」—— 顺手点开诊断，指出首字 7.9 秒里 QU 和精排各占多少。
+2. **原文**：「截图谁都会放，这份 PDF 是从私有 COS 桶里按需渲的，框的位置来自切块时存下的归一化 bbox，不是人工标的」。
+3. **切块**：「104 个父块是章节分组，630 个子块才是真正被检索的单位；你点任意一个子块，我都能告诉你它来自哪一页哪一段」。
+
+### 一个计划外的必要修复：引用编号重排
+
+模型会给 `[E2][E7][E11][E13]`，而 `citations` 只收「用到的」4 条 —— 编号对不上，角标就点不开。现在 `AnswerService` 在引用校验之后统一重排成 `[E1..En]`，越界编号直接从正文删掉。不变量写在契约 C15：**正文里出现的最大编号 ≤ `citations.size()`**。
+
+实测数据、六个踩坑与 7 条限制见 `docs/阶段12-体验补强报告.md`；契约条款见 `docs/关键契约.md`（C15）。
+
+### 验证
+
+```powershell
+. .\scripts\load-env.ps1
+mvn -B test                                    # 560 通过 / 1 跳过（需要解析服务的那条）
+mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ChatStreamE2ETest"   # 流式 e2e，约 30 秒
+cd ..\financial-ai-web; npx vitest run         # 16 个前端单测
+```
 
 ## 已知限制（阶段 1）
 
@@ -492,3 +553,64 @@ Spring AI 2.0 改用官方 OpenAI Java SDK，该 SDK 的 `base-url` 需**包含*
 
 ⚠️ 这个 404 **不会提示缺少 `/v1`**，很容易误判成模型名写错或 Key 无效。
 （这是从 Spring AI 1.0 升级到 2.0 的破坏性变更：1.0 的 base-url 不含 `/v1`。）
+
+## 阶段 13：首屏反馈（状态行 + 证据先行）
+
+阶段 12 解决了「有字在动」，但没解决「**什么时候**有东西动」：第一个 `delta` 实测 7.87 秒才到，前面这 7.87 秒屏幕上只有一个静态骨架屏。阶段 13 补的不是速度，是**感知** —— 同样的 12 秒总耗时，现在 0.06 秒就有反应。
+
+| 时刻 | 用户看到 | 系统在做 |
+|---|---|---|
+| 0.06 s | 四个点第一个亮起「正在理解问题 · 已用 0.1s」 | Query Understanding（规则命中或调模型解析公司/年份/指标） |
+| 3.5 s | 「正在检索证据」 | Dense + Sparse 双路召回、RRF 融合 |
+| 4.3 s | 「正在精排证据」 | qwen3-rerank 对候选重排 |
+| 4.9 s | **证据条出现**（E1 表格 · 第 66 页 …），答案区仍是骨架 | 上下文装配完成，`meta` 已发 |
+| 5.5 s | 首字出现，逐字生长 | 模型生成第一个 token |
+| 12.5 s | 状态行消失、证据条按 `citations` 重绘 | 四层校验完成，`final` |
+
+### 四个阶段事件
+
+```
+stage(understanding) → stage(retrieving) → stage(reranking) → meta → stage(generating) → delta* → final
+```
+
+| phase | 谁发 | 带什么 |
+|---|---|---|
+| `understanding` | `ChatService.askStreaming` 第一行 | 无 |
+| `retrieving` | 作用域解析完、检索前 | `{documents:N}` |
+| `reranking` | `HybridRetriever` 融合后、调精排前（无候选则不出现） | `{candidates:N}` |
+| `generating` | `meta` 之后、调模型前 | `{evidence:N, contextTokens:N}` |
+
+三条最容易被做错的规矩（完整五条见契约 C16）：
+
+1. **stage 只说「正在做什么」**：不带答案文本、证据正文、页码、chunk id。带了就等于把结果从流里提前漏出去。
+2. **必须真实进入该段才发**：禁止定时器补发、禁止前端按时间伪造。假进度条在演示时被追问「现在到哪一步」就崩。
+3. **发过 stage 就必须有终止事件**：`meta` / `final` / `error` 至少一个，不允许停在「正在精排」。
+
+### 实测（2026-10-28，热路径）
+
+| 指标 | 阶段 12 | 阶段 13 | 目标 |
+|---|---|---|---|
+| 首屏有反应 | 7,870 ms（首字） | **16~19 ms**（Java e2e 两次）/ **59 ms**（真浏览器） | ≤ 300 ms |
+| 证据可见 | 无（只有骨架） | **4,288~4,904 ms** | ≤ 5,000 ms |
+| 首字 | 7,870 ms | **5,275~6,250 ms** | ≤ 8,000 ms |
+| 总耗时 | 10,994 ms | 11,377~12,862 ms | 观察值 |
+
+![证据先行](docs/screenshots/stage-evidence-first.png)
+
+### 前端怎么实现的
+
+- `StageLine.vue`：四个点 + 后端 `label` + `已用 x.xs`（本地 200 ms 计时，`clearInterval` 在组件卸载时执行）。**阶段名不自己编**，直接用后端文案，避免两边说法分叉。
+- `EvidenceStrip.vue`：单行证据条，超出 4 条折叠成 `+N`。生成中不可点（数据来自 `meta.evidence` 候选全集），`final` 后按 `citations` 重绘并可点。
+- `ChatView.vue`：发消息时先把阶段设为 `understanding`（它永远是第一段），所以后端第一帧到达前也不会空白；`final` 时清掉状态行、记下首屏时延。
+- 滚动策略：只有用户本来就在底部 40 px 内才跟随滚动，否则往上翻正文时不会被拽回底部。
+
+### 验证
+
+```powershell
+. .\scripts\load-env.ps1
+mvn -B test                                    # 568 通过 / 1 跳过
+mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ChatStreamE2ETest"   # 断言 firstStage ≤ 300ms，约 56 秒
+cd ..\financial-ai-web; npx vitest run         # 17 个前端单测
+```
+
+观测值落盘在 `target/stream-timing.json`；完整分析见 `docs/阶段13-首屏时延报告.md`，契约条款见 `docs/关键契约.md`（C16）。

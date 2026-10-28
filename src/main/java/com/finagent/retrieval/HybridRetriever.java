@@ -55,7 +55,7 @@ public class HybridRetriever {
     /** 正常入口：自己做 Query Understanding，不限制作用域（全库）。 */
     public Result retrieve(RetrievalRequest req) {
         List<String> warnings = new ArrayList<>();
-        return doRetrieve(req, understand(req.query(), warnings), null, warnings);
+        return doRetrieve(req, understand(req.query(), warnings), null, warnings, RetrievalProgress.NONE);
     }
 
     /**
@@ -67,7 +67,7 @@ public class HybridRetriever {
      */
     public Result retrieveInScope(RetrievalRequest req, ResolvedScope scope) {
         List<String> warnings = new ArrayList<>();
-        return doRetrieve(req, understand(req.query(), warnings), scope, warnings);
+        return doRetrieve(req, understand(req.query(), warnings), scope, warnings, RetrievalProgress.NONE);
     }
 
     /**
@@ -87,14 +87,28 @@ public class HybridRetriever {
      *              但显式传进来能让 trace 记下「本轮是全库模式」
      */
     public Result retrieve(RetrievalRequest req, QueryUnderstanding qu, ResolvedScope scope) {
+        return retrieve(req, qu, scope, RetrievalProgress.NONE);
+    }
+
+    /**
+     * 带进度回调的入口（阶段 13，契约 C16）。
+     *
+     * <p>流式请求靠它知道「什么时候开始精排」—— 精排是一次外部 HTTP 调用，
+     * 是用户等待感最强的一段；没有这个回调，后端只能笼统说一句「检索中」。
+     *
+     * @param progress 传 {@code null} 等价于 {@link RetrievalProgress#NONE}
+     */
+    public Result retrieve(RetrievalRequest req, QueryUnderstanding qu, ResolvedScope scope,
+                           RetrievalProgress progress) {
         List<String> warnings = new ArrayList<>();
-        return doRetrieve(req, qu == null ? QueryUnderstanding.none(req.query()) : qu, scope, warnings);
+        return doRetrieve(req, qu == null ? QueryUnderstanding.none(req.query()) : qu, scope, warnings,
+                progress == null ? RetrievalProgress.NONE : progress);
     }
 
     // ---------------------------------------------------------------- 编排
 
     private Result doRetrieve(RetrievalRequest req, QueryUnderstanding qu, ResolvedScope scope,
-                              List<String> warnings) {
+                              List<String> warnings, RetrievalProgress progress) {
         RetrievalFilters base = applyScope(req.filters(), scope, warnings);
         EffectiveFilters eff = mergeFilters(base, qu, scope, warnings);
         SparseQuery sq = sparseQuery(qu);
@@ -103,10 +117,12 @@ public class HybridRetriever {
         long sparseMs = 0;
 
         long t = System.currentTimeMillis();
+        progress.onPhase("dense", 0);
         List<RetrievedChunk> denseHits = dense.retrieve(req.query(), eff.filters(), req.topDense());
         denseMs += System.currentTimeMillis() - t;
 
         t = System.currentTimeMillis();
+        progress.onPhase("sparse", 0);
         List<RetrievedChunk> sparseHits = sparse.retrieve(req.query(), sq.terms(), sq.mode(),
                 eff.filters(), req.topSparse());
         if (sparseHits.isEmpty() && sq.mode() == SparseMode.EXACT) {
@@ -147,6 +163,7 @@ public class HybridRetriever {
         }
 
         // 路内去重：同一 chunk 被两路都召回时合并成一条，两路名次都保留 —— RRF 要的就是两个名次。
+        progress.onPhase("fuse", denseHits.size() + sparseHits.size());
         t = System.currentTimeMillis();
         Map<Long, RetrievedChunk> merged = new LinkedHashMap<>();
         for (RetrievedChunk c : denseHits) {
@@ -185,6 +202,8 @@ public class HybridRetriever {
             warnings.add("no_candidates");
             result = List.of();
         } else {
+            // 只在「真的有候选要精排」时才报这个阶段：没有候选却显示「正在精排」是骗人
+            progress.onPhase(RetrievalProgress.PHASE_RERANK, candidates.size());
             try {
                 List<String> texts = candidates.stream().map(HybridRetriever::rerankText).toList();
                 List<RerankResult> rr = rerank.rerank(req.query(), texts, req.topRerank());

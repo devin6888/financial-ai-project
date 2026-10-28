@@ -16,7 +16,9 @@ import com.finagent.memory.MemoryAssembler;
 import com.finagent.memory.MemoryContext;
 import com.finagent.memory.MemoryGate;
 import com.finagent.retrieval.HybridRetriever;
+import com.finagent.retrieval.RetrievalProgress;
 import com.finagent.retrieval.RetrievalRequest;
+import com.finagent.retrieval.RetrievalTrace;
 import com.finagent.scope.ChatScope;
 import com.finagent.scope.DocMeta;
 import com.finagent.scope.ResolvedScope;
@@ -33,6 +35,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -40,6 +43,12 @@ import java.util.UUID;
  *
  * <p>顺序不能换：作用域必须在 QU 之前解析（QU 的 company/year 要与作用域核对，
  * 越界的推断不能把范围撑大）；上下文必须在答案之前装配（答案只认 [E1..En] 编号）。
+ *
+ * <p>2026-10-28（阶段 12）为流式输出拆成三段：
+ * {@link #prepare} 准备（检索 + 上下文，流式时先发 meta 事件）、
+ * {@link #compose} 收口（期间标注 + 结构化上下文 + trace + 响应对象）、
+ * 两个入口 {@link #ask} / {@link #askStreaming}。
+ * <b>流式与非流式共用 prepare 与 compose</b>，所以两条路径的警告、trace、落库行为不可能分叉。
  */
 @Service
 public class ChatService {
@@ -84,7 +93,81 @@ public class ChatService {
         this.memoryRecaller = memoryRecaller;
     }
 
+    // ------------------------------------------------------------ 两个入口
+
+    /** 非流式入口（阶段 5 起一直用它，也是评测与 e2e 的基准路径）。 */
     public ChatResponse ask(ChatRequest request) {
+        Prepared p = prepare(request);
+        if (p.refusal() != null) {
+            return finishTurn(p.conversation(), p.question(), p.refusal(), p.scope());
+        }
+        long answerStart = System.currentTimeMillis();
+        AnswerResult answer = answerService.answer(p.question(), p.qu(), p.pkg(), p.memory());
+        long answerMs = System.currentTimeMillis() - answerStart;
+        return finishTurn(p.conversation(), p.question(), compose(p, answer, answerMs), p.scope());
+    }
+
+    /**
+     * 流式入口：与 {@link #ask} 完全相同的准备与收口，只把「答案生成」这一段换成增量回调。
+     *
+     * <p>事件顺序（契约 C15）：meta → delta* → final；拒答时只有 final（没有证据可展示）。
+     * 生成异常不在这里吞：那由 controller 转成 error 事件；而「证据不足」是
+     * {@link AnswerService} 的正常业务结果，会照常走到 final。
+     */
+    public ChatResponse askStreaming(ChatRequest request, ChatStreamSink sink) {
+        // 第一件事不是准备，而是告诉前端「我收到了」。这一行让首屏反馈从 7.9 秒降到百毫秒级（契约 C16）。
+        // 此时连 prepare 都还没进 —— 参数校验、会话归属、作用域解析都还没做，所以文案只能是「正在理解问题」。
+        // 回复1
+        sink.send(ChatStreamEvent.stage(ChatStreamEvent.PHASE_UNDERSTANDING, "正在理解问题", Map.of()));
+
+        Prepared p = prepare(request, sink);
+        if (p.refusal() != null) {
+            ChatResponse response = finishTurn(p.conversation(), p.question(), p.refusal(), p.scope());
+            sink.send(ChatStreamEvent.finalEvent(response));
+            return response;
+        }
+        sink.send(ChatStreamEvent.meta(p.traceId(), p.scope(), p.pkg()));
+
+        // 证据已经在 meta 里发给前端了，这里只补一句「接下来在干什么」
+        sink.send(ChatStreamEvent.stage(ChatStreamEvent.PHASE_GENERATING, "正在生成答案",
+                Map.of("evidence", p.pkg().blocks().size(), "contextTokens", p.pkg().tokenCount())));
+        long answerStart = System.currentTimeMillis();
+        AnswerResult answer = answerService.answerStreaming(p.question(), p.qu(), p.pkg(), p.memory(),
+                delta -> sink.send(ChatStreamEvent.delta(delta)));
+        long answerMs = System.currentTimeMillis() - answerStart;
+        ChatResponse response = finishTurn(p.conversation(), p.question(),
+                compose(p, answer, answerMs), p.scope());
+        sink.send(ChatStreamEvent.finalEvent(response));
+        return response;
+    }
+
+    // ------------------------------------------------------------ 准备阶段
+
+    /**
+     * 准备阶段的全部中间态。
+     *
+     * <p>为什么把 {@code traceId} 也放进来：meta 事件要在生成前就把它发给前端，
+     * 而 trace 原本是收口时才创建的 —— 提前生成、两处共用，才不会出现
+     * 「前端 traceId 与落盘 trace 对不上」这种排查噩梦。
+     */
+    private record Prepared(String traceId, Conversation conversation, String question,
+                            ResolvedScope scope, MemoryContext memory, QueryUnderstanding qu,
+                            ContextPackage pkg, long contextMs, long quMs, List<String> quWarnings,
+                            List<String> memoryWarnings, List<String> retrievalWarnings,
+                            RetrievalTrace retrievalTrace, ChatResponse refusal) { }
+
+    /** 非流式入口用：不需要进度事件。 */
+    private Prepared prepare(ChatRequest request) {
+        return prepare(request, null);
+    }
+
+    /**
+     * 准备阶段（流式时带进度回调）。
+     *
+     * @param stages 进度事件出口；非流式传 {@code null}。它只收 stage，不收 meta/final ——
+     *               后两者由 {@link #askStreaming} 自己发，避免两处都能发导致顺序错乱
+     */
+    private Prepared prepare(ChatRequest request, ChatStreamSink stages) {
         String question = request == null ? "" : request.question();
         if (question.isBlank()) {
             throw new IllegalArgumentException("question 不能为空");
@@ -96,13 +179,16 @@ public class ChatService {
         ChatScope requestedScope = conversations.effectiveScope(request.scope(), conversation);
         ResolvedScope scope = scopeResolver.resolve(requestedScope);
         // 背景信息在「归属校验之后」装配：别人的会话连读都不该读
-        MemoryContext memory = conversation == null
-                ? MemoryContext.EMPTY : memoryAssembler.assemble(conversation);
+        MemoryContext memory = conversation == null ? MemoryContext.EMPTY : memoryAssembler.assembleMemory(conversation);
+
         // 指代消解：结构化槽位 + 最近几轮。没有会话（或会话里什么都没有）时
         // 走单轮重载 —— 「无会话」与「阶段 8 的行为」必须是同一条代码路径，不是「大概等价」。
+        // QU 是整条链路最慢的一段（一次 LLM 调用，实测约 2.9 秒），单独计时才能回答
+        // 「首字 7.9 秒里 QU 占多少」这种问题（阶段 13 新增，落进 ChatTrace.quMs）
+        long quStart = System.currentTimeMillis();
         TurnContext turnContext = turnContext(conversation, memory);
-        QueryUnderstanding qu = turnContext.isEmpty()
-                ? router.understand(question) : router.understand(question, turnContext);
+        QueryUnderstanding qu = turnContext.isEmpty() ? router.understand(question) : router.understand(question, turnContext);
+        long quMs = System.currentTimeMillis() - quStart;
 
         // 公司落地（ST9 §16）：模型只被允许「抄原文里的公司名」，代码一律由 CompanyResolver 查库得到。
         // 顺序很重要：① validate 已保证 mentions 是原文子串、codes 是原文里真出现的 6 位数字；
@@ -115,7 +201,7 @@ public class ChatService {
         }
         quWarnings.addAll(company.warnings());
         // 问题里没点名公司，但作用域里只有一家 → 用它补（确定性推断，不是模型猜）。
-        // 为什么需要：评测集与真实提问里常见「2024年营业总收入是多少？」，公司由作用域隐含；
+        // 为什么不补不行：评测集与真实提问常见「2024年营业总收入是多少？」，公司由作用域隐含；
         // 不补的话 Sparse 精确模式会丢掉公司这个词，命中面变宽（实测召回率不变，但精度预算被稀释）。
         if (qu.companyCodes() == null || qu.companyCodes().isEmpty()) {
             List<String> scopeCodes = scopeCompanyCodes(scope);
@@ -127,8 +213,9 @@ public class ChatService {
         // 点名了范围外的公司 → 拒答。2026-10-22 评测抓到：问「五粮液2024年营业收入」、范围只有
         // 东方财富年报，系统把东方财富的营收当答案返回（数值对、主体错，比乱答更难发现）。
         if (company.blocked()) {
-            return finishTurn(conversation, question,
-                    refuseUnresolvedCompanies(scope, company.unresolved()), scope);
+            return new Prepared(UUID.randomUUID().toString(), conversation, question, scope, memory, qu,
+                    ContextPackage.empty(), 0, quMs, List.copyOf(quWarnings), List.of(), List.of(), null,
+                    refuseUnresolvedCompanies(scope, company.unresolved()));
         }
 
         // 长期记忆：Gate 通过才召回（不通过连库都不查；库里没有记忆也不调 embedding）。
@@ -153,51 +240,86 @@ public class ChatService {
         // 答案 Prompt 仍用用户原话 —— 那是用户真正问的。
         String retrievalQuery = qu.normalizedQuery() == null || qu.normalizedQuery().isBlank()
                 ? question : qu.normalizedQuery();
-        HybridRetriever.Result retrieval = retriever.retrieve(RetrievalRequest.of(retrievalQuery), qu, scope);
+        if (stages != null) {
+            // 作用域已经解析完，可以告诉用户「在多少份文档里找」
+            stages.send(ChatStreamEvent.stage(ChatStreamEvent.PHASE_RETRIEVING, "正在检索证据",
+                    Map.of("documents", scope == null ? 0 : scope.size())));
+        }
+        HybridRetriever.Result retrieval = retriever.retrieve(RetrievalRequest.of(retrievalQuery), qu, scope,
+                stageProgress(stages));
         QueryType queryType = retrieval.trace() == null ? qu.queryType() : retrieval.trace().queryType();
 
         long contextStart = System.currentTimeMillis();
         ContextPackage pkg = contextBuilder.build(question, queryType, retrieval.chunks(), scope);
         long contextMs = System.currentTimeMillis() - contextStart;
 
-        long answerStart = System.currentTimeMillis();
-        AnswerResult answer = answerService.answer(question, qu, pkg, memory);
-        long answerMs = System.currentTimeMillis() - answerStart;
+        List<String> retrievalWarnings = retrieval.trace() == null ? List.of() : retrieval.trace().warnings();
+        return new Prepared(UUID.randomUUID().toString(), conversation, question, scope, memory, qu,
+                pkg, contextMs, quMs, List.copyOf(quWarnings), List.copyOf(memoryWarnings),
+                retrievalWarnings, retrieval.trace(), null);
+    }
 
+    /**
+     * 把「流式进度出口」包成检索层能用的回调（阶段 13，契约 C16）。
+     *
+     * <p>只转发 rerank 一个阶段：dense / sparse / fuse 都属于用户眼里的「检索中」，
+     * 每段都发一次只会让状态行闪。没有 stages（非流式）时直接返回空实现。
+     */
+    private static RetrievalProgress stageProgress(ChatStreamSink stages) {
+        if (stages == null) {
+            return RetrievalProgress.NONE;
+        }
+        return (phase, count) -> {
+            if (RetrievalProgress.PHASE_RERANK.equals(phase)) {
+                stages.send(ChatStreamEvent.stage(ChatStreamEvent.PHASE_RERANKING, "正在精排证据",
+                        Map.of("candidates", count)));
+            }
+        };
+    }
+
+    // ------------------------------------------------------------ 收口阶段
+
+    /**
+     * 把「准备好的中间态 + 答案」合成最终响应：期间标注、结构化上下文、警告合并、trace 落盘。
+     *
+     * <p>流式与非流式都走这里，保证同一个问题在两种模式下 warnings / trace / 落库结果一致。
+     */
+    private ChatResponse compose(Prepared p, AnswerResult answer, long answerMs) {
         // 期间标注：引用来自「别的年份的报告」时必须留痕（阶段 5 遗留，见 ST6 Task 4）
-        PeriodLabeler.Result period = periodLabeler.label(qu, answer.citations(), scope);
+        PeriodLabeler.Result period = periodLabeler.label(p.qu(), answer.citations(), p.scope());
 
         // 结构化上下文：回答成功后才落库（本轮检索用的是「上一轮的状态」，
         // 落库失败不能影响这一轮的答案 —— 只加一条警告）
-        List<String> contextWarnings = applyContext(conversation, qu, scope);
+        List<String> contextWarnings = applyContext(p.conversation(), p.qu(), p.scope());
 
-        List<String> warnings = mergeWarnings(scope.warnings(),
-                resolutionWarnings(qu), quWarnings, memoryWarnings,
-                retrieval.trace() == null ? List.of() : retrieval.trace().warnings(),
-                pkg.warnings(), answer.warnings(), period.warnings(), contextWarnings);
+        List<String> warnings = mergeWarnings(p.scope().warnings(),
+                resolutionWarnings(p.qu()), p.quWarnings(), p.memoryWarnings(),
+                p.retrievalWarnings(),
+                p.pkg().warnings(), answer.warnings(), period.warnings(), contextWarnings);
         String note = mergeNote(answer.note(), period.note());
 
-        ChatTrace trace = new ChatTrace(UUID.randomUUID().toString(), retrieval.trace(),
-                new ScopeTrace(scope.kind(), scope.documentIds(), scope.resolverVersion(),
-                        scope.effectiveReason(), false),
-                MemoryTrace.from(memory),
-                pkg.blocks().size(), pkg.tokenCount(), answer.citations().size(),
-                answer.citationsDropped(), contextMs, answerMs, warnings);
+        ChatTrace trace = new ChatTrace(p.traceId(), p.retrievalTrace(),
+                new ScopeTrace(p.scope().kind(), p.scope().documentIds(), p.scope().resolverVersion(),
+                        p.scope().effectiveReason(), false),
+                MemoryTrace.from(p.memory()),
+                p.pkg().blocks().size(), p.pkg().tokenCount(), answer.citations().size(),
+                answer.citationsDropped(), p.contextMs(), answerMs, p.quMs(), warnings);
         traceWriter.write(trace);
 
-        log.info("问答完成：trace={} blocks={} tokens={} citations={} confidence={} cost={}ms",
-                trace.traceId(), pkg.blocks().size(), pkg.tokenCount(), answer.citations().size(),
-                answer.confidence(), trace.totalMs());
+        log.info("问答完成：trace={} blocks={} tokens={} citations={} confidence={} "
+                        + "cost={}ms（理解 {} / 检索 {} / 装配 {} / 生成 {}）",
+                trace.traceId(), p.pkg().blocks().size(), p.pkg().tokenCount(), answer.citations().size(),
+                answer.confidence(), trace.totalMs(), p.quMs(),
+                p.retrievalTrace() == null ? 0 : p.retrievalTrace().totalMs(), p.contextMs(), answerMs);
 
-        ChatResponse response = new ChatResponse(answer.sufficient(), answer.answer(), answer.facts(),
+        return new ChatResponse(answer.sufficient(), answer.answer(), answer.facts(),
                 answer.citations(), answer.confidence(), note,
-                new ScopeInfo(new ScopeInfo.SessionScope(scope.kind(), scope.documentIds()),
-                        new ScopeInfo.EffectiveScope(scope.kind(), scope.documentIds(), scope.effectiveReason()),
-                        scope.documentIds(), scope.resolverVersion()),
+                new ScopeInfo(new ScopeInfo.SessionScope(p.scope().kind(), p.scope().documentIds()),
+                        new ScopeInfo.EffectiveScope(p.scope().kind(), p.scope().documentIds(),
+                                p.scope().effectiveReason()),
+                        p.scope().documentIds(), p.scope().resolverVersion()),
                 warnings, trace, null);
-        return finishTurn(conversation, question, response, scope);
     }
-
     /**
      * 把会话里已确认的槽位与短期窗口的配对消息装成 QU 的入参。
      *

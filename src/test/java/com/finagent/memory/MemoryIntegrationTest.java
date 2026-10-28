@@ -66,7 +66,7 @@ class MemoryIntegrationTest {
                 List.of(), List.of(), "HIGH", null, null, List.of(), null, null);
         conversations.recordTurn(conversation, "2025 年营业总收入是多少？", first, scope);
 
-        MemoryContext memory = assembler.assemble(conversation);
+        MemoryContext memory = assembler.assembleMemory(conversation);
         assertThat(memory.isEmpty()).isFalse();
         assertThat(memory.stats().shortTermMessages()).isEqualTo(2);
 
@@ -82,6 +82,6 @@ class MemoryIntegrationTest {
     void emptyConversationHasNoBackground() {
         Conversation conversation = conversations.create("test-mem-empty", ChatScope.corpus());
 
-        assertThat(assembler.assemble(conversation)).isEqualTo(MemoryContext.EMPTY);
+        assertThat(assembler.assembleMemory(conversation)).isEqualTo(MemoryContext.EMPTY);
     }
 }

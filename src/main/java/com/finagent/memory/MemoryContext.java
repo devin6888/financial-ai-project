@@ -15,7 +15,7 @@ import java.util.List;
  * 指代消解需要同一批消息的「配对形态」；再单独查一次库是重复查询。
  * 渲染 Prompt 用原始消息（要保留「用户：/助手：」标签与完整文本），消解用配对形态（每侧截断）。
  *
- * @param text        渲染好的段落；null / 空白表示这一轮没有背景信息
+ * @param text        渲染好的会话记忆内容；null / 空白表示这一轮没有背景信息
  * @param stats       统计，供 trace 与报告使用
  * @param recentTurns 最近几轮的精简形态（从旧到新），喂给 QU 做指代消解
  * @param sections    渲染前的分层内容；长期记忆是在 QU 之后才召回的，要重新渲染时靠它，
