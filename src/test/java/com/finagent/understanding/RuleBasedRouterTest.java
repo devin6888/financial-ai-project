@@ -13,7 +13,7 @@ class RuleBasedRouterTest {
         var u = router.tryRoute("600519 2025年营业收入是多少");
         assertThat(u).isNotNull();
         assertThat(u.queryType()).isEqualTo(QueryType.EXACT_FACT);
-        assertThat(u.companyIds()).containsExactly("600519");
+        assertThat(u.companyCodes()).containsExactly("600519");
         assertThat(u.yearRange()).containsExactly(2025, 2025);
         assertThat(u.metrics()).contains("营业收入");
         assertThat(u.route()).isEqualTo("RULE");

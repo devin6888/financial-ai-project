@@ -36,7 +36,10 @@ public class LlmRouter {
             - COMPLEX_ANALYSIS：需要多步推理才能确定查什么
 
             字段说明：
-            - companyIds：证券代码（6 位数字），不确定就留空数组
+            - companyMentions：问题里出现的公司名，**逐字抄原文**（如「东方财富」「贵州茅台」）。
+              必须是原文的子串，不要改写、不要补全、不要输出代码；问题里没提公司就留空数组
+            - companyCodes：证券代码（6 位数字）。**只有当问题里字面出现了 6 位数字代码时才填**，
+              用户在问题里用公司名提问时一律留空数组（代码由程序查库得到，不靠你记忆）
             - yearFrom / yearTo：年份整数；只问一年则两者相同
             - metrics：财务指标名（如营业收入、净利润）
             - docType：报告类型，只能取 ANNUAL（年报）、SEMI_ANNUAL（半年报）、
@@ -46,7 +49,7 @@ public class LlmRouter {
               「我之前说过什么」）。纯财务事实问答一律 false —— 这一项决定要不要多调一次检索，
               误判为 true 会白花一次向量化调用
 
-            判为 EXACT_FACT 时，companyIds、yearFrom/yearTo、metrics 必须同时非空；
+            判为 EXACT_FACT 时，companyMentions（或 companyCodes）、yearFrom/yearTo、metrics 必须同时非空；
             任一项无法确定，就判为 SEMANTIC_EXPLANATION（误判代价更小的方向）。
             """;
 
@@ -93,17 +96,18 @@ public class LlmRouter {
         }
         return new QueryUnderstanding(
                 QueryType.parse(dto.queryType()),
-                dto.normalizedQuery() == null || dto.normalizedQuery().isBlank()
-                        ? query : dto.normalizedQuery(),
-                dto.companyIds(),
+                dto.normalizedQuery() == null || dto.normalizedQuery().isBlank() ? query : dto.normalizedQuery(),
+                dto.companyCodes(),
                 toRange(dto.yearFrom(), dto.yearTo()),
                 dto.metrics(),
                 Boolean.TRUE.equals(dto.needMultiQuery()),
                 Boolean.TRUE.equals(dto.needDecompose()),
                 dto.docType(),
-                false, "LLM",
+                false,
+                "LLM",
                 fromContext && Boolean.TRUE.equals(dto.resolved()),
-                Boolean.TRUE.equals(dto.needLongTermMemory()));
+                Boolean.TRUE.equals(dto.needLongTermMemory()),
+                dto.companyMentions());
     }
 
     /** 把 from/to 规整成有序区间；都为 null 则返回 null（交给调用方丢弃该字段）。 */
@@ -126,7 +130,8 @@ public class LlmRouter {
     public record RouterDto(
             String queryType,
             String normalizedQuery,
-            List<String> companyIds,
+            List<String> companyMentions,
+            List<String> companyCodes,
             Integer yearFrom,
             Integer yearTo,
             List<String> metrics,

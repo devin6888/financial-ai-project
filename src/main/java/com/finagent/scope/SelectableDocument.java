@@ -5,5 +5,17 @@ package com.finagent.scope;
  *
  * @param chunkCount ACTIVE 版本的 CHILD 数（不是总行数，含 Parent 会虚高一倍）
  */
-public record SelectableDocument(long id, String title, String companyCode, String companyName,
-                                 Integer docYear, String docType, Integer pageCount, long chunkCount) { }
+public record SelectableDocument(
+        // 文档id
+        long id,
+        // 文档标题
+        String title,
+        // 所属公司编码
+        String companyCode,
+        String companyName,
+        Integer docYear,
+        String docType,
+        Integer pageCount,
+        long chunkCount
+) {
+}

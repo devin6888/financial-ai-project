@@ -128,7 +128,7 @@ class CrossDocumentEvalTest {
             var w = new java.util.ArrayList<String>();
             var eff = retriever.mergeFilters(RetrievalFilters.none(), u, null, w);
             System.out.println("XDOC-QU|" + qa.no()
-                    + "|codes=" + u.companyIds() + "|years=" + (u.yearRange() == null ? "-"
+                    + "|codes=" + u.companyCodes() + "|years=" + (u.yearRange() == null ? "-"
                     : u.yearRange()[0] + ".." + u.yearRange()[1])
                     + "|metrics=" + u.metrics() + "|route=" + u.route()
                     + "|eff.docYear=" + eff.filters().docYear()

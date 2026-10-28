@@ -129,13 +129,24 @@ public class RouterService {
     QueryUnderstanding validate(QueryUnderstanding raw, String original) {
         QueryType type = raw.queryType() == null ? QueryType.SEMANTIC_EXPLANATION : raw.queryType();
 
-        // 只校验格式，不校验「库里有没有这家公司」：
-        // 2026-10-22 评测抓到 —— 问「五粮液2024年营业收入」，代码 000858 被这里静默丢掉，
-        // 于是检索拿不到任何公司约束，答案变成东方财富的数字。
-        // 「有没有这家公司」是作用域层该判的事（要能告诉用户「范围内没有」），不是解析层该抹掉的。
-        List<String> companyIds = raw.companyIds() == null ? List.of()
-                : raw.companyIds().stream()
+        // 代码校验两道（ST9 §16.3）：① 6 位数字 ② <b>必须字面出现在问题原文里</b>。
+        // 第 ② 道是根治「模型编造公司代码」的那一刀：e2e 抓到它把「东方财富」翻译成 600519。
+        // 注意：这不等于「丢弃库里没有的公司」—— 原代码 000858（五粮液）本来就写字用户话里，
+        // 会通过校验，再由作用域层给出「范围内没有五粮液」的明确拒答（阶段 6 的教训）。
+        List<String> companyCodes = raw.companyCodes() == null ? List.of()
+                : raw.companyCodes().stream()
                         .filter(c -> c != null && c.length() == 6 && c.chars().allMatch(Character::isDigit))
+                        .filter(c -> original != null && original.contains(c))
+                        .distinct()
+                        .toList();
+
+        // 公司名只做一道校验：必须是问题原文的**逐字子串**。
+        // 模型可以抽错（抽到「报告」这种词），但抽不出原文里没有的字符串 —— 这就把「编造」变成不可能。
+        List<String> companyMentions = raw.companyMentions() == null ? List.of()
+                : raw.companyMentions().stream()
+                        .filter(m -> m != null && !m.isBlank())
+                        .map(String::trim)
+                        .filter(m -> original != null && original.contains(m))
                         .distinct()
                         .toList();
 
@@ -153,10 +164,11 @@ public class RouterService {
         return new QueryUnderstanding(type,
                 raw.normalizedQuery() == null || raw.normalizedQuery().isBlank()
                         ? original : raw.normalizedQuery(),
-                companyIds, years,
+                companyCodes, years,
                 raw.metrics() == null ? List.of() : raw.metrics(),
                 raw.needMultiQuery(), raw.needDecompose(), docType,
-                raw.degraded(), raw.route(), raw.inferredFromContext());
+                raw.degraded(), raw.route(), raw.inferredFromContext(),
+                raw.needLongTermMemory(), companyMentions);
     }
 
     /**
@@ -171,9 +183,10 @@ public class RouterService {
         if (byKeyword == null) {
             return u;
         }
-        return new QueryUnderstanding(u.queryType(), u.normalizedQuery(), u.companyIds(),
+        return new QueryUnderstanding(u.queryType(), u.normalizedQuery(), u.companyCodes(),
                 u.yearRange(), u.metrics(), u.needMultiQuery(), u.needDecompose(), byKeyword,
-                u.degraded(), u.route(), u.inferredFromContext());
+                u.degraded(), u.route(), u.inferredFromContext(), u.needLongTermMemory(),
+                u.companyMentions());
     }
 
     /**
@@ -188,9 +201,9 @@ public class RouterService {
         }
         boolean inferred = base.inferredFromContext();
 
-        List<String> companies = base.companyIds();
-        if ((companies == null || companies.isEmpty()) && ctx.companyCode() != null) {
-            companies = List.of(ctx.companyCode());
+        List<String> codes = base.companyCodes();
+        if ((codes == null || codes.isEmpty()) && ctx.companyCode() != null) {
+            codes = List.of(ctx.companyCode());
             inferred = true;
         }
 
@@ -205,9 +218,9 @@ public class RouterService {
         if (inferred) {
             normalized = selfContained(ctx, normalized);
         }
-        return new QueryUnderstanding(base.queryType(), normalized, companies, years, base.metrics(),
+        return new QueryUnderstanding(base.queryType(), normalized, codes, years, base.metrics(),
                 base.needMultiQuery(), base.needDecompose(), base.docType(), base.degraded(),
-                base.route(), inferred);
+                base.route(), inferred, base.needLongTermMemory(), base.companyMentions());
     }
 
     /**
@@ -240,12 +253,13 @@ public class RouterService {
     /** 判为 ExactFact 但三要素不全 → 降级（保留已经解析出的字段与 inferred 标记）。 */
     private static QueryUnderstanding weakEvidence(QueryUnderstanding u) {
         return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, u.normalizedQuery(),
-                u.companyIds(), u.yearRange(), u.metrics(), u.needMultiQuery(), u.needDecompose(),
-                u.docType(), true, "DEGRADED:weak_evidence", u.inferredFromContext());
+                u.companyCodes(), u.yearRange(), u.metrics(), u.needMultiQuery(), u.needDecompose(),
+                u.docType(), true, "DEGRADED:weak_evidence", u.inferredFromContext(),
+                u.needLongTermMemory(), u.companyMentions());
     }
 
     static boolean isExactFactEvidenceSufficient(QueryUnderstanding u) {
-        return u.companyIds() != null && !u.companyIds().isEmpty()
+        return u.mentionsCompany()
                 && u.yearRange() != null
                 && u.metrics() != null && !u.metrics().isEmpty();
     }

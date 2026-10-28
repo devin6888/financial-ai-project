@@ -131,8 +131,8 @@ public class ConversationContextService {
      */
     static ContextDelta deltaOf(QueryUnderstanding qu, ResolvedScope scope) {
         Long companyId = null;
-        if (qu != null && qu.companyIds() != null && scope != null) {
-            for (String code : qu.companyIds()) {
+        if (qu != null && qu.companyCodes() != null && scope != null) {
+            for (String code : qu.companyCodes()) {
                 companyId = scope.documents().stream()
                         .filter(d -> code != null && code.equals(d.companyCode()))
                         .map(DocMeta::companyId)

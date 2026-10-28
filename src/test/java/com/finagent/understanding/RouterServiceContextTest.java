@@ -61,7 +61,7 @@ class RouterServiceContextTest {
         QueryUnderstanding qu = service.understand("那净利润呢", context());
 
         assertThat(qu.inferredFromContext()).isTrue();
-        assertThat(qu.companyIds()).containsExactly("300059");
+        assertThat(qu.companyCodes()).containsExactly("300059");
         assertThat(qu.normalizedQuery()).startsWith("东方财富（300059）");
         verify(llm).route(org.mockito.ArgumentMatchers.eq("那净利润呢"),
                 org.mockito.ArgumentMatchers.contains("company=东方财富（300059）"));
@@ -77,7 +77,7 @@ class RouterServiceContextTest {
         assertThat(qu.degraded()).isTrue();
         assertThat(qu.route()).isEqualTo("DEGRADED:llm_failed");
         assertThat(qu.queryType()).isEqualTo(QueryType.SEMANTIC_EXPLANATION);
-        assertThat(qu.companyIds()).containsExactly("300059");
+        assertThat(qu.companyCodes()).containsExactly("300059");
         assertThat(qu.yearRange()).containsExactly(2025, 2025);
         // 指标是语义判断，补错会把检索带偏 —— 降级路径必须留空
         assertThat(qu.metrics()).isEmpty();
@@ -94,16 +94,16 @@ class RouterServiceContextTest {
 
         QueryUnderstanding filled = service.understand("q", context());
 
-        assertThat(filled.companyIds()).containsExactly("300059");
+        assertThat(filled.companyCodes()).containsExactly("300059");
         assertThat(filled.yearRange()).containsExactly(2025, 2025);
 
         when(llm.route(anyString(), anyString())).thenReturn(new QueryUnderstanding(
                 QueryType.SEMANTIC_EXPLANATION, "q", List.of("600519"), new int[]{2023, 2023},
                 List.of(), false, false, null, false, "LLM"));
 
-        QueryUnderstanding kept = service.understand("q", context());
+        QueryUnderstanding kept = service.understand("600519 2023年净利润是多少", context());
 
-        assertThat(kept.companyIds()).containsExactly("600519");
+        assertThat(kept.companyCodes()).containsExactly("600519");
         assertThat(kept.yearRange()).containsExactly(2023, 2023);
     }
 
@@ -145,7 +145,7 @@ class RouterServiceContextTest {
         assertThat(qu.queryType()).isEqualTo(QueryType.SEMANTIC_EXPLANATION);
         assertThat(qu.degraded()).isTrue();
         assertThat(qu.route()).isEqualTo("DEGRADED:weak_evidence");
-        assertThat(qu.companyIds()).containsExactly("300059");
+        assertThat(qu.companyCodes()).containsExactly("300059");
         assertThat(qu.inferredFromContext()).isTrue();
     }
 

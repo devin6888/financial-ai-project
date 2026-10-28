@@ -78,7 +78,8 @@ class RouterServiceTest {
                 QueryType.EXACT_FACT, "q", List.of("600519"), new int[]{2025, 2025},
                 List.of("净利润"), false, false, false, "LLM"));
 
-        var u = serviceWith(good).understand("某问题");
+        // 问题里必须真出现代码：新规则要求代码是原文子串（ST9 §16.3）
+        var u = serviceWith(good).understand("600519 2025年净利润是多少");
 
         assertThat(u.queryType()).isEqualTo(QueryType.EXACT_FACT);
         assertThat(u.degraded()).isFalse();
@@ -109,14 +110,26 @@ class RouterServiceTest {
     }
 
     @Test
-    void unknownCompanyCodeIsKeptForScopeCheck() {
-        // 保留而不是丢弃：作用域层要靠它判断「问的公司在不在范围内」并拒答
+    void companyCodeMustAppearInQuestion() {
+        // 新规则（ST9 §16.3）：代码必须字面出现在问题原文里。模型编的 600519 就是被这一条挡掉的
         LlmRouter bad = mock(LlmRouter.class);
         when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
                 QueryType.SEMANTIC_EXPLANATION, "q", List.of("999999"), null,
                 List.of("净利润"), false, false, false, "LLM"));
 
-        assertThat(serviceWith(bad).understand("某问题").companyIds()).containsExactly("999999");
+        assertThat(serviceWith(bad).understand("某问题").companyCodes()).isEmpty();
+    }
+
+    @Test
+    void companyCodeInQuestionIsKeptForScopeCheck() {
+        // 写字原文里的代码必须保留：作用域层要靠它判断「问的公司在不在范围内」并拒答（阶段 6 的教训）
+        LlmRouter bad = mock(LlmRouter.class);
+        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "q", List.of("999999"), null,
+                List.of("净利润"), false, false, false, "LLM"));
+
+        assertThat(serviceWith(bad).understand("999999 2024年净利润").companyCodes())
+                .containsExactly("999999");
     }
 
     @Test
@@ -126,7 +139,29 @@ class RouterServiceTest {
                 QueryType.SEMANTIC_EXPLANATION, "q", List.of("五粮液"), null,
                 List.of("净利润"), false, false, false, "LLM"));
 
-        assertThat(serviceWith(bad).understand("某问题").companyIds()).isEmpty();
+        assertThat(serviceWith(bad).understand("某问题").companyCodes()).isEmpty();
+    }
+
+    @Test
+    void companyMentionMustBeSubstringOfQuestion() {
+        // 模型编不出来：提到「贵州茅台」但原文里没有 → 丢弃（子串校验）
+        LlmRouter bad = mock(LlmRouter.class);
+        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null,
+                List.of("净利润"), false, false, null, false, "LLM", false, false, List.of("贵州茅台")));
+
+        assertThat(serviceWith(bad).understand("东方财富2024年净利润").companyMentions()).isEmpty();
+    }
+
+    @Test
+    void companyMentionFromQuestionIsKept() {
+        LlmRouter bad = mock(LlmRouter.class);
+        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null,
+                List.of("净利润"), false, false, null, false, "LLM", false, false, List.of("东方财富")));
+
+        assertThat(serviceWith(bad).understand("东方财富2024年净利润").companyMentions())
+                .containsExactly("东方财富");
     }
 
     @Test

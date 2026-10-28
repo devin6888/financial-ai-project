@@ -359,9 +359,10 @@ class HybridRetrieverTest {
         return new RetrievalRequest("2025年营业收入", null, 0, 0, 0, 0, useRerank);
     }
 
-    private static QueryUnderstanding qu(List<String> companyIds, int[] years,
+    /** 第 3 参是**证券代码**（companyCodes），不是数据库 company.id —— 见 C13。 */
+    private static QueryUnderstanding qu(List<String> companyCodes, int[] years,
                                          List<String> metrics, String route) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入", companyIds, years,
+        return new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入", companyCodes, years,
                 metrics, false, false, false, route);
     }
 

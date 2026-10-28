@@ -78,8 +78,18 @@ public class AnswerService {
 
         List<String> warnings = new ArrayList<>();
         if (!dto.sufficient()) {
-            return new AnswerResult(false, dto.answer() == null ? "" : dto.answer(),
-                    List.of(), List.of(), AnswerResult.CONFIDENCE_INSUFFICIENT, dto.note(), warnings, 0);
+            // 模型自己说「答不了」时，也必须给用户一句能读的话 + 一个机器可读的原因。
+            // 2026-10-28 阶段 9 e2e 抓到：answer 与 note 都是空串，客户端只收到空文本，
+            // 既没法展示也没法报警（confidence=insufficient 是唯一线索）。
+            String text = dto.answer() == null || dto.answer().isBlank()
+                    ? "证据不足：检索到的内容里没有能支撑这个问题的信息。"
+                    : dto.answer();
+            String note = dto.note() == null || dto.note().isBlank()
+                    ? "模型判定现有证据不足以回答，且未给出原因。"
+                    : dto.note();
+            warnings.add(AnswerResult.WARNING_EVIDENCE_INSUFFICIENT);
+            return new AnswerResult(false, text, List.of(), List.of(),
+                    AnswerResult.CONFIDENCE_INSUFFICIENT, note, warnings, 0);
         }
 
         List<FactDto> facts = dto.facts() == null ? List.of() : dto.facts();

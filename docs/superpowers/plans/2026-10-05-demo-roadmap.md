@@ -26,7 +26,7 @@
 | **6** | 冒烟评测 | 人工核验并记录 Recall@10 与引用准确率 | 5 | 已完成（`docs/阶段6-评测报告.md`） |
 | **7** | 异步与任务化 | Kafka + Worker + 幂等 + DLQ；解析链路改为事件驱动 | 2,3 | 已完成（`docs/阶段7-异步任务化报告.md`） |
 | **8** | 权限与多租户 | ACL 模型 + tenant 行级隔离 + 越权用例集（验收零泄漏） | 7 | 已完成（`docs/阶段8-权限与多租户报告.md`） |
-| **9** | Memory 与会话 | 四层 Memory + Retrieval Gate + 按需 Long-term Memory 召回 | 8 | 计划已写，待确认执行（`ST9-2026-10-27-09-memory-session.md`） |
+| **9** | Memory 与会话 | 四层 Memory + Retrieval Gate + 按需 Long-term Memory 召回 | 8 | 已完成（见 `docs/阶段9-Memory与会话报告.md`） |
 | **10** | Agent 工作流 | LangGraph4j State/Node/Reducer/Checkpoint + HITL interrupt/resume | 9 | 待写 |
 
 ## 阶段边界说明（容易踩的地方）
@@ -69,7 +69,7 @@
 - 阶段 6 详细计划：`ST6-2026-10-22-06-evaluation.md`
 - 阶段 7 详细计划：`ST7-2026-10-26-07-async-task.md`
 - 阶段 8 详细计划：`ST8-2026-10-27-08-auth-multitenant.md`（9 个任务全部完成；Task 5~9 的执行口径见其 §7 的 R1~R6 修订）
-- 阶段 9 详细计划：`ST9-2026-10-27-09-memory-session.md`（9 个任务；§8 有 10 条待确认决策，确认后开工）
+- 阶段 9 详细计划：`ST9-2026-10-27-09-memory-session.md`（9 个任务全部完成；执行口径见其 §10~§15 的六次执行前修订，偏差登记见 §7）
 - 阶段 10 详细计划：待阶段 9 交付后编写（Agent 工作流的假设依赖会话与 Memory 的实际产出）
 
 ## 文档约定

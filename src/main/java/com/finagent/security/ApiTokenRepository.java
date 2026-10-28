@@ -57,8 +57,7 @@ public class ApiTokenRepository {
                 roles.add(row.roleCode());
             }
         }
-        return Optional.of(new CurrentUser(first.userId(), first.tenantId(),
-                first.username(), first.displayName(), roles));
+        return Optional.of(new CurrentUser(first.userId(), first.tenantId(), first.username(), first.displayName(), roles));
     }
 
     /** 一次查询的中间结果：一个用户有几行（每个角色一行）。 */

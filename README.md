@@ -8,7 +8,7 @@
 - **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
 - 文档写作规范：`docs/文档写作规范.md`
 
-**当前进度：阶段 8（权限与多租户）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`。
+**当前进度：阶段 9（会话与记忆）已完成。** 各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`。
 
 ---
 
@@ -293,6 +293,75 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=TenantIsolationE2ET
 7. 零泄漏门限：对象键 / 他人标题 / 他人正文片段，命中数全为 0。
 
 机制细节见 `docs/权限与多租户-工作机制.md`，实测数字与已知限制见 `docs/阶段8-权限与多租户报告.md`。
+
+## 阶段 9：会话与记忆（多轮 / 摘要 / 长期偏好）
+
+阶段 8 之前每一轮都是「第一次问」。阶段 9 让系统记住三件事：**刚才聊了什么**（短期）、**更早聊了什么**（摘要）、**用户明确要求过什么**（长期偏好）。四层记忆的分工、预算与「为什么记忆不能当引用」见 `docs/阶段9-Memory与会话报告.md` 与 `docs/关键契约.md`（C12）。
+
+> 公司名与证券代码的分工也在这一阶段定稿（C13）：**模型只抽「原文里出现的公司名」，代码由程序在作用域内查库**。理由见报告 6.6 —— 让模型输出代码，等于让它凭训练记忆背答案，实测会给「东方财富」配一个 600519。
+
+| 层 | 存在哪 | 进 Prompt | 能当引用 |
+|---|---|---|---|
+| 短期记忆（默认 6 轮） | `conversation_message` | 是 | 否 |
+| 会话摘要（≤200 字） | `conversation_summary` | 是 | 否 |
+| 结构化上下文（公司/年份/指标） | `conversation_context` | 是（一行） | 否 |
+| 长期记忆（偏好 / 关注点） | `long_term_memory` | 按需（Gate 通过才查） | 否 |
+| 本轮证据 | `document_chunk` | 是 | **是** |
+
+### 四条 curl（建会话 → 追问 → 写偏好 → 查记忆）
+
+```powershell
+# 1) 建会话，记下返回的 conversationId
+curl.exe -s -X POST http://localhost:8080/api/conversations -H 'Content-Type: application/json' `
+  -H 'Authorization: Bearer dev-analyst-token' -d '{"title":"东方财富 2025 年报问答"}'
+
+# 2) 问一句，再追问「那净利润呢」——第二轮的检索查询会被补成「东方财富（300059） 2025年 净利润」
+curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
+  -H 'Authorization: Bearer dev-analyst-token' `
+  -d '{"question":"东方财富2025年营业总收入是多少","conversationId":1}'
+
+curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
+  -H 'Authorization: Bearer dev-analyst-token' `
+  -d '{"question":"那净利润呢？","conversationId":1}'
+
+# 3) 写一条长期偏好（句首命令即可；也可以 POST /api/memories 显式写）
+curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
+  -H 'Authorization: Bearer dev-analyst-token' -d '{"question":"记住：回答先给结论，再列数字"}'
+
+# 4) 看当前记忆（同 key 只有一条 ACTIVE；改写会生成 version+1，旧行 SUPERSEDED）
+curl.exe -s http://localhost:8080/api/memories -H 'Authorization: Bearer dev-analyst-token'
+```
+
+> 追问能生效的前提是 `warnings` 里出现 `query_inferred_from_context` —— 它表示这一轮的公司/年份是**推出来的**，不是用户说的。
+> 反过来，如果模型判断上下文不足以补全，会原样检索并置 `resolved=false`，不会编造年份（编造的年份会变成一个真实的过滤条件，把正确答案过滤掉）。
+
+### 开关（只用于本地调试 / 基线对照）
+
+| 配置 | 默认 | 作用 |
+|---|---|---|
+| `finagent.memory.enabled` | `true` | 关掉后行为与阶段 8 **完全一致**（不装配记忆、不落库、不写 trace 记忆段）。测试 profile 默认 `false`，这是回归门限 |
+| `finagent.memory.gate-enabled` | `true` | 关掉后一律不召回长期记忆（也不调 embedding），用于「记忆到底有没有用」的基线对照 |
+| `finagent.memory.summary-trigger-messages` | `12` | 未汇总消息数超过它就触发摘要（1 轮 = 2 条） |
+| `finagent.memory.short-term-rounds` | `6` | 短期窗口最多 6 轮 |
+
+### 验证
+
+```powershell
+. .\scripts\load-env.ps1
+mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ETest"
+```
+
+6 个用例全部调真模型（多轮指代消解 4 + 偏好跨会话 1 + 记忆不冒充证据 1）：
+
+1. 「那净利润呢」→ 补全成 300059 / 2025 / 净利润，答案数字落在 golden set 里；
+2. 「比去年增长多少」→ 答案给出增长率（实测 38.46%）并把两个年度写清楚；
+3. 「它现在的现金流怎么样」→ 引用仍只来自 2025 年报（document 7）；
+4. 「那毛利率呢」→ 允许证据不足，但不许 500；
+5. 写一条偏好 → 新会话带「按我的」提问 → `trace.memory.gateHit=true` 且 `longTermItems>=1`；
+6. 记忆里的数字若被复述 → 必须留下 `answer_ungrounded` 痕迹；引用全部来自真实文档行。
+
+机制与设计取舍见 `docs/阶段9-Memory与会话报告.md`，契约条款见 `docs/关键契约.md`（C12）。
+
 
 ## 已知限制（阶段 1）
 

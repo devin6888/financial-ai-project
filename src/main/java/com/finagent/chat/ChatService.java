@@ -18,8 +18,10 @@ import com.finagent.memory.MemoryGate;
 import com.finagent.retrieval.HybridRetriever;
 import com.finagent.retrieval.RetrievalRequest;
 import com.finagent.scope.ChatScope;
+import com.finagent.scope.DocMeta;
 import com.finagent.scope.ResolvedScope;
 import com.finagent.scope.ScopeResolver;
+import com.finagent.understanding.CompanyResolver;
 import com.finagent.understanding.QueryType;
 import com.finagent.understanding.QueryUnderstanding;
 import com.finagent.understanding.RouterService;
@@ -103,12 +105,31 @@ public class ChatService {
         QueryUnderstanding qu = turnContext.isEmpty()
                 ? router.understand(question) : router.understand(question, turnContext);
 
-        // 作用域外公司：问题问的公司在本次范围里没有报告 → 直接拒答。
-        // 2026-10-22 评测抓到：问「五粮液2024年营业收入」、范围只有东方财富年报，
-        // 系统把东方财富 2024 的营收当答案返回了（数值对、主体错，比乱答更难发现）。
-        List<String> outside = companiesOutsideScope(qu, scope);
-        if (!outside.isEmpty() && outside.size() == qu.companyIds().size()) {
-            return finishTurn(conversation, question, refuseOutsideCompanies(scope, outside), scope);
+        // 公司落地（ST9 §16）：模型只被允许「抄原文里的公司名」，代码一律由 CompanyResolver 查库得到。
+        // 顺序很重要：① validate 已保证 mentions 是原文子串、codes 是原文里真出现的 6 位数字；
+        // ② 这里再把名字对到作用域内的 company 行。模型因此<b>没有编造代码的通道</b>。
+        List<String> quWarnings = new ArrayList<>();
+        CompanyResolver.Resolution company = CompanyResolver.resolve(
+                qu.companyCodes(), qu.companyMentions(), scope);
+        if (company.hasMatch()) {
+            qu = qu.withCompanyCodes(company.codes());
+        }
+        quWarnings.addAll(company.warnings());
+        // 问题里没点名公司，但作用域里只有一家 → 用它补（确定性推断，不是模型猜）。
+        // 为什么需要：评测集与真实提问里常见「2024年营业总收入是多少？」，公司由作用域隐含；
+        // 不补的话 Sparse 精确模式会丢掉公司这个词，命中面变宽（实测召回率不变，但精度预算被稀释）。
+        if (qu.companyCodes() == null || qu.companyCodes().isEmpty()) {
+            List<String> scopeCodes = scopeCompanyCodes(scope);
+            if (scopeCodes.size() == 1) {
+                qu = qu.withCompanyCodes(scopeCodes);
+                quWarnings.add("company_from_scope");
+            }
+        }
+        // 点名了范围外的公司 → 拒答。2026-10-22 评测抓到：问「五粮液2024年营业收入」、范围只有
+        // 东方财富年报，系统把东方财富的营收当答案返回（数值对、主体错，比乱答更难发现）。
+        if (company.blocked()) {
+            return finishTurn(conversation, question,
+                    refuseUnresolvedCompanies(scope, company.unresolved()), scope);
         }
 
         // 长期记忆：Gate 通过才召回（不通过连库都不查；库里没有记忆也不调 embedding）。
@@ -152,7 +173,7 @@ public class ChatService {
         List<String> contextWarnings = applyContext(conversation, qu, scope);
 
         List<String> warnings = mergeWarnings(scope.warnings(),
-                resolutionWarnings(qu), memoryWarnings,
+                resolutionWarnings(qu), quWarnings, memoryWarnings,
                 retrieval.trace() == null ? List.of() : retrieval.trace().warnings(),
                 pkg.warnings(), answer.warnings(), period.warnings(), contextWarnings);
         String note = mergeNote(answer.note(), period.note());
@@ -285,27 +306,33 @@ public class ChatService {
         }
     }
 
-    private static List<String> companiesOutsideScope(QueryUnderstanding qu, ResolvedScope scope) {
-        if (qu == null || qu.companyIds() == null || qu.companyIds().isEmpty() || scope == null) {
+    /** 作用域里出现过的公司代码（去重保序）。空集=没约束，单元素=可以当默认值。 */
+    private static List<String> scopeCompanyCodes(ResolvedScope scope) {
+        if (scope == null || scope.documents() == null) {
             return List.of();
         }
-        List<String> outside = new ArrayList<>();
-        for (String code : qu.companyIds()) {
-            boolean inScope = scope.documents().stream()
-                    .anyMatch(d -> code.equals(d.companyCode()));
-            if (!inScope) {
-                outside.add(code);
-            }
-        }
-        return List.copyOf(outside);
+        return scope.documents().stream()
+                .map(DocMeta::companyCode)
+                .filter(c -> c != null && !c.isBlank())
+                .distinct()
+                .toList();
     }
 
-    private ChatResponse refuseOutsideCompanies(ResolvedScope scope, List<String> codes) {
-        String names = String.join("、", codes);
-        String answer = "本轮研究范围（" + scope.summary() + "）内没有 " + names
+    /**
+     * 问题点名了范围外的公司 → 拒答（ST9 §16.3 第 5 条）。
+     *
+     * <p>为什么不能「当没看见」继续检索：阶段 6 评测抓到「问五粮液答东方财富」—— 丢掉公司约束后，
+     * 检索会把别家公司的数字当成答案返回，数值自身对、主体错，比拒答更难发现。
+     *
+     * @param names 用户原话里的公司名（直接回显用户自己的措辞，不涉及库里任何数据）
+     */
+    private ChatResponse refuseUnresolvedCompanies(ResolvedScope scope, List<String> names) {
+        String joined = String.join("、", names);
+        String answer = "本轮研究范围（" + scope.summary() + "）内没有 " + joined
                 + " 的报告，无法回答该问题。请调整研究范围，或加入含该公司的文档后重问。";
         List<String> warnings = new ArrayList<>(scope.warnings());
-        codes.forEach(c -> warnings.add("company_out_of_scope:" + c));
+        // warnings 只放稳定码：它会给程序/日志消费，不该把用户提问里的公司名带出去
+        warnings.add("company_unresolved");
 
         ChatTrace trace = new ChatTrace(UUID.randomUUID().toString(), null,
                 new ScopeTrace(scope.kind(), scope.documentIds(), scope.resolverVersion(),
@@ -313,7 +340,7 @@ public class ChatService {
                 MemoryTrace.EMPTY,
                 0, 0, 0, 0, 0, 0, warnings);
         traceWriter.write(trace);
-        log.info("作用域外公司，拒答：{}", codes);
+        log.info("公司不在研究范围内，拒答：{}", names);
 
         return new ChatResponse(false, answer, List.of(), List.of(),
                 AnswerResult.CONFIDENCE_INSUFFICIENT,

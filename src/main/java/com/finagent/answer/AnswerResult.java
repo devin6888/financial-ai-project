@@ -35,6 +35,8 @@ public record AnswerResult(
     public static final String WARNING_CITATIONS_DROPPED = "answer_citations_dropped";
     /** 答案里的数字在被引证据里找不到 → 拒答（阶段 6 评测抓到模型编造员工总数）。 */
     public static final String WARNING_ANSWER_UNGROUNDED = "answer_value_not_in_evidence";
+    /** 模型自己判定证据不足（sufficient=false）：即使它不给答案/解释，也要有可读文案与机器可读原因。 */
+    public static final String WARNING_EVIDENCE_INSUFFICIENT = "evidence_insufficient";
     /** 单条 fact 的数值在证据里找不到 → 丢弃该 fact。 */
     public static final String WARNING_FACT_UNGROUNDED = "fact_value_not_in_evidence:";
 

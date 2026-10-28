@@ -191,9 +191,13 @@ public class DocumentRepository {
     /**
      * 公司代码是否存在。
      *
-     * <p>为什么需要它：§9.14 要求「companyIds 必须命中 company 表」——
-     * LLM 会编造不存在的代码，必须在入库前校验，否则它会变成永远命中 0 行的硬过滤条件，
+     * <p>为什么需要它：§9.14 要求「问题里的公司必须在 company 表里命中」——
+     * LLM 会编造不存在的代码，必须在检索前校验，否则它会变成永远命中 0 行的硬过滤条件，
      * 静默地把整个检索结果清空。
+     *
+     * <p>参数 {@code code} 是**证券代码**（{@code company.code}）；自 ST9 §16 起，
+     * 代码一律由 {@code com.finagent.understanding.CompanyResolver} 查库得到，
+     * 不再由模型直接产出（契约 C13）。
      */
     public boolean companyExists(String code) {
         if (code == null || code.isBlank()) {

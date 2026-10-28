@@ -239,8 +239,8 @@ public class HybridRetriever {
         if (qu.metrics() != null) {
             terms.addAll(qu.metrics());
         }
-        if (qu.companyIds() != null) {
-            terms.addAll(qu.companyIds());
+        if (qu.companyCodes() != null) {
+            terms.addAll(qu.companyCodes());
         }
         return new SparseQuery(List.copyOf(terms), SparseMode.EXACT);
     }
@@ -259,7 +259,7 @@ public class HybridRetriever {
                                   List<String> warnings) {
         Long companyId = base.companyId();
         boolean quCompany = false;
-        List<String> codes = qu.companyIds() == null ? List.of() : qu.companyIds();
+        List<String> codes = qu.companyCodes() == null ? List.of() : qu.companyCodes();
 
         if (companyId == null && codes.size() == 1) {
             Long id = documents.findCompanyIdByCode(codes.get(0));

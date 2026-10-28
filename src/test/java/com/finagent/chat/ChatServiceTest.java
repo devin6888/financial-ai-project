@@ -23,6 +23,7 @@ import com.finagent.understanding.QueryType;
 import com.finagent.understanding.QueryUnderstanding;
 import com.finagent.understanding.RouterService;
 import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -151,20 +152,114 @@ class ChatServiceTest {
     }
 
     @Test
-    @DisplayName("问的公司不在作用域 → 拒答，且不检索、不调模型")
-    void refusesOutsideCompany() {
+    @DisplayName("模型给的公司代码在作用域里没有 → 拒答，且不检索、不调模型")
+    void refusesUnknownCompanyCode() {
         when(router.understand(anyString())).thenReturn(new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION,
-                "五粮液2024年营业收入", List.of("000858"), new int[]{2024, 2024}, List.of("营业收入"),
+                "000858 2024年营业收入", List.of("000858"), new int[]{2024, 2024}, List.of("营业收入"),
                 false, false, null, false, "LLM"));
 
-        ChatResponse r = service.ask(new ChatRequest("五粮液2024年营业收入是多少？", ChatScope.documents(38L), "NEVER"));
+        ChatResponse r = service.ask(new ChatRequest("000858 2024年营业收入是多少？", ChatScope.documents(38L), "NEVER"));
 
         assertThat(r.sufficient()).isFalse();
         assertThat(r.confidence()).isEqualTo("insufficient");
-        assertThat(r.warnings()).contains("company_out_of_scope:000858");
+        assertThat(r.warnings()).contains("company_unresolved");
         assertThat(r.answer()).contains("000858");
         verify(retriever, org.mockito.Mockito.never())
                 .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class));
+    }
+
+    @Test
+    @DisplayName("问题只给公司名、模型不给代码 → 由 CompanyResolver 查库得到代码（ST9 §16）")
+    void resolvesCompanyNameToCode() {
+        String question = "按我的要求标注出处：东方财富2025年营业总收入是多少";
+        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, question, List.of(), new int[]{2025, 2025},
+                List.of("营业总收入"), false, false, null, false, "LLM", false, false, List.of("东方财富")));
+
+        ChatResponse r = service.ask(new ChatRequest(question, ChatScope.documents(38L), "ASK"));
+
+        assertThat(r.warnings()).doesNotContain("company_unresolved");
+        // 检索拿到的公司代码必须是查库得到的那家：Sparse 精确模式靠 companyCodes 拼词
+        ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059");
+        assertThat(quCaptor.getValue().companyMentions()).containsExactly("东方财富");
+    }
+
+    @Test
+    @DisplayName("问题里提到范围外的公司名 → 拒答并回显用户原话（不让检索失去主体约束）")
+    void refusesUnresolvedCompanyMention() {
+        String question = "五粮液2024年营业收入是多少？";
+        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, question, List.of(), new int[]{2024, 2024},
+                List.of("营业收入"), false, false, null, false, "LLM", false, false, List.of("五粮液")));
+
+        ChatResponse r = service.ask(new ChatRequest(question, ChatScope.documents(38L), "ASK"));
+
+        assertThat(r.sufficient()).isFalse();
+        assertThat(r.warnings()).contains("company_unresolved");
+        assertThat(r.answer()).contains("五粮液");
+        verify(retriever, org.mockito.Mockito.never())
+                .retrieve(any(RetrievalRequest.class), any(QueryUnderstanding.class), any(ResolvedScope.class));
+    }
+
+    @Test
+    @DisplayName("问题点名两家都在作用域内 → 两家代码都带上，不拒答（对比题）")
+    void keepsBothCodesForTwoInScopeCompanies() {
+        DocMeta east = new DocMeta(38L, 2L, "300059", "东方财富", 2024, "ANNUAL",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2024, 12, 31), 1, "东方财富2024年年度报告");
+        DocMeta ths = new DocMeta(37L, 5L, "300033", "同花顺", 2024, "ANNUAL",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2024, 12, 31), 1, "同花顺2024年年度报告");
+        when(scopeResolver.resolve(any())).thenReturn(ResolvedScope.of(
+                ScopeKind.DOCUMENTS, List.of(east, ths), ResolvedScope.REASON_SESSION, List.of()));
+        String question = "东方财富和同花顺2024年营收对比";
+        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.COMPARISON, question, List.of(), new int[]{2024, 2024},
+                List.of("营业收入"), false, false, null, false, "LLM", false, false,
+                List.of("东方财富", "同花顺")));
+
+        ChatResponse r = service.ask(new ChatRequest(question, ChatScope.documents(38L), "ASK"));
+
+        assertThat(r.warnings()).doesNotContain("company_unresolved");
+        ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059", "300033");
+    }
+
+    @Test
+    @DisplayName("问题没点名公司、作用域只有一家 → 用作用域的公司代码兜底（警告 company_from_scope）")
+    void fillsCompanyCodeFromSingleCompanyScope() {
+        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "2024年营业总收入是多少？", List.of(), new int[]{2024, 2024},
+                List.of("营业总收入"), false, false, null, false, "LLM"));
+
+        ChatResponse r = service.ask(new ChatRequest("2024年营业总收入是多少？", ChatScope.documents(38L), "ASK"));
+
+        ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        assertThat(quCaptor.getValue().companyCodes()).containsExactly("300059");
+        assertThat(r.warnings()).contains("company_from_scope");
+    }
+
+    @Test
+    @DisplayName("作用域里有两家公司 → 不兜底（否则等于替用户选主体）")
+    void doesNotGuessCompanyWhenScopeHasTwo() {
+        DocMeta east = new DocMeta(38L, 2L, "300059", "东方财富", 2024, "ANNUAL",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2024, 12, 31), 1, "东方财富2024年年度报告");
+        DocMeta ths = new DocMeta(37L, 5L, "300033", "同花顺", 2024, "ANNUAL",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2024, 12, 31), 1, "同花顺2024年年度报告");
+        when(scopeResolver.resolve(any())).thenReturn(ResolvedScope.of(
+                ScopeKind.DOCUMENTS, List.of(east, ths), ResolvedScope.REASON_SESSION, List.of()));
+        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
+                QueryType.SEMANTIC_EXPLANATION, "2024年营业总收入是多少？", List.of(), new int[]{2024, 2024},
+                List.of("营业总收入"), false, false, null, false, "LLM"));
+
+        ChatResponse r = service.ask(new ChatRequest("2024年营业总收入是多少？", ChatScope.documents(38L), "ASK"));
+
+        ArgumentCaptor<QueryUnderstanding> quCaptor = ArgumentCaptor.forClass(QueryUnderstanding.class);
+        verify(retriever).retrieve(any(RetrievalRequest.class), quCaptor.capture(), any(ResolvedScope.class));
+        assertThat(quCaptor.getValue().companyCodes()).isEmpty();
+        assertThat(r.warnings()).doesNotContain("company_from_scope");
     }
 
     @Test

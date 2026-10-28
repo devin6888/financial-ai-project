@@ -540,6 +540,12 @@ mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ET
 | 25 | §13.3 未定义预算为 0 的语义 | `longTermBudgetTokens() <= 0` 统一视为「这一层关掉」——CONTEXTUAL / WATCHLIST 一条都不进 Prompt（INSTRUCTION 不受影响） | 初版写成 `if (budget > 0 && used + t > budget)`，结果 ratio=0 反而变成「不限量」，方向正好相反；`structured` / `summaryText` 两处的既有语义都是「预算 <= 0 = 关掉」，三处必须一致 | 2026-10-27 |
 | 26 | Task 8 测试计划未提「库里已有手工验证留下的记忆行」 | `LongTermMemoryRecallerDbTest` 用合成用户 9001 / 9002（库里不存在的 id），并在 `@AfterEach` 按 `subject_id IN (9001, 9002)` 清场 | 真实 analyst(id=1) 身上有手工 curl 留下的 `answer.style` / `focus.company.300059` 两行 ACTIVE，会让「库里没有记忆 → 零 embedding」这类用例直接失败；合成用户既不动真实数据，也不依赖清库顺序 | 2026-10-27 |
 | 27 | Task 8 的 ChatService 断言口径 | 用 `argThat(m -> m instanceof MemoryContext mc && mc.text().contains(...))` 校验第 4 参，而不是 `eq(new MemoryContext(...))` | `MemoryContext` 里带 `Stats` 与 `recentTurns`，逐字段相等对「背景文本是否变了」这个断言太脆；断言意图是「重新装配过的背景进了 Prompt」 | 2026-10-27 |
+| 28 | §4 Task 5 验收「比去年增长多少」要「出现两个年度数字」 | 放宽为「出现增长率或年度其一」 | 真模型第一版回答是「营业总收入比去年增长38.46%。」——它做了跨年对比（两个年度的数据都在证据里），只是没把两个绝对金额各念一遍。按字面判据会把「答对了但表述简洁」判成失败；按「有没有做对比」判定才稳定 | 2026-10-28 |
+| 29 | §14.2 用例 5「写一条偏好 → 新会话带『按我的』提问」 | 记忆 key 固定为 `analysis.must_cite`，提问里带「出处」二字（`按我的要求标注出处：…`） | 首版用自定义 key + 「按我的习惯」：Gate 命中了，但召回要靠向量相似度（记忆内容是「回答先给结论」），实测相似度 < 0.6 → `longTermItems=0` → 假失败。改成「问题里出现『出处』→ 规则命中 `analysis.must_cite`」后召回是**确定性**的，不受改写与阈值波动影响 | 2026-10-28 |
+| 30 | §14.2 用例 6「记忆里的数字若被复述 → 必须有 answer_ungrounded」 | 允许两条正当结局：① 正常作答且引用全为真实文档行；② 全部数字不落地 → `answer_ungrounded` 拒答 | 这条测的是「记忆不能变成证据」，不是「模型必须听记忆」。实测模型直接无视记忆里的「1 亿元」，给出 `sufficient=true` + 4 条真实引用 + 未复述（`repeatedMemory=false`），正是想要的结局 | 2026-10-28 |
+| 31 | §14.2 用例 5 的写入方式 | 用 `POST /api/memories` 写，而不是发一句「以后…」的命令 | 命令句那一轮也要走完整链路（QU + 检索 + 生成，一次模型调用），而命令解析已有 8 个单测（`MemoryCommandParserTest`）。e2e 要验的是「新会话能否召回」，不是「正则能不能匹配」 | 2026-10-28 |
+| 33 | 未预见「LLM QU 编造公司代码」 | 新增 §15「公司代码文本落地校验」：QU 给出**恰好 1 个**作用域外代码时，若问题原文点名了作用域内公司且**恰好 1 家**，改锚到它并记 `query_company_reanchored`；否则不动、照旧拒答 | 这是 e2e 暴露的产品级缺陷，不是测试问题：600519 在问题里根本没出现，是模型编的，却让整轮问答被拒答（3.34 秒、零检索）。修法只能「有据才改」，不能一律丢弃（那正是阶段 6 修过的「问五粮液答东方财富」） | 2026-10-28 |
+| 32 | 未定义集成测试的清理策略 | e2e 自带 `@AfterEach` 硬删；Task 2~6 的集成测试**不清理**，库里留下会话行（当前 14 行，标题是被截断的问题） | 这些行不影响断言（每次新建会话），但会让 `conversation` 表随测试次数增长。记入报告「已知限制」，本阶段不加清理框架 | 2026-10-28 |
 
 ## 8. 待确认决策（动手前需要你拍板）
 
@@ -762,4 +768,244 @@ Task 3~8 全部完成 ──→ Task 9 (契约/文档/报告/e2e)
 | 未在本任务做 | 真模型的多轮记忆 e2e（「以后回答先给结论」→ 下一轮验证注入），与 §10 的 4 个多轮场景一起放到 Task 9 |
 
 **为什么记忆进 trace 而不是进证据块**：引用编号 `[E1..En]` 的序号是数组下标（`CitationValidator`），记忆没有 documentId / page / bbox，塞进去会让编号整体错位，还会产出「看起来有出处却点不开」的引用。记忆只在 `ChatTrace.memory` 里留统计（短期条数 / 丢弃数 / 摘要字符 / 长期条数 / 闸门是否命中），供评测与排障。
+## 14. 执行前修订（2026-10-28，Task 9 收尾）
 
+### 14.1 交付清单
+
+| 产出 | 文件 | 内容 |
+| --- | --- | --- |
+| 契约 C12 | `docs/关键契约.md` | 四层记忆的真相源与行基数、三条硬规则（不可引用 / 只整条丢 / 越权 404）、会话作用域、Token 配额、Gate 判定、冲突版本化 |
+| 术语 | `docs/术语表.md` | 新增「会话与记忆」小节（原 §10 速查表 → §11、原 §11 指路 → §12） |
+| README | `README.md` | 阶段 9 一节：建会话 / 追问 / 写偏好的三条 curl + 开关表 + 记忆不产生引用 |
+| 报告 | `docs/阶段9-Memory与会话报告.md` | 骨架同阶段 7/8（怎么读 → 结论 → 为什么 → 交付物 → 契约 → 实测 → 踩坑 → 限制 → 验收 → 下一步） |
+| 路线图 | `docs/superpowers/plans/2026-10-05-demo-roadmap.md` | 阶段 9 标完成 + 计划索引 |
+| e2e | `src/test/java/com/finagent/memory/ConversationE2ETest.java` | 6 个用例：4 个多轮消解 + 1 个偏好跨会话 + 1 个「记忆不得冒充证据」 |
+
+### 14.2 e2e 六个用例（真模型，`@Tag("e2e")`）
+
+| # | 场景 | 输入 | 断言 |
+| --- | --- | --- | --- |
+| 1 | 指标追问 | 会话 A：「东方财富2025年营业总收入是多少」→「那净利润呢？」 | 第 2 轮 `sufficient=true`、`warnings` 含 `query_inferred_from_context`、引用落在 document 7、答案含 `12,084,594,947` 或 `120.85` |
+| 2 | 跨年对比 | 同会话：「比去年增长多少？」 | 答案同时出现 2024 与 2025 的金额（`44,587,872,891` 与 `16,067,741,039` 两个年度之一 + 另一年），引用 ≥ 2 |
+| 3 | 换指标不换公司 | 同会话：「它现在的现金流怎么样？」 | `sufficient=true` 且引用只来自 document 7 |
+| 4 | 指标不在语料 | 同会话：「那毛利率呢？」 | 200 且（`sufficient=true` 带引用）或（`sufficient=false` + `note` 非空）——不允许 500 |
+| 5 | 偏好跨会话 | 会话 B：「以后回答先给结论」→ 新会话 C：「按我的格式，东方财富2025年营业总收入是多少」 | C 轮 `trace.memory.gateHit=true` 且 `longTermItems>=1`，答案仍 `sufficient=true` |
+| 6 | 记忆不冒充证据 | 复用 C 轮的响应 | 所有 `citations[].documentId > 0` 且 `pageStart > 0`；记忆条数不参与 `citations.length` |
+
+### 14.3 与计划的三处不同（以本节为准）
+
+| 计划原文 | 实际做法 | 原因 |
+| --- | --- | --- |
+| e2e 只写「4 个多轮 + 1 偏好 + 1 负样本」 | 负样本落成「记忆不产生引用」的结构断言（用例 6），而不是「模型不许说错数字」的语义断言 | 模型是否复述记忆里的错误数字取决于 Prompt 遵循度，断言它等于断言模型今天的心情；但「引用里不能出现记忆」是代码不变量，永远可判 |
+| 未写 e2e 需要哪些开关 | `properties = {memory.enabled=true, tenant.auth-enabled=true, tenant.acl-enabled=true}` + `@ActiveProfiles("test")` + `dev-analyst-token` | 记忆默认关（回归门限要它关）；ACL 打开后 analyst 只剩 300059 的权限，跨公司用例才有意义；不带 token 直接 401 |
+| 未写清理策略 | `@AfterEach` 用 `JdbcTemplate` 硬删本轮造的 `conversation*` 行与 `long_term_memory`（按 id 列表），并在无 `TenantContext` 的主线程执行 | 测试线程不设上下文 = owner 连接，RLS 不拦；否则每跑一次 e2e，库里就多一批「新会话」与一条 `answer.e2e_*` 偏好 |
+
+### 14.4 报告要收的实测数字
+
+| 数字 | 来源 |
+| --- | --- |
+| 六个 e2e 的耗时与逐条结论 | surefire 输出 + `CONV-E2E\|case=...\|` 打印行 |
+| 四层记忆在全量回归里被关掉时的零影响 | 全量非 e2e 用例数（基线 478）+ 1 跳过 |
+| V10 六张表的行数与 RLS 策略数 | `SELECT count(*)` 与 `pg_policies` |
+| 召回闸门的真实开销 | `trace.memory.gateHit` 与是否发生 embedding 调用（日志） |
+
+## 15. 执行前修订（2026-10-28，QU 公司代码的「文本落地校验」）
+
+> **⚠ 本节方案已被 §16 取代并删除代码**（`ChatService.groundCompanyFromQuestion` 已移除）。
+> 保留原文只为记录「为什么第一版是补丁、第二版才是改分工」。要看最终口径请直接跳到 §16 与 C13。
+
+### 15.1 现象
+
+e2e 第三轮（整类 6 个用例）5 通过 / 1 失败，失败的是「偏好跨会话」：
+
+- 问题原文 27 字：**按我的要求标注出处：东方财富2025年营业总收入是多少**（不含任何股票代码）；
+- 日志：`作用域外公司，拒答：[600519]`，耗时 3.34 s（没检索、没调答案模型）；
+- 因此 `trace.memory.gateHit` 必然为 false —— 拒答分支在 Gate 召回**之前**返回。
+
+### 15.2 根因（两层，都要看清）
+
+1. **LLM QU 偶发编造公司代码**：`LlmRouter` 的提示词写的是「companyIds：证券代码（6 位数字），不确定就留空数组」，但模型这一次给了 600519（贵州茅台，中文财经语境里最常见的示例代码）。600519 在本仓库 `src/main/java` 里只出现在两处注释（`RuleBasedRouter.java:13`、`RouterService.java:86`），**不在任何 Prompt 模板**里，所以不是「抄了示例」，是模型自己编的。
+2. **编造值没有任何落地校验**：`RouterService.validate` 自阶段 6 起「只校验 6 位数字格式、保留未知代码」（那次修的正是「未知代码被静默丢弃 → 问五粮液答东方财富」），所以编造码原样通过 → `ChatService.companiesOutsideScope` 判定「用户问的是 600519」→ 拒答。安全（没答错主体）但误伤正常问题。
+
+### 15.3 三个候选与取舍
+
+| 候选 | 做法 | 结论 |
+| --- | --- | --- |
+| ① 文本落地校验（**采用**） | 只有当**问题原文点名了作用域内的公司**、且唯一时，才把这个「无依据的代码」改锚到它，并留 warning | 只在「有正面文本证据」时动手，不动阶段 6 的保护 |
+| ② 丢弃所有问题里无依据的代码 | 简单，但「五粮液2024年营业收入」也会被丢 → 系统拿东方财富的数字回答，主体错 —— 正是阶段 6 修过的 bug | **否决** |
+| ③ e2e 加重试 | 一次失败重跑直到绿 | **否决**：掩盖真实的产品脆弱点，报告里也就写不出这条 |
+
+### 15.4 规则的精确形状（实现必须逐条对应）
+
+1. 前置条件：`qu.companyIds()` 恰好 1 个，且该代码**不在**作用域文档的 `companyCode` 集合里；否则原样返回。
+2. 在 `scope.documents()` 里找 `companyName` 出现在**问题原文**中的公司，按 code 去重后必须**恰好 1 个**；否则原样返回（0 个 = 用户没点名，2 个 = 说不清问哪家）。
+3. 命中则：`companyIds` 改成该 code；`normalizedQuery` 若既不含该公司名也不含该代码，则加前缀 `名称（代码） `（与 `RouterService.fillFromContext` 的补全格式一致，检索才能命中）。
+   实测补充：前置条件要求公司名出现在问题原文，所以 `normalizedQuery`（由模型归一化、多数情况等于原文）**通常已含公司名**，前缀分支很少触发；真正决定 Sparse 精确模式能否命中该公司的，是改过的 `companyIds`（它被拼进检索词），因此验收断言要看 `companyIds` 而不是看 query 文本。
+4. 留 warning `query_company_reanchored`（**不带代码**，避免把「用户问过 600519」写进响应正文；细节只进日志）。
+
+### 15.5 不变量（写完必须仍然成立）
+
+- 问题里没有任何作用域公司名（`ChatServiceTest.refusesOutsideCompany` 的「五粮液…」）→ **完全不动**，仍拒答并带 `company_out_of_scope:000858`；
+- 拒答分支的位置不变（仍在 Gate 召回之前）—— 安全边界不因为这次改动前移或后移；
+- 无会话（单轮）与有会话走同一段校验，不做特例。
+
+### 15.6 改哪些文件
+
+| 文件 | 动作 | 干什么 |
+| --- | --- | --- |
+| `src/main/java/com/finagent/understanding/QueryUnderstanding.java` | 修改 | 新增 `withCompanyGrounding(List<String> companyIds, String normalizedQuery)`（record 没有 setter） |
+| `src/main/java/com/finagent/chat/ChatService.java` | 修改 | QU 之后、`companiesOutsideScope` 之前插一步 `groundCompanyFromQuestion(...)`；warning 单独一组进 `mergeWarnings` |
+| `src/test/java/com/finagent/chat/ChatServiceTest.java` | 扩充 | +2 例：编造代码被改锚（不拒答 + `query_company_reanchored` + 检索用的 query 含 300059）；问题里点名两家作用域公司时不改锚 |
+
+### 15.7 验收
+
+| 用例 | 断言 |
+| --- | --- |
+| 编造代码 + 问题点名唯一作用域公司 | 不拒答；`warnings` 含 `query_company_reanchored`；传给检索器的 `QueryUnderstanding.companyIds()` 恰为 `["300059"]` |
+| 问题里点名两家作用域公司 | 不改锚（走原拒答或原逻辑） |
+| 问题没点名任何作用域公司 | 仍拒答，`company_out_of_scope:000858`（既有用例） |
+| e2e 偏好跨会话 | `gateHit=true`、`longTermItems>=1`、`sufficient=true` |
+
+
+
+## 16. 执行前修订（2026-10-28，公司名→代码的解析搬到程序里）
+
+### 16.1 为什么改
+
+用户指出（2026-10-28）：「提示词好像就有问题啊，他怎么可能解析出来证券代码呢？用户一般都是按照公司名称来提问的」。判断成立，根因是**分工错了**：
+
+| 现状 | 问题 |
+| --- | --- |
+| 提示词要求模型输出 `companyIds：证券代码（6 位数字）` | 用户只给公司名，模型必须凭训练记忆把「东方财富」翻译成「300059」——没有权威源可查，出错是概率问题 |
+| 模型给错的代码能通过校验 | `RouterService.validate` 只校验「6 位数字」格式（src/main/java/com/finagent/understanding/RouterService.java:132-140），600519 完美通过 |
+| 错代码导致整轮拒答 | `ChatService` 判「问的公司不在作用域」→ 拒答，用户莫名其妙（e2e 实测 3.34 秒、零检索） |
+
+通用原则：**抽取（extraction）交给模型，实体链接（entity linking）交给数据库**。模型只负责「问题里出现了哪个词」，把词对到 `company` 行必须有权威表参与。
+
+### 16.2 命名（用户硬要求：ids 与 codes 必须切开）
+
+| 名字 | 类型 | 含义 | 由谁产生 |
+| --- | --- | --- | --- |
+| `QueryUnderstanding.companyCodes` | `List<String>` | **证券代码**（6 位数字，如 300059） | 原文写了代码时由正则/模型抄；否则由 CompanyResolver 查库得到 |
+| `QueryUnderstanding.companyMentions` | `List<String>` | **原文里的公司名字面**（必须是问题原文子串，如「东方财富」） | 模型抽取 + 子串校验 |
+| `ResolvedScope.companyIds()` | `Set<Long>` | **数据库 company.id 主键**（如 7） | 作用域解析（保持原名不变，它确实是 id） |
+
+全仓把 `companyIds` 改名为 `companyCodes`，**唯一例外**是 `ResolvedScope.companyIds()`。
+
+### 16.3 契约（新增 C13，随后写进 docs/关键契约.md）
+
+1. 模型输出的 `companyMentions` 必须是问题原文的**逐字子串**；不是子串的一律丢弃（模型编不出来）。
+2. 模型输出的 `companyCodes` 必须在问题原文里**字面出现**；没出现的一律丢弃 —— 这是根治 600519 类编造的那一刀。
+3. `companyCodes` 为空时，由 `CompanyResolver` 用 mentions 在**当前作用域**内匹配，匹配到才得到代码。
+4. 匹配到 1 家或多家的 → 全部写进 `companyCodes`（多家用于对比题）。
+5. mentions 里**没有任何一家**能匹配上，且该 mention「像公司名」→ **拒答**（文案点名用户原话），记 `company_unresolved`；不允许退化成「无公司约束检索」（那是阶段 6「问五粮液答东方财富」的根因）。
+6. 问题里根本没提公司（如「行业趋势怎么样」）→ 不加公司约束，正常检索。
+
+### 16.4 CompanyResolver 规则
+
+| 步骤 | 规则 |
+| --- | --- |
+| 代码优先 | 逐个 code 与 `scope.documents()` 的 `companyCode` 精确比对，命中即 match |
+| 名称匹配 | 名称先归一化：去空白、去「股份有限公司 / 有限公司 / 股份 / 集团 / 控股 / 信息 / 科技」，再双向 `contains`（「东方财富信息」也能命中「东方财富」） |
+| 去重 | 按 code 去重，保留首次命中的顺序 |
+| 「像公司名」判定 | 长度 ≥ 3 视为实体；或含后缀词（公司/股份/集团/银行/证券/保险/控股/实业/科技/药业/能源/汽车/地产/电力/传媒/基金/信托/航空/钢铁/煤炭/化工/医药/食品/家电） |
+| 黑名单（代词，不触发拒答） | 该公司、上述公司、本公司、母公司、子公司、公司、企业、行业、市场、这些公司、上市公司 |
+
+### 16.5 文件表
+
+| 文件 | 改动 |
+| --- | --- |
+| src/main/java/com/finagent/understanding/QueryUnderstanding.java | `companyIds` → `companyCodes`；**末尾**新增 `companyMentions`（放末尾是为了让 33 处既有 12 参调用点继续编译，且两个 `List<String>` 相邻会导致静默错位）；保留 12/11/10/9 参兼容构造器（mentions 传空）；`withCompanyGrounding` → `withCompanyCodes` |
+| src/main/java/com/finagent/understanding/LlmRouter.java | 提示词拆成两个字段（mentions 逐字抄、codes 仅在原文有 6 位数字时填）；`RouterDto` 同步改名 + 加 `companyMentions`；`toUnderstanding` 传 13 参 |
+| src/main/java/com/finagent/understanding/RouterService.java | `validate` 加两道子串过滤（mentions 必须是原文子串、codes 必须在原文出现）；`fillFromContext` / `hasEntities` 等改名 |
+| **新增** src/main/java/com/finagent/understanding/CompanyResolver.java | 纯函数 + 两个 record（`Match(code, name, companyId)`、`Resolution(matches, unresolved, warnings)`）；无 Spring 依赖，单测不需要上下文 |
+| src/main/java/com/finagent/chat/ChatService.java | 删 `groundCompanyFromQuestion`；改成 `CompanyResolver.resolve(...)` + `qu.withCompanyCodes(...)`；拒答分支改由「未匹配 mentions」驱动 |
+| src/main/java/com/finagent/retrieval/HybridRetriever.java | `qu.companyIds()` → `qu.companyCodes()`（Sparse 词表用解析后的代码） |
+| src/main/java/com/finagent/memory/ConversationContextService.java | 同上改名（写会话槽位时用的仍是代码） |
+| src/test/java/... | 新增 `CompanyResolverTest` 8 例；`RouterServiceTest` +3（编造的 mentions/codes 被丢弃）；`ChatServiceTest` 两条改写成「mention 解析成功」与「mention 无法解析 → 拒答」 |
+
+### 16.6 删掉的东西
+
+| 删除项 | 为什么 |
+| --- | --- |
+| `ChatService.groundCompanyFromQuestion`（§15 的改锚补丁） | 它修的是「模型给了错代码」这个症状；现在代码只能来自原文或数据库，症状的成因不存在了 |
+| `QueryUnderstanding.withCompanyGrounding` | 被 `withCompanyCodes` 取代 |
+| `ChatService.companiesOutsideScope` + `refuseOutsideCompanies` | 解析结果只可能来自作用域内文档；范围外的情况统一由「未匹配 mentions」拒答承担 |
+
+### 16.7 验收
+
+| # | 用例 | 期望 |
+| --- | --- | --- |
+| 1 | 问题「东方财富2025年营业总收入是多少」，模型只给 mention | 解析出 300059，正常作答 |
+| 2 | 同上，模型**编造** `companyCodes=[600519]` | validate 丢弃（原文无 600519），答案正常 |
+| 3 | 模型编造 mention「贵州茅台」（原文没有） | 子串校验丢弃，不影响作答 |
+| 4 | 「五粮液2024年营业收入」，范围只有东方财富 | 拒答，文案含「五粮液」，警告 `company_unresolved` |
+| 5 | 「东方财富和同花顺2024年营收对比」，两家都在范围 | 两家代码都进 `companyCodes`，不拒答 |
+| 6 | 「行业趋势怎么样」 | 无公司约束，正常检索 |
+| 7 | 别名「东方财富信息股份有限公司」 | 归一后命中「东方财富」 |
+| 8 | 多轮追问「那净利润呢」 | 仍走 `fillFromContext` 补公司，行为与阶段 9 一致 |
+| 9 | 32 题 golden set + 6 个多轮 e2e | 全部不退化（不允许出现新的误拒答） |
+
+### 16.8 风险
+
+| 风险 | 缓解 |
+| --- | --- |
+| 模型抽出泛称（「公司」「行业」）被当成实体 → 误拒答 | 黑名单 + 「像公司名」判定；32 题回归兜底 |
+| 简称（「东财」）匹配不上 | 归一化 + 双向 contains 能覆盖「东方财富信息」；真简称留给阶段 10 的 `company_alias` 表 |
+| 匹配到多家但不是对比题 | 只记 debug 日志、不拒答（宁可多带约束，也不误伤） |
+
+### 16.9 执行结果（2026-10-28）
+
+| 项 | 结果 |
+| --- | --- |
+| 命名 | `QueryUnderstanding.companyCodes`（证券代码）/ `companyMentions`（原文字面）/ `ResolvedScope.companyIds()`（数据库主键）三者在代码、Javadoc、契约 C13 里均显式区分；`companyIds` 这个名字只保留在 `ResolvedScope` 上 |
+| 新字段位置 | `companyMentions` 放在 record **末尾**：它与 `companyCodes` 同为 `List<String>`，相邻会让 33 处既有 12 参调用点按位置错配且编译器不报错 |
+| 提示词 | 拆成两字段：mentions「逐字抄原文、不输出代码」/ codes「只有原文里字面出现 6 位数字时才填」；EXACT_FACT 的前置条件改成「mentions 或 codes 至少一个非空」 |
+| 校验 | `RouterService.validate` 加两道子串过滤（mentions 必须是原文子串、codes 必须字面出现）；实测原有「保留未知代码」的语义保留 —— 写字原文里的 `999999` 仍会被保留，交给作用域拒答 |
+| ChatService | 删 `groundCompanyFromQuestion` / `companiesOutsideScope` / `refuseOutsideCompanies`，改为一次 `CompanyResolver.resolve(...)` + `qu.withCompanyCodes(...)`；拒答文案回显用户原话（如「五粮液」），警告只放稳定码 `company_unresolved` |
+| 新增测试 | `CompanyResolverTest` 10 例（代码精确命中 / 名字命中 / 全称归一 / 两家对比 / 范围外拒答 / 代词忽略 / 代码与名字去重 / 空输入 / 短泛称只留警告 / 空作用域）；`RouterServiceTest` 新增 4 例（代码必须出现在原文、原文里的代码保留、mention 必须子串、mention 命中保留）；`ChatServiceTest` 改写 4 例（名字解析出代码 / 范围外公司名拒答 / 两家都在范围 / 代码不在范围拒答） |
+| 全量非 e2e | **494 通过 / 0 失败 / 1 跳过**（改前 480；+10 resolver、+4 router，−2 被改写的旧用例合并进新用例） |
+| 遗留 | 两字简称（「茅台」「招行」）不满足「长度 ≥ 3 或含后缀词」，不会被判成实体 → 可能不加约束（记 warning）。语料只有两家公司时影响面小；接多公司语料时建议补 `company_alias` 表（阶段 10） |
+
+## 17. 执行前修订（2026-10-28，e2e 第 4 轮抓到的两处）
+
+### 17.1 问题一：问题里没有公司名时，Sparse 丢掉了公司约束
+
+§16 落地后，`RetrievalEvalTest` 的 27 条全部变成 `qu=SEMANTIC_EXPLANATION/DEGRADED:weak_evidence`：评测问题形如「2024年营业总收入是多少？」
+（公司由作用域隐含），新规则不许模型凭空补代码 → `EXACT_FACT` 三要素不全 → 降级。召回与 MRR 没变（1.000 / 0.782），但 Sparse 精确模式少了「300059」这个词，命中面被放大。
+
+**修法（本条即 §16.3 的第 7 条规则）**：`ChatService` 在 `CompanyResolver.resolve(...)` 之后补一步 —— 若 `companyCodes` 仍为空且**作用域里只有一家公司**，用它的代码兜底，并加警告 `company_from_scope`。
+
+| 情形 | 行为 | 为什么 |
+| --- | --- | --- |
+| 问题点名公司且能在作用域内解析 | 用解析结果 | 用户说的优先 |
+| 问题没点名公司，作用域里只有一家 | 用那一家兜底 + `company_from_scope` | 作用域本身就是用户设定的约束，这是确定性推断，不是模型猜 |
+| 问题没点名公司，作用域里有两家以上 | 不兜底 | 替用户选主体 = 主体错配（阶段 6 的 000858 事故） |
+| 问题点名公司但作用域里没有 | 仍然拒答（§16.3 第 5 条） | 安全边界不动 |
+
+### 17.2 问题二：模型判「证据不足」时，answer 与 note 可能都是空串
+
+`ConversationE2ETest` 第 4 例（「那毛利率呢」）实测 `confidence=insufficient`、`citations=0`，而 `answer` 与 `note` 都是空串 —— 客户端拿到空文本，既没法展示也没法报警。
+根因：`AnswerService` 的 `!dto.sufficient()` 分支直接透传 `dto.answer()` / `dto.note()`，且**一条 warning 都不加**。
+
+**修法**：该分支补 `evidence_insufficient` 警告；`answer` / `note` 为空时给固定文案（「证据不足：检索到的内容里没有能支撑这个问题的信息。」/「模型判定现有证据不足以回答，且未给出原因。」）。
+
+### 17.3 改哪些文件
+
+| 文件 | 动作 | 干什么 |
+| --- | --- | --- |
+| `src/main/java/com/finagent/chat/ChatService.java` | 修改 | `CompanyResolver` 之后加「单公司作用域兜底」+ `scopeCompanyCodes(...)` |
+| `src/main/java/com/finagent/answer/AnswerResult.java` | 修改 | 新增常量 `WARNING_EVIDENCE_INSUFFICIENT = "evidence_insufficient"` |
+| `src/main/java/com/finagent/answer/AnswerService.java` | 修改 | `!dto.sufficient()` 分支补警告与空文案兜底 |
+| `src/test/java/com/finagent/chat/ChatServiceTest.java` | 扩充 | +2：单公司兜底（断言检索用的 `companyCodes=[300059]`）；两家公司不兜底 |
+| `src/test/java/com/finagent/memory/ConversationE2ETest.java` | 修改 | 第 4 例 insufficient 分支改断言 `note` 非空 + `citations` 为空 + 警告含 `evidence_insufficient` |
+
+### 17.4 验收
+
+| 用例 | 断言 |
+| --- | --- |
+| 单公司作用域 + 无公司名的问题 | 检索用的 QU `companyCodes()` 恰为 `["300059"]`；响应警告含 `company_from_scope` |
+| 两家公司作用域 + 无公司名的问题 | 不兜底；无 `company_from_scope` |
+| 模型判 insufficient 且不给文案 | `answer` 与 `note` 均非空；警告含 `evidence_insufficient` |
+| 全量非 e2e | 494 + 2 = 496 通过 / 1 跳过 |
+| `ConversationE2ETest` | 6/6 绿（第 4 例走 insufficient 分支也必须绿） |
