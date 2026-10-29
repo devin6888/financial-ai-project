@@ -109,18 +109,25 @@ public class HybridRetriever {
 
     private Result doRetrieve(RetrievalRequest req, QueryUnderstanding qu, ResolvedScope scope,
                               List<String> warnings, RetrievalProgress progress) {
+        // 基础的过滤条件
         RetrievalFilters base = applyScope(req.filters(), scope, warnings);
+
+        // 把 QU 的实体并进过滤条件。
         EffectiveFilters eff = mergeFilters(base, qu, scope, warnings);
         SparseQuery sq = sparseQuery(qu);
 
         long denseMs = 0;
         long sparseMs = 0;
 
+
+        //-----dense 检索-----
         long t = System.currentTimeMillis();
         progress.onPhase("dense", 0);
         List<RetrievedChunk> denseHits = dense.retrieve(req.query(), eff.filters(), req.topDense());
         denseMs += System.currentTimeMillis() - t;
 
+
+        //-----sparse 检索-----
         t = System.currentTimeMillis();
         progress.onPhase("sparse", 0);
         List<RetrievedChunk> sparseHits = sparse.retrieve(req.query(), sq.terms(), sq.mode(),
@@ -195,6 +202,7 @@ public class HybridRetriever {
         List<RetrievedChunk> result;
         int limit = Math.min(req.topRerank(), candidates.size());
 
+        //-----rerank-----
         if (!req.useRerank()) {
             // 评测时关掉精排看 RRF 的原始排序 —— 这是「没启用」，不是「降级」
             result = candidates.subList(0, limit);
