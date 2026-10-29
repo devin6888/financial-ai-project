@@ -42,12 +42,10 @@ public class LlmRouter {
               用户在问题里用公司名提问时一律留空数组（代码由程序查库得到，不靠你记忆）
             - yearFrom / yearTo：年份整数；只问一年则两者相同
             - metrics：财务指标名（如营业收入、净利润）
-            - docType：报告类型，只能取 ANNUAL（年报）、SEMI_ANNUAL（半年报）、
-              Q1（一季报）、Q3（三季报）；问题里没提就留空字符串
+            - docType：报告类型，只能取 ANNUAL（年报）、SEMI_ANNUAL（半年报）、Q1（一季报）、Q3（三季报）；问题里没提就留空字符串
             - needMultiQuery：是否需要把一个问题拆成多条互补查询
-            - needLongTermMemory：问题是否依赖用户<b>长期偏好/习惯</b>（「按我以前的格式」「以后都先给结论」
-              「我之前说过什么」）。纯财务事实问答一律 false —— 这一项决定要不要多调一次检索，
-              误判为 true 会白花一次向量化调用
+            - needLongTermMemory：问题是否依赖用户<b>长期偏好/习惯</b>（「按我以前的格式」「以后都先给结论」「我之前说过什么」）。
+                纯财务事实问答一律 false —— 这一项决定要不要多调一次检索， 误判为 true 会白花一次向量化调用
 
             判为 EXACT_FACT 时，companyMentions（或 companyCodes）、yearFrom/yearTo、metrics 必须同时非空；
             任一项无法确定，就判为 SEMANTIC_EXPLANATION（误判代价更小的方向）。
@@ -84,9 +82,13 @@ public class LlmRouter {
         if (contextBlock == null || contextBlock.isBlank()) {
             return route(query);
         }
-        String user = "【对话背景】\n" + contextBlock + "\n【本轮问题】\n" + query;
-        RouterDto dto = chat.prompt().system(SYSTEM + CONTEXT_RULES).user(user)
-                .call().entity(RouterDto.class);
+        String user = "【对话背景】\n" + contextBlock +
+                      "\n【本轮问题】\n" + query;
+        RouterDto dto = chat.prompt()
+                .system(SYSTEM + CONTEXT_RULES)
+                .user(user)
+                .call()
+                .entity(RouterDto.class);
         return toUnderstanding(dto, query, true);
     }
 

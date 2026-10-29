@@ -1,5 +1,6 @@
 package com.finagent.security;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>这里同时是一道「迁移与代码口径一致」的守卫：如果哪天改了哈希算法（例如加盐、换编码），
  * 库里 64 位十六进制就对不上，三个 demo token 会全部登录失败 —— 这条测试会先炸。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ApiTokenRepositoryTest {

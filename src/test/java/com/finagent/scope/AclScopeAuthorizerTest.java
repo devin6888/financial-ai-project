@@ -4,6 +4,7 @@ import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code finagent_app} 对 {@code resource_grant} 的写权限，带上下文借连接会 SET ROLE 成运行时角色，
  * 插授权行会被数据库拒绝。所以 {@code @AfterEach} 的第一行必须是 {@code TenantContext.clear()}。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.tenant.acl-enabled=true")
 @ActiveProfiles("test")
 class AclScopeAuthorizerTest {

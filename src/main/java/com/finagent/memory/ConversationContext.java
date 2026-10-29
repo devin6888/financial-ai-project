@@ -13,11 +13,19 @@ import java.util.List;
  * @param companyCode / companyName 读时从 company 表 join 出来，不冗余存（公司改名要能跟着变）
  * @param contextJson 完整快照，便于回放「当时会话里到底是什么」
  */
-public record ConversationContext(long conversationId, long tenantId, Long companyId,
-                                  String companyCode, String companyName,
-                                  Integer yearFrom, Integer yearTo, List<Long> documentIds,
-                                  String currentMetric, String contextJson,
-                                  OffsetDateTime updatedAt) {
+public record ConversationContext(
+        long conversationId,
+        long tenantId,
+        Long companyId,
+        String companyCode,
+        String companyName,
+        Integer yearFrom,
+        Integer yearTo,
+        List<Long> documentIds,
+        String currentMetric,
+        String contextJson,
+        OffsetDateTime updatedAt
+) {
 
     public ConversationContext {
         documentIds = documentIds == null ? List.of() : List.copyOf(documentIds);
@@ -25,7 +33,7 @@ public record ConversationContext(long conversationId, long tenantId, Long compa
 
     public boolean isEmpty() {
         return companyId == null && yearFrom == null && yearTo == null
-                && documentIds.isEmpty() && (currentMetric == null || currentMetric.isBlank());
+               && documentIds.isEmpty() && (currentMetric == null || currentMetric.isBlank());
     }
 
     /**

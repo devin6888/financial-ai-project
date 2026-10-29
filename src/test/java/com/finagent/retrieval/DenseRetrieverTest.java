@@ -1,5 +1,6 @@
 package com.finagent.retrieval;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>命名不用 *IT（surefire 默认不含），否则永远不会在 mvn test 里跑。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class DenseRetrieverTest {

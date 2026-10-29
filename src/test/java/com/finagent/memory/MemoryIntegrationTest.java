@@ -11,12 +11,16 @@ import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.finagent.support.ConversationCleanup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.List;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -29,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 这里测的是「落库 → 窗口 → 渲染 → 进 Prompt」这条链，正是记忆层自己的职责；
  * 编排是否把 memory 传下去由 ChatServiceTest 的 verify 覆盖。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.memory.enabled=true")
 @ActiveProfiles("test")
 class MemoryIntegrationTest {
@@ -45,6 +50,9 @@ class MemoryIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** 用例里建的会话 id：清理只按 id，不按标题（docs/测试规范.md 7.3）。 */
+    private final List<Long> created = new ArrayList<>();
+
     @BeforeEach
     void setUp() {
         TenantContext.set(ANALYST);
@@ -53,13 +61,21 @@ class MemoryIntegrationTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
-        jdbc.update("DELETE FROM conversation WHERE title LIKE 'test-mem-%'");
+        ConversationCleanup.delete(jdbc, created);
+        created.clear();
+    }
+
+    /** 建会话并登记 id，供 @AfterEach 按主键清理。 */
+    private Conversation create(String title, ChatScope scope) {
+        Conversation saved = conversations.create(title, scope);
+        created.add(saved.id());
+        return saved;
     }
 
     @Test
     @DisplayName("第二轮 Prompt 含第一轮问答，且背景段与证据段互不混入")
     void secondTurnSeesFirstTurn() {
-        Conversation conversation = conversations.create("test-mem-1", ChatScope.corpus());
+        Conversation conversation = create("test-mem-1", ChatScope.corpus());
         ResolvedScope scope = ResolvedScope.of(ScopeKind.CORPUS, List.of(),
                 ResolvedScope.REASON_SESSION, List.of());
         ChatResponse first = new ChatResponse(true, "2025 年营业总收入 120.8 亿元 [E1]",
@@ -80,7 +96,7 @@ class MemoryIntegrationTest {
     @Test
     @DisplayName("没有消息的新会话 → 没有背景段（不产生只有标题的空段落）")
     void emptyConversationHasNoBackground() {
-        Conversation conversation = conversations.create("test-mem-empty", ChatScope.corpus());
+        Conversation conversation = create("test-mem-empty", ChatScope.corpus());
 
         assertThat(assembler.assembleMemory(conversation)).isEqualTo(MemoryContext.EMPTY);
     }

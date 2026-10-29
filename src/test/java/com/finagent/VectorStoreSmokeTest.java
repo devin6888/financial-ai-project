@@ -1,5 +1,6 @@
 package com.finagent;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -12,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 // 每个测试方法在事务中执行并自动回滚，保证测试可重复运行且不污染开发库

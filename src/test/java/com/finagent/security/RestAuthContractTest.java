@@ -1,6 +1,7 @@
 package com.finagent.security;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>本类<b>不调真模型</b>：401 / 409 都发生在检索与生成之前，所以整类跑得很快；
  * 「有权限的正常问答」与「真模型下的拒答措辞」由阶段 8 的越权 e2e 覆盖。
  */
+@Tag("db")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"finagent.tenant.auth-enabled=true", "finagent.tenant.acl-enabled=true"})
 @ActiveProfiles("test")

@@ -19,10 +19,13 @@
 
   <properties>
     <java.version>21</java.version>
-    <!-- 端到端用例要 25 分钟，默认排除。
-         运行时清空排除再选中标签（注意 -Dgroups 是包含语义，
+    <!-- 测试分三层，规则见 docs/测试规范.md：
+         1. 纯单测（不启 Spring 容器）—— -Pfast 只跑这一层，约 45 秒，改代码时用；
+         2. 集成测试（@Tag("db")，真库真上下文）—— 默认 mvn test 会跑，-Pdb 只跑这一层；
+         3. 端到端（@Tag("e2e")，真模型/真 Kafka/真 COS）—— 默认排除，按需点名跑。
+         跑 e2e 时要先把排除清空再选中标签（-Dgroups 是包含语义，
          不把 excludedGroups 清掉的话会一条都不跑）：
-           mvn -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=FullDocumentPipelineTest test -->
+           mvn -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=AnswerEvalTest test -->
     <surefire.excludedGroups>e2e</surefire.excludedGroups>
   </properties>
 
@@ -128,4 +131,30 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- 内循环：只跑不启容器的单测，约 45 秒 -->
+    <profile>
+      <id>fast</id>
+      <properties>
+        <surefire.excludedGroups>e2e,db</surefire.excludedGroups>
+      </properties>
+    </profile>
+    <!-- 只跑 @Tag("db") 的集成测试 -->
+    <profile>
+      <id>db</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <groups>db</groups>
+              <excludedGroups>e2e</excludedGroups>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

@@ -1,6 +1,7 @@
 package com.finagent.document;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 算错的后果不是报错，而是「引用到了年报里的上期对比列」—— 数字对、出处错，
  * 而且从答案表面完全看不出来。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class DocumentPeriodTest {

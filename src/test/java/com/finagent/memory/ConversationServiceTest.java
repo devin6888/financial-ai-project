@@ -7,15 +7,18 @@ import com.finagent.scope.ResolvedScope;
 import com.finagent.scope.ScopeKind;
 import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
+import com.finagent.support.ConversationCleanup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -23,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** 会话业务：归属、作用域兜底、一轮落两条消息。 */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ConversationServiceTest {
@@ -41,6 +45,9 @@ class ConversationServiceTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** 用例里建的会话 id：清理只按 id，不按标题（docs/测试规范.md 7.3）。 */
+    private final List<Long> created = new ArrayList<>();
+
     @BeforeEach
     void setUp() {
         TenantContext.set(ANALYST);
@@ -49,14 +56,14 @@ class ConversationServiceTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
-        jdbc.update("DELETE FROM conversation WHERE title LIKE 'test-conv-%' OR title = ?",
-                ConversationService.DEFAULT_TITLE);
+        ConversationCleanup.delete(jdbc, created);
+        created.clear();
     }
 
     @Test
     @DisplayName("新建会话：owner 是当前用户，作用域可选")
     void createAssignsOwnerAndScope() {
-        Conversation saved = service.create("test-conv-create", ChatScope.documents(List.of(7L)));
+        Conversation saved = create("test-conv-create", ChatScope.documents(List.of(7L)));
 
         assertThat(saved.ownerUserId()).isEqualTo(ANALYST.userId());
         assertThat(saved.scope().documentIds()).containsExactly(7L);
@@ -66,7 +73,7 @@ class ConversationServiceTest {
     @DisplayName("别人的会话 → 404（不是 403，不确认存在性）")
     void requireOwnedRejectsOtherUsersConversation() {
         TenantContext.set(ADMIN);
-        Conversation admins = service.create("test-conv-other", ChatScope.corpus());
+        Conversation admins = create("test-conv-other", ChatScope.corpus());
 
         TenantContext.set(ANALYST);
         assertThatThrownBy(() -> service.requireOwned(admins.id()))
@@ -76,7 +83,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("一轮问答落两条消息，快照里带这一轮的 chunk 版本")
     void recordTurnWritesTwoMessagesAndSnapshot() {
-        Conversation conversation = service.create(ConversationService.DEFAULT_TITLE, ChatScope.corpus());
+        Conversation conversation = create(ConversationService.DEFAULT_TITLE, ChatScope.corpus());
         ResolvedScope scope = ResolvedScope.of(ScopeKind.DOCUMENTS,
                 List.of(new DocMeta(7L, 7L, "300059", "东方财富", 2025, "ANNUAL",
                         null, null, 3, "东方财富2025年年度报告")),
@@ -104,7 +111,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("标题已改过就不再被后续问题覆盖")
     void explicitTitleIsNotOverwritten() {
-        Conversation conversation = service.create("test-conv-titled", ChatScope.corpus());
+        Conversation conversation = create("test-conv-titled", ChatScope.corpus());
         ChatResponse response = new ChatResponse(false, "证据不足", List.of(), List.of(), "LOW",
                 null, null, List.of(), null, null);
 
@@ -117,7 +124,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("删除后列表里没有了")
     void deleteHidesConversation() {
-        Conversation conversation = service.create("test-conv-del", ChatScope.corpus());
+        Conversation conversation = create("test-conv-del", ChatScope.corpus());
 
         service.delete(conversation.id());
 
@@ -129,7 +136,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("改名：标题立即生效，且不会被下一轮问题覆盖")
     void renameUpdatesTitleAndSurvivesNextTurn() {
-        Conversation conversation = service.create(ConversationService.DEFAULT_TITLE, ChatScope.corpus());
+        Conversation conversation = create(ConversationService.DEFAULT_TITLE, ChatScope.corpus());
 
         Conversation renamed = service.rename(conversation.id(), "  东方财富 2025 年报  ");
 
@@ -145,7 +152,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("改名超 60 字被截断（与新建会话同一口径）")
     void renameTruncatesToSixty() {
-        Conversation conversation = service.create("test-conv-long", ChatScope.corpus());
+        Conversation conversation = create("test-conv-long", ChatScope.corpus());
         String longTitle = "长".repeat(80);
 
         Conversation renamed = service.rename(conversation.id(), longTitle);
@@ -156,7 +163,7 @@ class ConversationServiceTest {
     @Test
     @DisplayName("改名传空 → IllegalArgumentException（映射成 400）")
     void renameRejectsBlankTitle() {
-        Conversation conversation = service.create("test-conv-blank", ChatScope.corpus());
+        Conversation conversation = create("test-conv-blank", ChatScope.corpus());
 
         assertThatThrownBy(() -> service.rename(conversation.id(), "   "))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -167,7 +174,7 @@ class ConversationServiceTest {
     @DisplayName("改别人的会话 → 404")
     void renameOtherUsersConversationIs404() {
         TenantContext.set(ADMIN);
-        Conversation admins = service.create("test-conv-admin-rename", ChatScope.corpus());
+        Conversation admins = create("test-conv-admin-rename", ChatScope.corpus());
 
         TenantContext.set(ANALYST);
         assertThatThrownBy(() -> service.rename(admins.id(), "抢改"))
@@ -177,11 +184,18 @@ class ConversationServiceTest {
     @Test
     @DisplayName("请求带 scope 用它，不带用会话配置")
     void effectiveScopePrefersRequest() {
-        Conversation conversation = service.create("test-conv-scope", ChatScope.documents(List.of(7L)));
+        Conversation conversation = create("test-conv-scope", ChatScope.documents(List.of(7L)));
 
         assertThat(service.effectiveScope(null, conversation).documentIds()).containsExactly(7L);
         assertThat(service.effectiveScope(ChatScope.documents(List.of(38L)), conversation)
                 .documentIds()).containsExactly(38L);
         assertThat(service.effectiveScope(null, null)).isNull();
+    }
+
+    /** 建会话并登记 id，供 @AfterEach 按主键清理。 */
+    private Conversation create(String title, ChatScope scope) {
+        Conversation saved = service.create(title, scope);
+        created.add(saved.id());
+        return saved;
     }
 }

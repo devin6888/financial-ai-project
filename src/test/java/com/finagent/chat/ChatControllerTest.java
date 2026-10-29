@@ -11,6 +11,8 @@ import com.finagent.scope.ScopeEmptyException;
 import com.finagent.scope.ScopeKind;
 import com.finagent.scope.SelectableDocument;
 import com.finagent.understanding.QueryType;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,6 +21,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -43,6 +48,22 @@ class ChatControllerTest {
     private DocumentRepository documents;
     private ScopeAuthorizer authorizer;
 
+    /** 整个类共用两个池并在 @AfterAll 关掉：原来每个用例新建一对且从不关闭（见 docs/测试规范.md §6）。 */
+    private static ExecutorService streamExecutor;
+    private static ScheduledExecutorService streamPinger;
+
+    @BeforeAll
+    static void startExecutors() {
+        streamExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        streamPinger = Executors.newSingleThreadScheduledExecutor();
+    }
+
+    @AfterAll
+    static void stopExecutors() {
+        streamExecutor.shutdownNow();
+        streamPinger.shutdownNow();
+    }
+
     @BeforeEach
     void setUp() {
         chatService = mock(ChatService.class);
@@ -51,9 +72,7 @@ class ChatControllerTest {
         // 默认「全都可读」，不关心 ACL 的用例就不用重复打桩
         when(authorizer.filterReadable(any())).thenAnswer(inv -> inv.getArgument(0));
         mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents, authorizer,
-                java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor(),
-                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(),
-                new StreamProperties(180_000L, 15_000L))).build();
+                streamExecutor, streamPinger, new StreamProperties(180_000L, 15_000L))).build();
     }
 
     @Test

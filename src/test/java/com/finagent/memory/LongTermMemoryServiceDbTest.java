@@ -6,6 +6,7 @@ import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +28,7 @@ import static org.mockito.Mockito.when;
  * <p>用 @MockitoBean 替换 EmbeddingService：本测试关心的是「写进来什么」，不是「向量算得准不准」；
  * 真调 1024 维模型既慢又花钱。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.memory.enabled=true")
 @ActiveProfiles("test")
 class LongTermMemoryServiceDbTest {

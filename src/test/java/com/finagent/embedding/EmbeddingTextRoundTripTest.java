@@ -3,6 +3,7 @@ package com.finagent.embedding;
 import com.finagent.chunk.model.Chunk;
 import com.finagent.chunk.model.ChunkLevel;
 import com.finagent.chunk.model.ChunkType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code 文档标题 + section_path + 题注 + content}（§8.5）。
  * 库里只存它的指纹 {@code embedding_text_hash}，不存原文。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class EmbeddingTextRoundTripTest {

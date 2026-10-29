@@ -13,7 +13,7 @@ import java.util.List;
  *   <li>{@code companyCodes} —— <b>证券代码</b>（6 位数字，如 300059）。用户字面写了代码时来自原文；
  *       否则由 {@link CompanyResolver} 查库得到。</li>
  *   <li>{@code companyMentions} —— <b>问题原文里的公司名字面</b>（如「东方财富」），由模型抽取，
- *       且必须能逐字回指原文（{@link RouterService#validate} 做子串校验，编不出来）。</li>
+ *       且必须能逐字回指原文（{@link RouterService#validateLlmUnderstand} 做子串校验，编不出来）。</li>
  *   <li>{@code ResolvedScope.companyIds()} —— <b>数据库 company.id 主键</b>（如 7），与上面两个都不同。</li>
  * </ul>
  *

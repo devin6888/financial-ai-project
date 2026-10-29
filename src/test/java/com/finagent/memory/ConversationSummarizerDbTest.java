@@ -3,9 +3,11 @@ package com.finagent.memory;
 import com.finagent.scope.ChatScope;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.finagent.support.ConversationCleanup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -23,6 +25,7 @@ import static org.mockito.Mockito.when;
  * <p>用 {@code @MockitoBean} 替掉 {@link SummaryGenerator}：这里要验的是「什么时候汇总、
  * 汇总哪一批、指针走到哪」，不是模型写得好不好（Prompt 质量由人工抽查）。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.memory.enabled=true")
 @ActiveProfiles("test")
 class ConversationSummarizerDbTest {
@@ -50,7 +53,7 @@ class ConversationSummarizerDbTest {
     void cleanUp() {
         created.forEach(id -> {
             jdbc.update("DELETE FROM memory_event WHERE target_id = ? AND target_type = 'CONVERSATION_SUMMARY'", id);
-            jdbc.update("DELETE FROM conversation WHERE id = ?", id);
+            ConversationCleanup.delete(jdbc, java.util.List.of(id));
         });
     }
 

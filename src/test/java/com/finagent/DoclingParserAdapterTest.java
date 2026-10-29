@@ -3,6 +3,7 @@ package com.finagent;
 import com.finagent.document.ParsedDocument;
 import com.finagent.document.ParserAdapter;
 import com.finagent.document.ParserProperties;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -23,6 +24,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>解析服务没启动时跳过（不失败）—— 它是个独立进程，不应让 mvn test 强依赖它。
  * 真正的端到端（含 COS 与落库）在 FullDocumentPipelineTest。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class DoclingParserAdapterTest {

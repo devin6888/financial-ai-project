@@ -73,7 +73,7 @@ public final class CompanyResolver {
             "这些公司", "上市公司", "其他公司", "同行业");
 
     /**
-     * @param codes    模型给的证券代码（已在 {@link RouterService#validate} 做过「必须在原文出现」校验）
+     * @param codes    模型给的证券代码（已在 {@link RouterService#validateLlmUnderstand} 做过「必须在原文出现」校验）
      * @param mentions 模型抽的公司名（已在 validate 做过「必须是原文子串」校验）
      * @param scope    当前作用域；只在这里面找 —— 范围外公司就是要拒答的那种
      */

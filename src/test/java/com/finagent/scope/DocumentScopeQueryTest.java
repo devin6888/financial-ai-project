@@ -5,6 +5,7 @@ import com.finagent.document.DocumentRepository.DocStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -28,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 「解析失败」的那份**由本测试自己造、自己删**：2026-10-28 清理演示数据时删掉了原有的
  * FAILED 文档（id 2/4），依赖固定 id 的测试会随数据漂移而红 —— 测试要自带夹具，不借别人的行。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class DocumentScopeQueryTest {

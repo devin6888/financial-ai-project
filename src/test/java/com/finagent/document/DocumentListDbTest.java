@@ -2,6 +2,7 @@ package com.finagent.document;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ① 未解析完成的文档**必须**出现在列表里（否则文档页看不到「在等什么」）；
  * ② chunkCount 与「ACTIVE 版本的 CHILD 行数」逐字相等（口径不能自己发明）。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class DocumentListDbTest {

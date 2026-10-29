@@ -4,12 +4,15 @@ import com.finagent.scope.ChatScope;
 import com.finagent.scope.ScopeKind;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.finagent.support.ConversationCleanup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>为什么不用 H2 / mock：这里的正确性靠 SQL 本身（jsonb 读写、RETURNING id、
  * 复合索引），mock 掉 JdbcTemplate 等于只测了自己写的 Java。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ConversationRepositoryTest {
@@ -34,16 +38,26 @@ class ConversationRepositoryTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** 用例里建的会话 id：清理只按 id，不按标题（docs/测试规范.md 7.3）。 */
+    private final List<Long> created = new ArrayList<>();
+
     @AfterEach
     void cleanUp() {
-        jdbc.update("DELETE FROM conversation WHERE title LIKE ?", TITLE_PREFIX + "%");
+        ConversationCleanup.delete(jdbc, created);
+        created.clear();
+    }
+
+    /** 建会话并登记 id，供 @AfterEach 按主键清理。 */
+    private long create(String suffix, ChatScope scope) {
+        long id = repository.create(TENANT, OWNER, TITLE_PREFIX + suffix, scope);
+        created.add(id);
+        return id;
     }
 
     @Test
     @DisplayName("建会话 → 读回来：作用域（jsonb）原样保存")
     void createAndFindOwned() {
-        long id = repository.create(TENANT, OWNER, TITLE_PREFIX + "scope",
-                ChatScope.documents(List.of(7L, 38L)));
+        long id = create("scope", ChatScope.documents(List.of(7L, 38L)));
 
         Conversation saved = repository.findOwned(id, TENANT, OWNER).orElseThrow();
         assertThat(saved.scopeKind()).isEqualTo(ScopeKind.DOCUMENTS);
@@ -57,8 +71,8 @@ class ConversationRepositoryTest {
     @Test
     @DisplayName("列表按 updated_at 倒序：刚说过话的排最前")
     void listOwnedOrdersByUpdatedAt() {
-        long older = repository.create(TENANT, OWNER, TITLE_PREFIX + "older", ChatScope.corpus());
-        long newer = repository.create(TENANT, OWNER, TITLE_PREFIX + "newer", ChatScope.corpus());
+        long older = create("older", ChatScope.corpus());
+        long newer = create("newer", ChatScope.corpus());
         repository.touch(older);
 
         List<Conversation> list = repository.listOwned(TENANT, OWNER, 50);
@@ -70,7 +84,7 @@ class ConversationRepositoryTest {
     @Test
     @DisplayName("消息倒序 + beforeId 翻页不重不漏")
     void messagesAreNewestFirstAndPageByBeforeId() {
-        long id = repository.create(TENANT, OWNER, TITLE_PREFIX + "paging", ChatScope.corpus());
+        long id = create("paging", ChatScope.corpus());
         long first = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q1", null, "{}", "t", 1);
         long second = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_ASSISTANT, "a1", "[]", "{}", "t", 1);
         long third = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q2", null, "{}", "t", 1);
@@ -86,7 +100,7 @@ class ConversationRepositoryTest {
     @Test
     @DisplayName("逻辑删除后查不到，但消息还在（审计要留）")
     void deletedConversationIsInvisibleButKeepsMessages() {
-        long id = repository.create(TENANT, OWNER, TITLE_PREFIX + "deleted", ChatScope.corpus());
+        long id = create("deleted", ChatScope.corpus());
         repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q", null, "{}", null, 1);
 
         repository.markDeleted(id);

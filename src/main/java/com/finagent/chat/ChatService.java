@@ -178,11 +178,12 @@ public class ChatService {
         Conversation conversation = request.conversationId() == null ? null : conversations.requireOwned(request.conversationId());
         ChatScope requestedScope = conversations.effectiveScope(request.scope(), conversation);
         ResolvedScope scope = scopeResolver.resolve(requestedScope);
+
         // 背景信息在「归属校验之后」装配：别人的会话连读都不该读
         MemoryContext memory = conversation == null ? MemoryContext.EMPTY : memoryAssembler.assembleMemory(conversation);
 
-        // 指代消解：结构化槽位 + 最近几轮。没有会话（或会话里什么都没有）时
-        // 走单轮重载 —— 「无会话」与「阶段 8 的行为」必须是同一条代码路径，不是「大概等价」。
+        // 指代消解（QU）：结构化槽位 + 最近几轮。
+        // 没有会话（或会话里什么都没有）时走单轮重载 —— 「无会话」与「阶段 8 的行为」必须是同一条代码路径，不是「大概等价」。
         // QU 是整条链路最慢的一段（一次 LLM 调用，实测约 2.9 秒），单独计时才能回答
         // 「首字 7.9 秒里 QU 占多少」这种问题（阶段 13 新增，落进 ChatTrace.quMs）
         long quStart = System.currentTimeMillis();
@@ -194,8 +195,7 @@ public class ChatService {
         // 顺序很重要：① validate 已保证 mentions 是原文子串、codes 是原文里真出现的 6 位数字；
         // ② 这里再把名字对到作用域内的 company 行。模型因此<b>没有编造代码的通道</b>。
         List<String> quWarnings = new ArrayList<>();
-        CompanyResolver.Resolution company = CompanyResolver.resolve(
-                qu.companyCodes(), qu.companyMentions(), scope);
+        CompanyResolver.Resolution company = CompanyResolver.resolve(qu.companyCodes(), qu.companyMentions(), scope);
         if (company.hasMatch()) {
             qu = qu.withCompanyCodes(company.codes());
         }

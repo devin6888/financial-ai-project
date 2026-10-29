@@ -3,6 +3,7 @@ package com.finagent.tenant;
 import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>fallback-tenant-id = 0，让「没有上下文」真的返回 0 行。</li>
  * </ul>
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("rls")
 class RlsEnforcementTest {

@@ -4,9 +4,11 @@ import com.finagent.scope.ChatScope;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.finagent.support.ConversationCleanup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -16,6 +18,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** conversation_context 的 jsonb + bigint[] 读写。 */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ConversationContextRepositoryTest {
@@ -42,8 +45,8 @@ class ConversationContextRepositoryTest {
 
     @AfterEach
     void cleanUp() {
-        created.forEach(id -> jdbc.update("DELETE FROM conversation WHERE id = ?", id));
-        jdbc.update("DELETE FROM conversation WHERE title LIKE ?", TITLE_PREFIX + "%");
+        ConversationCleanup.delete(jdbc, created);
+        created.clear();
     }
 
     @Test

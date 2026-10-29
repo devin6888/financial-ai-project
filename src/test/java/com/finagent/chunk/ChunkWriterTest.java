@@ -7,6 +7,7 @@ import com.finagent.chunk.model.ParentGroup;
 import com.finagent.embedding.EmbeddingService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p><b>命名不能是 *IT</b>（评审 M2）：surefire 默认 includes 不含 *IT，
  * 那样这些用例永远不会在 mvn test 里跑，核心验收是假绿灯。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ChunkWriterTest {

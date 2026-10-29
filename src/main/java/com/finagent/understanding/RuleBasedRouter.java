@@ -46,17 +46,17 @@ public class RuleBasedRouter {
         }
         List<String> codes = findAll(STOCK_CODE, query);
         List<Integer> years = findAll(YEAR, query).stream().map(Integer::parseInt).toList();
-        List<String> found = metrics.findIn(query);
+        List<String> foundMetrics = metrics.findIn(query);
 
         // §9.14 第三层防线的规则版：ExactFact 要求三要素同时非空，缺一即证据不足
-        if (codes.isEmpty() || years.isEmpty() || found.isEmpty()) {
+        if (codes.isEmpty() || years.isEmpty() || foundMetrics.isEmpty()) {
             return null;
         }
 
         int minYear = years.stream().mapToInt(Integer::intValue).min().orElse(0);
         int maxYear = years.stream().mapToInt(Integer::intValue).max().orElse(0);
         return new QueryUnderstanding(QueryType.EXACT_FACT, query, codes,
-                new int[]{minYear, maxYear}, found, false, false,
+                new int[]{minYear, maxYear}, foundMetrics, false, false,
                 DocTypes.detect(query), false, "RULE");
     }
 

@@ -1,6 +1,7 @@
 package com.finagent.task;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -19,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>重点验证消息级幂等的 DB 保障：event_id 唯一约束在重复插入时抛
  * {@link DuplicateKeyException}，而 {@link TaskMessageRepository#upsert} 走幂等路径不抛。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class TaskMessageRepositoryTest {

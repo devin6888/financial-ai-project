@@ -35,20 +35,25 @@ public class MemoryAssembler {
         this.props = props;
     }
 
+    /**
+     * 组装会话的记忆
+     */
     public MemoryContext assembleMemory(Conversation conversation) {
         if (conversation == null || !props.enabled()) {
             return MemoryContext.EMPTY;
         }
-        // 会话摘要
+        // 会话摘要（记忆二）
         ConversationSummary summary = summaryRepository.find(conversation.id()).orElse(null);
         // 压缩会话摘要
         String summaryText = summaryText(summary);
 
-        //短期会话，最近几轮的会话信息
+        //短期会话，最近几轮的会话信息（记忆一）
         ShortTermMemory.Window window = shortTerm.load(conversation.id(), ConversationSummarizer.untilOf(summary));
 
-        //会话的结构化信息
+        //会话的结构化信息（记忆三）
         String structured = structured(conversation.id());
+
+        // 长期记忆 longTermMemory (记忆四) 暂时没有实现
 
         MemorySections sections = new MemorySections(structured, summaryText, window.messages(), List.of());
         if (sections.isBlank()) {
@@ -57,9 +62,16 @@ public class MemoryAssembler {
 
         // 组装四层会话记忆的提示词
         String memoryPrompt = renderer.render(sections);
-        return new MemoryContext(memoryPrompt, new MemoryContext.Stats(
-                window.messages().size(), window.dropped(),
-                summaryText == null ? 0 : summaryText.length(), 0, false), window.turns(), sections);
+        return new MemoryContext(
+                memoryPrompt,
+                new MemoryContext.Stats(
+                        window.messages().size(),
+                        window.dropped(),
+                        summaryText == null ? 0 : summaryText.length(),
+                        0,
+                        false),
+                window.turns(),
+                sections);
     }
 
     /** {@link #withLongTerm} 的结果：新的背景信息 + INSTRUCTION 是否超预算（要留警告）。 */

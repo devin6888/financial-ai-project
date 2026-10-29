@@ -1,5 +1,6 @@
 package com.finagent.memory;
 
+import com.finagent.understanding.ContextTurn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -43,22 +44,21 @@ public class ShortTermMemory {
          * 把消息序列压成「一问一答」的配对形态，供指代消解使用。
          *
          * <p>孤儿消息跳过（没有配对的 USER 或 ASSISTANT）：消解需要「问了什么 + 答了什么」，
-         * 只有半边的记录会让模型误判上文。每侧文本由 {@link com.finagent.understanding.ContextTurn#of}
+         * 只有半边的记录会让模型误判上文。每侧文本由 {@link ContextTurn#of}
          * 截到 200 字 —— Prompt 空间要留给证据。
          */
-        public List<com.finagent.understanding.ContextTurn> turns() {
-            List<com.finagent.understanding.ContextTurn> out = new ArrayList<>();
+        public List<ContextTurn> turns() {
+            List<ContextTurn> out = new ArrayList<>();
             for (int i = 0; i < messages.size(); i++) {
                 ConversationMessage current = messages.get(i);
                 if (!ConversationMessage.ROLE_USER.equals(current.role())) {
                     continue;
                 }
                 String assistant = null;
-                if (i + 1 < messages.size()
-                        && ConversationMessage.ROLE_ASSISTANT.equals(messages.get(i + 1).role())) {
+                if (i + 1 < messages.size() && ConversationMessage.ROLE_ASSISTANT.equals(messages.get(i + 1).role())) {
                     assistant = messages.get(i + 1).content();
                 }
-                out.add(com.finagent.understanding.ContextTurn.of(current.content(), assistant));
+                out.add(ContextTurn.of(current.content(), assistant));
             }
             return List.copyOf(out);
         }
@@ -84,7 +84,8 @@ public class ShortTermMemory {
         }
 
         List<ConversationMessage> ordered = new ArrayList<>(newestFirst);
-        Collections.reverse(ordered);        // 库里是倒序，Prompt 要正序（从旧到新）
+        // 库里是倒序，Prompt 要正序（从旧到新）
+        Collections.reverse(ordered);
 
         int dropped = 0;
         // 最旧一条是 ASSISTANT：说明这一对的前半截超出了条数上限，丢掉它保持成对

@@ -125,6 +125,7 @@ financial-ai-project/
 ├── docs/
 │   ├── 术语表.md                      # 所有缩写的解释（先读这份）
 │   ├── 文档写作规范.md                # 报告/计划怎么写才看得懂
+│   ├── 测试规范.md                    # 三层测试怎么分、什么时候跑哪层、旧测试什么时候删
 │   ├── 阶段1~13-*.md                  # 各阶段报告（阶段 10 另有一份前端验收清单）
 │   ├── 技术选型.md                    # 选了什么 / 没选什么 / 为什么 / 何时该改
 │   │                                  #   附录 A：为什么不用 ORM（MyBatis-Plus / JPA 实测对照）
@@ -132,6 +133,7 @@ financial-ai-project/
 │   ├── pgvector-工作机制.md           # 向量库机制与实测
 │   ├── PG文本索引-tsv与trgm.md        # 中文全文检索机制与实测
 │   ├── 权限与多租户-工作机制.md       # 认证 / 租户 / RLS / ACL 四层机制与实测
+│   ├── LangGraph4j-工作机制.md        # Agent 图：状态 / 通道 / 检查点 / 中断恢复（1.9.7 实测）
 │   └── superpowers/plans/             # 路线图与各阶段计划
 ├── src/main/java/com/finagent/        # Spring Boot 应用
 ├── src/main/resources/application.yml
@@ -169,10 +171,14 @@ $env:HF_ENDPOINT = 'https://hf-mirror.com'   # 必须！本机 huggingface.co �
 
 ```powershell
 # 1) 启动解析服务（见上）
-# 2) 跑端到端：COS -> Java -> Python -> 产物回 COS -> 更新 document
+# 2) 跑端到端：真 HTTP + 真 Kafka + 真 COS（上传幂等 / 版本 +1 / 增量复用 / DLQ 重投）
 . .\scripts\load-env.ps1
-mvn -B -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=FullDocumentPipelineTest test
+mvn -B -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=DocumentTaskE2ETest test
 ```
+
+> **真解析（181 页约 25 分钟）不在自动化里**：原来承担它的 `FullDocumentPipelineTest`、
+> `IngestReportTest` 已在测试分层时删除（见 docs/测试规范.md §7）。需要重跑解析时用
+> `POST /api/documents` 上传，走 Kafka → worker，不要指望一条测试跑完。
 
 > -Dsurefire.excludedGroups= **不能省**：-Dgroups=e2e 是包含语义，
 > 而配置里的 excludedGroups 仍在生效，两者叠加会一条都不跑。
@@ -371,7 +377,7 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ETest
 
 ![问答页](docs/screenshots/chat-answer.png)
 
-> 界面是「纸墨·朱批」：暖米纸面 + 发丝线 + 宋体答案 + 朱砂只用于强调。三栏 = 68px 图标条 / 248px 会话栏 / 主区（正文 960px）/ 424px **浮层**证据面板（打开时盖在正文右侧，不挤压正文）（截图 1440×980，脚本 `target/ui-shots.js` 生成）。
+> 界面是「纸墨·朱批」：暖米纸面 + 发丝线 + 宋体答案 + 朱砂只用于强调。三栏 = 68px 图标条 / 248px 会话栏 / 主区（正文 960px）/ **可调宽侧栏**证据面板（默认 424px，拖分隔条 340~760px、双击复位、←/→ 微调、收起后正文扩张，宽度记在本机 `localStorage`；视口 ≤980px 时自动退回浮层）（截图 1440×980，脚本 `target/ui-shots.js` 生成）。
 
 | 页面 | 地址 | 能做什么 |
 |---|---|---|
@@ -462,6 +468,7 @@ npx vitest run           # 16 个前端单测（答案 tokenizer 7 + SSE 解析 
 | 流式输出 | 等 7~11 秒，屏幕静止，后面整段出现 | 首字 **7.87 秒**、逐字到达（实测 60 个 delta），结束用 `final` 整条替换 |
 | 引用点开原文 | 只有「第 66 页」这行字 | 点 `[E1]` → 后端把第 66 页渲成 PNG（1240×1754），朱砂框落在该块真实位置 |
 | 切块可视 | 只有 `chunk_index` / `token_count` | 文档页「看切块」抽屉：104 个父块 / 630 个子块，选中即看正文 + 原文位置 |
+| 证据面板可调宽 | 424px 浮层，盖住正文，只能整块关掉 | 右侧**侧栏**：拖分隔条 340~760px（双击回 424、←/→ ±16px）、收起后正文从 784px 扩到 1124px、宽度刷新后仍记得（`localStorage`） |
 
 ![原文高亮](docs/screenshots/page-highlight.png)
 

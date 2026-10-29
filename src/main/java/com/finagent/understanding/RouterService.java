@@ -70,7 +70,7 @@ public class RouterService {
         }
 
         // 第 3 层：逐字段校验 —— 丢弃非法字段，而不是丢弃整个结果
-        QueryUnderstanding cleaned = withKeywordDocType(validate(raw, query), query);
+        QueryUnderstanding cleaned = withKeywordDocType(validateLlmUnderstand(raw, query), query);
 
         // 第 3 层续：字段完整性交叉验证（只对 ExactFact 生效）
         if (cleaned.queryType() == QueryType.EXACT_FACT && !isExactFactEvidenceSufficient(cleaned)) {
@@ -110,7 +110,8 @@ public class RouterService {
             return fillFromContext(degraded(query, "llm_failed"), ctx);
         }
 
-        QueryUnderstanding cleaned = withKeywordDocType(validate(raw, query), query);
+        QueryUnderstanding cleaned = withKeywordDocType(validateLlmUnderstand(raw, query), query);
+
         // 模型漏填公司/年份时用上下文补齐（只补槽位，不补指标 —— 指标是语义判断，补错会带偏检索）
         cleaned = fillFromContext(cleaned, ctx);
 
@@ -123,10 +124,10 @@ public class RouterService {
 
     /**
      * §9.14：单字段校验失败时丢弃该字段，而不是丢弃整个结果。
-     *
+     * @param original 用户问题（原始内容）
      * <p>注意 queryType 是唯一"不能丢"的 —— 丢了就不知道该怎么检索，所以回落到保守值。
      */
-    QueryUnderstanding validate(QueryUnderstanding raw, String original) {
+    QueryUnderstanding validateLlmUnderstand(QueryUnderstanding raw, String original) {
         QueryType type = raw.queryType() == null ? QueryType.SEMANTIC_EXPLANATION : raw.queryType();
 
         // 代码校验两道（ST9 §16.3）：① 6 位数字 ② <b>必须字面出现在问题原文里</b>。
@@ -153,7 +154,8 @@ public class RouterService {
         int currentYear = Year.now().getValue();
         int[] years = raw.yearRange();
         if (years != null && (years[0] < MIN_YEAR || years[1] > currentYear)) {
-            years = null;    // 越界 → 丢弃该字段，不影响其余
+            // 越界 → 丢弃该字段，不影响其余
+            years = null;
         }
 
         // docType 只接受四个合法值；LLM 编了别的值就丢弃（§9.14 单字段丢弃）。

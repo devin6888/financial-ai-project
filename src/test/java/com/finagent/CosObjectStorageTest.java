@@ -1,6 +1,7 @@
 package com.finagent;
 
 import com.finagent.storage.ObjectStorage;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>未配置 COS 凭据时整个类被跳过（不会创建 Spring 上下文），
  * 因此它不会影响没有凭据的机器。
  */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 @EnabledIfEnvironmentVariable(named = "FINAGENT_COS_SECRET_ID", matches = ".+")

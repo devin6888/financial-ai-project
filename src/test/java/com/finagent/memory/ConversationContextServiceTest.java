@@ -11,9 +11,11 @@ import com.finagent.understanding.QueryUnderstanding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.finagent.support.ConversationCleanup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -24,6 +26,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** 结构化上下文：按轮合并、用户纠错、审计事件。 */
+@Tag("db")
 @SpringBootTest
 @ActiveProfiles("test")
 class ConversationContextServiceTest {
@@ -57,7 +60,7 @@ class ConversationContextServiceTest {
         TenantContext.clear();
         created.forEach(id -> {
             jdbc.update("DELETE FROM memory_event WHERE target_id = ?", id);
-            jdbc.update("DELETE FROM conversation WHERE id = ?", id);
+            ConversationCleanup.delete(jdbc, java.util.List.of(id));
         });
     }
 

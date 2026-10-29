@@ -4,6 +4,7 @@ import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>重点验的是「被 ACL 删掉候选」这个信号（{@code aclNarrowed}）：检索层靠它决定
  * CORPUS 要不要把 document id 下推到 SQL。丢掉这个信号，ACL 就只影响提示词、不影响能取到哪些块。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.tenant.acl-enabled=true")
 @ActiveProfiles("test")
 class ScopeResolverAclTest {

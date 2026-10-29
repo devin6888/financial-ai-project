@@ -6,6 +6,7 @@ import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,6 +32,7 @@ import static org.mockito.Mockito.when;
  * 与「距离阈值方向有没有写反」，真调 1024 维模型既慢又不可控。向量内容由测试直接给定，
  * 所以「相似度」是可算的：记忆向量 [1,0,…] 与问题向量 [1,0.2,0,…] 的余弦距离约 0.02。
  */
+@Tag("db")
 @SpringBootTest(properties = "finagent.memory.enabled=true")
 @ActiveProfiles("test")
 class LongTermMemoryRecallerDbTest {
