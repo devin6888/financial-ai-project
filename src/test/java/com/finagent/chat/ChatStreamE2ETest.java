@@ -34,7 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>验四件事：
  * <ol>
  *   <li>Content-Type 是 text/event-stream，且第一个事件是 stage（阶段 13 起，首屏反馈靠它）；</li>
- *   <li>阶段顺序 = understanding → retrieving（→ reranking）→ meta → generating；</li>
+ *   <li>阶段顺序 = 图节点顺序（understand → plan → retrieve → verify → …），
+ *       且证据（meta）在 verify 之后、首字之前发出（阶段 14 P4 起问答走图）；</li>
  *   <li>能收到 delta 且首字延迟远小于总耗时；
  *       且证据（meta）一定早于答案（delta）—— 这就是「证据先到、答案后到」；</li>
  *   <li>final 里的引用非空 —— 这一条同时验证了「租户上下文跨线程没丢」：
@@ -80,10 +81,9 @@ class ChatStreamE2ETest {
         // ① 首屏反馈：热路径上第一个 stage 必须立刻到（本地回环，实测几十毫秒）
         assertThat(p.firstStageMs()).as("首屏反馈过慢").isLessThanOrEqualTo(300);
         assertThat(cold.firstStageMs()).as("冷启动也不该超过 3 秒").isLessThanOrEqualTo(3000);
-        // ② 顺序：理解 → 检索 →（精排）→ 生成；且证据（meta）早于答案（delta）
-        assertThat(p.phases()).startsWith(ChatStreamEvent.PHASE_UNDERSTANDING,
-                ChatStreamEvent.PHASE_RETRIEVING);
-        assertThat(p.phases()).endsWith(ChatStreamEvent.PHASE_GENERATING);
+        // ② 顺序：图节点顺序；且证据（meta）早于答案（delta）
+        assertThat(p.phases()).startsWith("understand", "plan");
+        assertThat(p.phases()).contains("retrieve", "verify", "answer");
         assertThat(p.metaMs()).as("证据必须早于首字：先给证据，再给答案")
                 .isLessThan(p.firstTokenMs());
 
@@ -180,8 +180,10 @@ class ChatStreamE2ETest {
         assertThat(finalJson).as("应收到 final 事件").isNotNull();
 
         JsonNode node = JsonMapper.builder().build().readTree(finalJson);
+        // P4 起 final 的载荷是「运行视图」，标准响应在 response 里
+        JsonNode chat = node.path("response");
         return new Probe(firstStageMs, metaMs, firstDeltaMs, totalMs, phases, deltas.toString(),
-                node.path("answer").asString(), node.path("citations").size());
+                chat.path("answer").asString(), chat.path("citations").size());
     }
 
     private static long elapsedMs(long startNanos) {

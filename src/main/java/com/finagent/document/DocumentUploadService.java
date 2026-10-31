@@ -1,5 +1,7 @@
 package com.finagent.document;
 
+import com.finagent.ingest.IngestFlow;
+import com.finagent.ingest.IngestTracker;
 import com.finagent.security.TenantContext;
 import com.finagent.storage.ObjectStorage;
 import com.finagent.task.DocumentTaskProducer;
@@ -30,12 +32,17 @@ public class DocumentUploadService {
     private final DocumentRepository documents;
     private final ObjectStorage storage;
     private final DocumentTaskProducer producer;
+    private final DocumentProgress progress;
+    private final IngestTracker tracker;
 
     public DocumentUploadService(DocumentRepository documents, ObjectStorage storage,
-                                 DocumentTaskProducer producer) {
+                                 DocumentTaskProducer producer, DocumentProgress progress,
+                                 IngestTracker tracker) {
         this.documents = documents;
         this.storage = storage;
         this.producer = producer;
+        this.progress = progress;
+        this.tracker = tracker;
     }
 
     /**
@@ -86,6 +93,10 @@ public class DocumentUploadService {
                 sourceKey, contentHash);
         log.info("文档已登记 document_id={} hash={} sourceKey={}，投递 document.parse",
                 documentId, contentHash, sourceKey);
+        // 入队即给 2%：用户上传后立刻看到「排队中」，而不是盯着 0% 猜有没有收到
+        progress.step(documentId, DocumentProgress.QUEUED, DocumentProgress.STAGE_QUEUED);
+        // 执行记录在「投递之前」开：worker 可能几百毫秒就被唤醒，先开 run 才不会丢第一步
+        tracker.start(documentId, IngestFlow.PARSE);
         producer.sendParse(documentId);
         return new UploadResult(documentId, "PENDING");
     }

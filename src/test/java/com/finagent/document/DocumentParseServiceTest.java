@@ -31,6 +31,8 @@ class DocumentParseServiceTest {
     private ObjectStorage storage;
     private ReindexService reindex;
     private DocumentParseService service;
+    private DocumentProgress progress;
+    private com.finagent.ingest.IngestTracker tracker;
 
     @BeforeEach
     void setUp() {
@@ -38,7 +40,10 @@ class DocumentParseServiceTest {
         documents = mock(DocumentRepository.class);
         storage = mock(ObjectStorage.class);
         reindex = mock(ReindexService.class);
-        service = new DocumentParseService(parser, documents, storage, reindex);
+        progress = new DocumentProgress(documents);
+        tracker = mock(com.finagent.ingest.IngestTracker.class);
+        service = new DocumentParseService(parser, documents, storage, reindex, progress,
+                tracker);
     }
 
     @Test
@@ -53,6 +58,12 @@ class DocumentParseServiceTest {
         when(storage.get("uploads/a.pdf")).thenReturn(pdf);
         when(parser.submit(any(byte[].class), eq("东方财富2025年报.pdf"), isNull(), isNull()))
                 .thenReturn("job-1");
+        // 主链路走带轮询回调的重载（心跳）
+        when(parser.fetchResult(eq("job-1"), any())).thenAnswer(inv -> {
+            java.util.function.Consumer<ParserAdapter.ParseJobStatus> cb = inv.getArgument(1);
+            cb.accept(new ParserAdapter.ParseJobStatus("running", 12.5));
+            return parsed;
+        });
         when(parser.fetchResult("job-1")).thenReturn(parsed);
         when(reindex.reindex(7L, ReindexMode.RECHUNK)).thenReturn(3);
 
@@ -62,7 +73,7 @@ class DocumentParseServiceTest {
         inOrder.verify(storage).get("uploads/a.pdf");
         inOrder.verify(parser).submit(pdf, "东方财富2025年报.pdf", null, null);
         inOrder.verify(documents).markRunning(7L, "job-1");
-        inOrder.verify(parser).fetchResult("job-1");
+        inOrder.verify(parser).fetchResult(eq("job-1"), any());
         inOrder.verify(storage).put(eq("parsed/h123/docling-2.138.0/normalized.json"),
                 any(byte[].class), eq("application/json"));
         inOrder.verify(documents).markDone(7L, "parsed/h123/docling-2.138.0/normalized.json",

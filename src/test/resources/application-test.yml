@@ -16,6 +16,11 @@ spring:
     url: jdbc:postgresql://localhost:5432/finagent
     username: finagent
     password: finagent
+    hikari:
+      # 测试里 14 种 Spring 上下文同时存活，每个默认开 10 条连接 → 会打满 PG 的 100 连接
+      # （实测 FATAL: sorry, too many clients already）。测试不需要并发池，压到 4。
+      maximum-pool-size: 4
+      minimum-idle: 0
 
 finagent:
   # 记忆默认关掉：会话类测试自己显式打开（properties = "finagent.memory.enabled=true"），

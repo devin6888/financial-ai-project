@@ -10,7 +10,7 @@ package com.finagent.retrieval;
  *
  * <p>为什么用字符串 phase 而不是枚举：这是「给用户看的进度」而不是状态机，
  * 加一个阶段不应该逼所有调用点重新编译。phase 的合法值见契约 C16：
- * {@code dense} / {@code sparse} / {@code fuse} / {@code rerank}。
+ * {@code dense}（向量召回）/ {@code sparse}（关键词召回）/ {@code fuse}（RRF 融合）/ {@code rerank}（重排）。
  */
 @FunctionalInterface
 public interface RetrievalProgress {

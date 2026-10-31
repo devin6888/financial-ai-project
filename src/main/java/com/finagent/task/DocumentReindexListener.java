@@ -4,6 +4,9 @@ import java.util.Optional;
 
 import com.finagent.chunk.ReindexMode;
 import com.finagent.chunk.ReindexService;
+import com.finagent.ingest.IngestFlow;
+import com.finagent.ingest.IngestStep;
+import com.finagent.ingest.IngestTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -31,13 +34,16 @@ public class DocumentReindexListener {
     private final ReindexService reindexService;
     private final TaskMessageRepository taskMessages;
     private final ObjectMapper json;
+    private final IngestTracker tracker;
 
     public DocumentReindexListener(ReindexService reindexService,
                                    TaskMessageRepository taskMessages,
-                                   ObjectMapper json) {
+                                   ObjectMapper json,
+                                   IngestTracker tracker) {
         this.reindexService = reindexService;
         this.taskMessages = taskMessages;
         this.json = json;
+        this.tracker = tracker;
     }
 
     @KafkaListener(topics = "${finagent.task.reindex-topic}")
@@ -60,12 +66,16 @@ public class DocumentReindexListener {
         long id = taskMessages.upsert(event.eventId(), "document.reindex",
                 String.valueOf(event.documentId()), event.documentId());
         taskMessages.markStatus(id, "PROCESSING");
+        // REINDEX 流程只有 4 步（切块中 → 切块完成 → 向量化 → 切换 ACTIVE）
+        tracker.start(event.documentId(), IngestFlow.REINDEX);
+        tracker.begin(event.documentId(), IngestStep.CHUNKING);
         try {
             reindexService.reindex(event.documentId(), ReindexMode.RECHUNK);
             taskMessages.markStatus(id, "SUCCESS");
             log.info("document.reindex 完成 document_id={} eventId={}",
                     event.documentId(), event.eventId());
         } catch (RuntimeException e) {
+            tracker.fail(event.documentId(), e.getClass().getSimpleName() + ": " + e.getMessage());
             taskMessages.markStatus(id, "FAILED");
             log.warn("document.reindex 失败 document_id={} eventId={}",
                     event.documentId(), event.eventId(), e);

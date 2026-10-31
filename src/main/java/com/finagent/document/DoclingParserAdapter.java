@@ -16,6 +16,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
+import java.util.function.Consumer;
 
 /**
  * 通过 HTTP 调用 Python 解析服务。
@@ -49,7 +50,12 @@ public class DoclingParserAdapter implements ParserAdapter {
 
     @Override
     public ParsedDocument fetchResult(String jobId) {
-        return toParsedDocument(awaitResult(jobId));
+        return toParsedDocument(awaitResult(jobId, null));
+    }
+
+    @Override
+    public ParsedDocument fetchResult(String jobId, Consumer<ParseJobStatus> onPoll) {
+        return toParsedDocument(awaitResult(jobId, onPoll));
     }
 
     @Override
@@ -91,8 +97,13 @@ public class DoclingParserAdapter implements ParserAdapter {
         }
     }
 
-    /** 轮询直到作业完成，返回 result 节点。 */
-    private JsonNode awaitResult(String jobId) {
+    /**
+     * 轮询直到作业完成，返回 result 节点。
+     *
+     * @param onPoll 每次轮询后的回调（可空）。回调异常被吞掉：埋点是旁路，
+     *               不能因为写流水失败而把一次 190 秒的解析打断（阶段 19）
+     */
+    private JsonNode awaitResult(String jobId, Consumer<ParseJobStatus> onPoll) {
         long deadline = System.nanoTime()
                 + Duration.ofMinutes(props.jobTimeoutMinutes()).toNanos();
         String lastStatus = null;
@@ -111,6 +122,13 @@ public class DoclingParserAdapter implements ParserAdapter {
             }
             if ("failed".equals(status)) {
                 throw new IllegalStateException("解析作业失败: " + job.path("error").asText());
+            }
+            if (onPoll != null) {
+                try {
+                    onPoll.accept(new ParseJobStatus(status, job.path("elapsed_seconds").asDouble()));
+                } catch (RuntimeException e) {
+                    log.debug("轮询回调失败（忽略）：{}", e.toString());
+                }
             }
             sleep(props.pollIntervalSeconds());
         }

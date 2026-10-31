@@ -60,7 +60,7 @@ class StatsControllerTest {
 
     private static DocumentRow row(long id, String code, String status, long chunks) {
         return new DocumentRow(id, "文档 " + id, code, "公司 " + code, 2025, "ANNUAL", status,
-                181, null, 3, chunks, null);
+                181, null, 3, chunks, null, 100, "已完成");
     }
 
     @Test

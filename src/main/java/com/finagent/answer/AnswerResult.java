@@ -40,10 +40,29 @@ public record AnswerResult(
     /** 单条 fact 的数值在证据里找不到 → 丢弃该 fact。 */
     public static final String WARNING_FACT_UNGROUNDED = "fact_value_not_in_evidence:";
 
-    /** 数字事实一律来自 PDF 原文（用户 Q1=A：不接 FinancialFact）。 */
+    /** 事实来源三态（ST16 Task 2 / C20.2）：证据直给 / 系统计算 / 系统从证据行抽取。 */
+    public static final String ORIGIN_REPORTED = "REPORTED";
+    public static final String ORIGIN_COMPUTED = "COMPUTED";
+    public static final String ORIGIN_EXTRACTED = "EXTRACTED";
+
+    /** 模型一条 facts 都没给时，后端用抽取结果兜底 —— 必须留痕，否则「facts 是模型给的」这句话就不成立了。 */
+    public static final String WARNING_FACTS_BACKFILLED = "facts_backfilled";
+
+    /**
+     * 数字事实一律来自 PDF 原文（用户 Q1=A：不接 FinancialFact）。
+     *
+     * @param origin  REPORTED / COMPUTED / EXTRACTED（C20.2）
+     * @param formula 只有 COMPUTED 有：展开实际数字的公式串，供人复核
+     */
     public record Fact(String metric, String period, String value, String unit, String scope,
-                       String evidence, String source) {
+                       String evidence, String source, String origin, String formula) {
         public static final String SOURCE_PDF = "PDF";
+
+        /** 兼容构造：老的调用点（模型给的事实）默认 REPORTED、没有公式。 */
+        public Fact(String metric, String period, String value, String unit, String scope,
+                    String evidence, String source) {
+            this(metric, period, value, unit, scope, evidence, source, ORIGIN_REPORTED, null);
+        }
     }
 
     /** 证据不足的拒答：不调 LLM、不返回自由文本。 */

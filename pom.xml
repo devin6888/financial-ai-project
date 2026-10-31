@@ -96,6 +96,21 @@
       <version>3.0.5</version>
     </dependency>
 
+    <!-- LangGraph4j（阶段 11：Agent 工作流）。
+         版本 1.9.7 的 parent POM 里 spring-ai.version = 2.0.1，与本项目一致（实测）。
+         只引 core（图本体）与 postgres-saver（检查点落库）；
+         -spring-ai 模块（StreamingChatGenerator / SpringAIToolService）本阶段暂不引，见 ST11 §12.4。 -->
+    <dependency>
+      <groupId>org.bsc.langgraph4j</groupId>
+      <artifactId>langgraph4j-core</artifactId>
+      <version>1.9.7</version>
+    </dependency>
+    <dependency>
+      <groupId>org.bsc.langgraph4j</groupId>
+      <artifactId>langgraph4j-postgres-saver</artifactId>
+      <version>1.9.7</version>
+    </dependency>
+
     <!-- 腾讯云 COS 对象存储（设计文档 §14：经 ObjectStorage 抽象访问，便于替换） -->
     <dependency>
       <groupId>com.qcloud</groupId>

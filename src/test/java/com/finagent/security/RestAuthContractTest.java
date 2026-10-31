@@ -67,6 +67,9 @@ class RestAuthContractTest {
         assertThat(get("/api/scope/documents", null).status()).isEqualTo(401);
         assertThat(get("/api/documents/7", null).status()).isEqualTo(401);
         assertThat(post("/api/chat", null, "{\"question\":\"q\"}").status()).isEqualTo(401);
+        assertThat(post("/api/agent/runs/" + java.util.UUID.randomUUID() + "/resume", null,
+                "{\"decision\":\"APPROVE\"}").status()).isEqualTo(401);
+        assertThat(get("/api/agent/runs/" + java.util.UUID.randomUUID(), null).status()).isEqualTo(401);
     }
 
     @Test

@@ -225,6 +225,16 @@ public class ChunkRepository {
     }
 
     /**
+     * 按 id 取单块（引用悬浮卡用）。
+     *
+     * <p>不校验 status / chunk_version：引用指向的块就在当前 ACTIVE 版本里；
+     * 若版本后来切换过，返回旧版本的行也比「凭空少一条」好 —— 调用方负责判租户与可读性。
+     */
+    public java.util.Optional<ChunkView> findViewById(long id) {
+        return jdbc.query(CHUNK_VIEW_SELECT + " WHERE dc.id = ?", CHUNK_VIEW_MAPPER, id).stream().findFirst();
+    }
+
+    /**
      * 取这些 Parent 下的全部 Child（保证 readingOrder：按 chunk_index 升序）。
      *
      * <p>只取 ACTIVE：版本切换后旧版本的块是 SUPERSEDED，混进来会得到两份互相矛盾的证据。

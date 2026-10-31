@@ -6,7 +6,7 @@ import java.util.List;
 
 /**
  * Reciprocal Rank Fusion（§9.4）。
- *
+ * 纯函数
  * <p>公式：<b>RRF_score(d) = Σ_m 1 / (k + rank_m(d))</b>，k 默认 60。
  *
  * <p><b>为什么按排名而不按分数融合</b>：Dense 的余弦相似度在 0~1，

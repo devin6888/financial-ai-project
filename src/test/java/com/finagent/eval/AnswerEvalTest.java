@@ -1,9 +1,11 @@
 package com.finagent.eval;
 
+import com.finagent.agent.AgentStreamService;
 import com.finagent.chat.ChatRequest;
 import com.finagent.chat.ChatResponse;
-import com.finagent.chat.ChatService;
 import com.finagent.citation.Citation;
+import com.finagent.security.CurrentUser;
+import com.finagent.security.TenantContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,7 @@ import org.springframework.test.context.ActiveProfiles;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -43,8 +46,9 @@ class AnswerEvalTest {
     private static final Pattern YEAR = Pattern.compile("(?<!\\d)(19|20)\\d{2}(?!\\d)");
     private static final Path ROWS = Path.of("target/eval-rows.jsonl");
 
+    /** P4 起问答只有一条路径（图）；同步入口在 {@link AgentStreamService#ask}. */
     @Autowired
-    private ChatService chatService;
+    private AgentStreamService agentStreams;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -52,7 +56,19 @@ class AnswerEvalTest {
     @Test
     @DisplayName("32 题端到端跑通，打印逐题判定并落盘汇总")
     void evaluateAnswers() throws IOException {
-        List<GoldenSet.Item> items = GoldenSet.load();
+        // 图里的 run 需要身份（之前直链的 CORPUS 作用域不查租户，所以老测试没设过）
+        TenantContext.set(new CurrentUser(1L, 1L, "analyst", "评测账号",
+                java.util.Set.of("ANALYST")));
+        OffsetDateTime startedAt = OffsetDateTime.now();
+        try {
+            evaluate(GoldenSet.load());
+        } finally {
+            TenantContext.clear();
+            cleanupAgentRuns(startedAt);
+        }
+    }
+
+    private void evaluate(List<GoldenSet.Item> items) throws IOException {
         List<AnswerMetrics.Row> rows = new ArrayList<>();
         List<HumanReviewExporter.Row> table = new ArrayList<>();
         List<String> problems = new ArrayList<>();
@@ -74,7 +90,7 @@ class AnswerEvalTest {
                 continue;
             }
             long t0 = System.currentTimeMillis();
-            ChatResponse r = chatService.ask(new ChatRequest(item.question(), item.toChatScope(), "NEVER"));
+            ChatResponse r = agentStreams.ask(new ChatRequest(item.question(), item.toChatScope(), "NEVER"));
             long ms = System.currentTimeMillis() - t0;
 
             int valid = 0;
@@ -138,6 +154,20 @@ class AnswerEvalTest {
 
         assertThat(problems).as("引用必须能反解析到 document_chunk").isEmpty();
         assertThat(rows).hasSize(32);
+    }
+
+    /** 评测跑完把这一轮造的 run / 检查点删掉（C17：LG4J 两张表由 Flyway 建，不受 RLS 保护，清理必须显式做）。 */
+    private void cleanupAgentRuns(OffsetDateTime since) {
+        jdbc.update("""
+                DELETE FROM lg4jcheckpoint WHERE thread_id IN (
+                    SELECT t.thread_id FROM lg4jthread t
+                    WHERE t.thread_name IN (SELECT id::text FROM agent_run WHERE tenant_id = 1 AND user_id = 1 AND created_at >= ?))
+                """, since);
+        jdbc.update("""
+                DELETE FROM lg4jthread WHERE thread_name IN (
+                    SELECT id::text FROM agent_run WHERE tenant_id = 1 AND user_id = 1 AND created_at >= ?)
+                """, since);
+        jdbc.update("DELETE FROM agent_run WHERE tenant_id = 1 AND user_id = 1 AND created_at >= ?", since);
     }
 
     private record EvalRow(String id, String type, String question, String answer, String confidence,

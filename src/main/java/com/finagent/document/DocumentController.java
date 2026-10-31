@@ -3,6 +3,7 @@ package com.finagent.document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -74,6 +75,19 @@ public class DocumentController {
                     .body(error("NOT_FOUND", "文档不存在 id=" + id));
         }
         return ResponseEntity.ok(detail.get());
+    }
+
+    /**
+     * 同一公司 + 年度 + 类型已经有另一份内容不同的文档（唯一索引 uq_document_identity）。
+     *
+     * <p>以前这里漏到 500：用户传第二份 Q1 报告（内容不同、公司年度相同）时界面只看到
+     * 「Internal Server Error」，不知道是命名/年份的问题。收敛成 409 + 人话。
+     */
+    @ExceptionHandler(DuplicateKeyException.class)
+    public ResponseEntity<Object> conflict(DuplicateKeyException e) {
+        log.debug("文档唯一约束冲突：{}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error("DOCUMENT_CONFLICT",
+                "该公司该年度已有同类型的另一份文档（内容不同）。请先删除旧文档，或修改年度/类型后再上传。"));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

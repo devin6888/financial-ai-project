@@ -2,6 +2,9 @@ package com.finagent.document;
 
 import com.finagent.chunk.ReindexMode;
 import com.finagent.chunk.ReindexService;
+import com.finagent.ingest.IngestFlow;
+import com.finagent.ingest.IngestStep;
+import com.finagent.ingest.IngestTracker;
 import com.finagent.storage.ObjectStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,13 +41,18 @@ public class DocumentParseService {
     private final DocumentRepository documents;
     private final ObjectStorage storage;
     private final ReindexService reindex;
+    private final DocumentProgress progress;
+    private final IngestTracker tracker;
 
     public DocumentParseService(ParserAdapter parser, DocumentRepository documents,
-                                ObjectStorage storage, ReindexService reindex) {
+                                ObjectStorage storage, ReindexService reindex,
+                                DocumentProgress progress, IngestTracker tracker) {
         this.parser = parser;
         this.documents = documents;
         this.storage = storage;
         this.reindex = reindex;
+        this.progress = progress;
+        this.tracker = tracker;
     }
 
     /** 便捷入口：先幂等登记公司，再解析。 */
@@ -66,10 +74,14 @@ public class DocumentParseService {
         long documentId = documents.upsertDocument(companyId, docType, docYear, title,
                 pdfObjectKey, contentHash);
         log.info("文档已登记 document_id={} hash={}", documentId, contentHash);
+        // 同步链路（CLI/测试）也留执行记录：库里能查到「这份 PDF 走的是哪条链路、用了多久」
+        tracker.start(documentId, IngestFlow.PARSE);
         try {
             parseAndPersist(documentId, contentHash, title, pdf);
+            tracker.succeed(documentId, IngestTracker.summary("pages", parsedPages(documentId)));
             return documentId;
         } catch (RuntimeException e) {
+            tracker.fail(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
             documents.markFailed(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
             throw e;
         }
@@ -84,17 +96,23 @@ public class DocumentParseService {
      * 两条链路共用 {@link #parseAndPersist}，不写第二套解析逻辑。
      */
     public void parseDocumentAsync(long documentId) {
+        // 上传接口已经开了 run（RECEIVED 已写），这里复用；恢复场景（没有在跑的 run）则新开一条
+        tracker.startOrResume(documentId, IngestFlow.RESUME);
         DocumentRepository.ParseInput input = documents.findParseInput(documentId);
         if (input.objectKey() == null || input.objectKey().isBlank()) {
             throw new IllegalStateException(
                     "文档 " + documentId + " 没有 PDF 对象键，无法异步解析");
         }
-        byte[] pdf = storage.get(input.objectKey());
         try {
+            byte[] pdf = storage.get(input.objectKey());
             parseAndPersist(documentId, input.contentHash(), input.title(), pdf);
             // 解析完成 → 复用 ReindexService 做切块 + 嵌入（RECHUNK 是阶段 3 已交付的能力）
+            progress.step(documentId, DocumentProgress.CHUNKING, DocumentProgress.STAGE_CHUNKING);
+            tracker.begin(documentId, IngestStep.CHUNKING);
             reindex.reindex(documentId, ReindexMode.RECHUNK);
         } catch (RuntimeException e) {
+            // 先收执行记录再改文档状态：两步都失败时，至少流水里有原因
+            tracker.fail(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
             documents.markFailed(documentId, e.getClass().getSimpleName() + ": " + e.getMessage());
             throw e;
         }
@@ -108,11 +126,31 @@ public class DocumentParseService {
      * （初版让适配器把 submit+poll 包在一起，job_id 拿不到，断线后就只能判定"从未提交"。）
      */
     private void parseAndPersist(long documentId, String contentHash, String title, byte[] pdf) {
+        progress.step(documentId, DocumentProgress.SUBMITTING, DocumentProgress.STAGE_SUBMITTING);
+        tracker.begin(documentId, IngestStep.SUBMITTED);
         String jobId = parser.submit(pdf, title + ".pdf", null, null);
         documents.markRunning(documentId, jobId);
+        tracker.finish(documentId, IngestStep.SUBMITTED, "job=" + jobId);
+        progress.step(documentId, DocumentProgress.PARSING, DocumentProgress.STAGE_PARSING);
+        tracker.begin(documentId, IngestStep.PARSING);
 
-        ParsedDocument parsed = parser.fetchResult(jobId);
+        // 解析是 190 秒里的大头：轮询回调里写心跳，界面才能看到「还在动」（30 秒节流写在 tracker 里）
+        ParsedDocument parsed = parser.fetchResult(jobId,
+                status -> tracker.heartbeat(documentId, heartbeatDetail(status)));
         persistResult(documentId, contentHash, parsed);
+    }
+
+    /** 心跳文案：状态中文 + 服务端已跑秒数（用服务端秒数，两端时钟不必一致）。 */
+    static String heartbeatDetail(ParserAdapter.ParseJobStatus status) {
+        String stage = switch (status.status()) {
+            case "queued" -> "排队中";
+            case "running" -> "解析中";
+            case "done" -> "解析完成";
+            case "failed" -> "解析失败";
+            default -> status.status();
+        };
+        long sec = Math.max(0, Math.round(status.elapsedSeconds()));
+        return stage + " · 已用 " + (sec / 60) + "m" + (sec % 60) + "s";
     }
 
     /**
@@ -138,11 +176,16 @@ public class DocumentParseService {
                 log.warn("document_id={} 无 job_id -> FAILED", doc.documentId());
                 continue;
             }
+            tracker.startOrResume(doc.documentId(), IngestFlow.RESUME);
             try {
-                ParsedDocument parsed = parser.fetchResult(doc.jobId());
+                ParsedDocument parsed = parser.fetchResult(doc.jobId(),
+                        status -> tracker.heartbeat(doc.documentId(), heartbeatDetail(status)));
                 persistResult(doc.documentId(), doc.contentHash(), parsed);
+                tracker.succeed(doc.documentId(),
+                        IngestTracker.summary("pages", parsed.pageCount(), "resumed", true));
                 log.info("document_id={} 已从作业 {} 恢复完成", doc.documentId(), doc.jobId());
             } catch (RuntimeException e) {
+                tracker.fail(doc.documentId(), "恢复失败：" + e.getMessage());
                 documents.markFailed(doc.documentId(), "恢复失败：" + e.getMessage());
                 log.warn("document_id={} 恢复失败", doc.documentId(), e);
             }
@@ -151,6 +194,7 @@ public class DocumentParseService {
 
     /** 产物写 COS 并更新 document。主流程与恢复流程共用。 */
     private void persistResult(long documentId, String contentHash, ParsedDocument parsed) {
+        tracker.begin(documentId, IngestStep.PARSED);
         // key 里带 parser 版本：重解析写新对象，老产物不被覆盖（合并方案的代价缓解）
         String resultKey = "parsed/" + contentHash + "/" + parsed.parserName() + "-"
                 + parsed.parserVersion() + "/normalized.json";
@@ -160,7 +204,20 @@ public class DocumentParseService {
                 parsed.parserVersion(), parsed.pageCount());
         // 报告期是「类型 + 年份」的纯函数，解析完成即可确定；阶段 5 靠它判定「本期证据」
         documents.backfillPeriod(documentId);
+        // 解析完成只是「产物可读」；真正可检索要等切块 + 嵌入切到 ACTIVE 版本（进度 100）
+        progress.step(documentId, DocumentProgress.PARSED, DocumentProgress.STAGE_PARSED);
+        tracker.finish(documentId, IngestStep.PARSED,
+                parsed.pageCount() + " 页 · " + parsed.parserName() + " " + parsed.parserVersion());
         log.info("解析完成 document_id={} 产物={}", documentId, resultKey);
+    }
+
+    /** 读回页数（成功摘要用）；读不到返回 null，{@code summary()} 会自动跳过 null 值。 */
+    private Integer parsedPages(long documentId) {
+        try {
+            return documents.findParseState(documentId).pagesParsed();
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     static String sha256(byte[] data) {

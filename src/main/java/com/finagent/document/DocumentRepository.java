@@ -92,12 +92,54 @@ public class DocumentRepository {
                 """, parsedObjectKey, parser, parserVersion, pagesParsed, documentId);
     }
 
+    /**
+     * 重试前把文档复位成 PENDING（阶段 19）。
+     *
+     * <p>与 {@link #upsertDocument} 的区别：那条是「同一份 PDF 又上传了一次」（走 content_hash 冲突），
+     * 这里「同一条记录重跑」—— 不动 object_key/content_hash，只清运行态。
+     *
+     * <p>进度<b>归零</b>是刻意的：新 attempt 从 0% 重新累积；不归零的话界面会停在上一轮的 12%，
+     * 而 {@code updateProgress} 只增不减，新的低检查点（8%）写不进去，看起来像卡住不动。
+     */
+    public void markPending(long documentId) {
+        jdbc.update("""
+                UPDATE document
+                   SET parse_status = 'PENDING', parse_job_id = NULL, parse_error = NULL,
+                       parse_progress = 0, progress_stage = NULL,
+                       parse_started_at = NULL, parse_finished_at = NULL
+                 WHERE id = ?
+                """, documentId);
+    }
+
     public void markFailed(long documentId, String error) {
         jdbc.update("""
                 UPDATE document
-                   SET parse_status = 'FAILED', parse_error = ?, parse_finished_at = now()
+                   SET parse_status = 'FAILED', parse_error = ?, parse_finished_at = now(),
+                       progress_stage = '失败'
                  WHERE id = ?
                 """, error, documentId);
+    }
+
+    /**
+     * 上报进度（0~100 的<b>阶段检查点</b>，不是页级百分比）。
+     *
+     * <p>三条硬规则：
+     * <ul>
+     *   <li>只增不减：{@code GREATEST} 兜住重试/回退，否则进度条会倒退</li>
+     *   <li>进度与阶段文案同一条语句写 —— 分两条会出现「60% + 切块中」的错配</li>
+     *   <li>阶段文案只在进度前进时改写，失败时由 {@link #markFailed} 单独写成「失败」</li>
+     * </ul>
+     *
+     * @param percent 会被夹到 [0,100]，调用方不必自己算边界
+     */
+    public void updateProgress(long documentId, int percent, String stage) {
+        int safe = Math.max(0, Math.min(100, percent));
+        jdbc.update("""
+                UPDATE document
+                   SET progress_stage = CASE WHEN ? >= parse_progress THEN ? ELSE progress_stage END,
+                       parse_progress = GREATEST(parse_progress, ?)
+                 WHERE id = ?
+                """, safe, stage, safe, documentId);
     }
 
     /**
@@ -181,7 +223,8 @@ public class DocumentRepository {
         List<DocumentDetail> rows = jdbc.query("""
                 SELECT d.id, d.parse_status, d.active_chunk_version, d.title, d.pages_parsed,
                        d.parse_error, d.parsed_object_key, d.parser, d.parser_version,
-                       d.doc_year, d.doc_type, c.code, c.name
+                       d.doc_year, d.doc_type, c.code, c.name,
+                       d.parse_progress, d.progress_stage
                   FROM document d
                   LEFT JOIN company c ON c.id = d.company_id
                  WHERE d.id = ?
@@ -349,6 +392,7 @@ public class DocumentRepository {
                 SELECT d.id, d.title, c.code AS company_code, c.name AS company_name,
                        d.doc_year, d.doc_type, d.parse_status, d.pages_parsed, d.parse_error,
                        d.active_chunk_version, d.created_at,
+                       d.parse_progress, d.progress_stage,
                        (SELECT count(*) FROM document_chunk dc
                          WHERE dc.document_id = d.id
                            AND dc.chunk_level = 'CHILD'
@@ -370,7 +414,9 @@ public class DocumentRepository {
                 rs.getString("parse_error"),
                 rs.getObject("active_chunk_version", Integer.class),
                 rs.getLong("chunk_count"),
-                rs.getObject("created_at", OffsetDateTime.class)), safe);
+                rs.getObject("created_at", OffsetDateTime.class),
+                rs.getInt("parse_progress"),
+                rs.getString("progress_stage")), safe);
     }
 
     public List<DocStatus> findStatusByIds(List<Long> ids) {
@@ -447,7 +493,8 @@ public class DocumentRepository {
                               Integer docYear, String docType, String parseStatus,
                               Integer pagesParsed, String parseError,
                               Integer activeChunkVersion, long chunkCount,
-                              OffsetDateTime createdAt) {
+                              OffsetDateTime createdAt,
+                              int parseProgress, String progressStage) {
     }
 
     /** 单文档的状态详情投影（GET /api/documents/{id} 用）。 */
@@ -455,7 +502,7 @@ public class DocumentRepository {
                                  String title, Integer pagesParsed, String parseError,
                                  String parsedObjectKey, String parser, String parserVersion,
                                  Integer docYear, String docType, String companyCode,
-                                 String companyName) {
+                                 String companyName, int parseProgress, String progressStage) {
     }
 
     private static final RowMapper<DocumentDetail> DETAIL_MAPPER = (rs, n) -> new DocumentDetail(
@@ -471,5 +518,7 @@ public class DocumentRepository {
             (Integer) rs.getObject("doc_year"),
             rs.getString("doc_type"),
             rs.getString("code"),
-            rs.getString("name"));
+            rs.getString("name"),
+            rs.getInt("parse_progress"),
+            rs.getString("progress_stage"));
 }

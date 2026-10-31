@@ -2,7 +2,10 @@ package com.finagent.chunk;
 
 import com.finagent.chunk.model.Chunk;
 import com.finagent.chunk.model.ParentGroup;
+import com.finagent.document.DocumentProgress;
 import com.finagent.embedding.EmbeddingService;
+import com.finagent.ingest.IngestStep;
+import com.finagent.ingest.IngestTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -29,13 +32,18 @@ public class ChunkWriter {
     private final ChunkRepository chunks;
     private final EmbeddingService embeddingService;
     private final EmbeddingReuseService reuseService;
+    private final DocumentProgress progress;
+    private final IngestTracker tracker;
 
     public ChunkWriter(ChunkPersister persister, ChunkRepository chunks,
-                       EmbeddingService embeddingService, EmbeddingReuseService reuseService) {
+                       EmbeddingService embeddingService, EmbeddingReuseService reuseService,
+                       DocumentProgress progress, IngestTracker tracker) {
         this.persister = persister;
         this.chunks = chunks;
         this.embeddingService = embeddingService;
         this.reuseService = reuseService;
+        this.progress = progress;
+        this.tracker = tracker;
     }
 
     /**
@@ -66,7 +74,22 @@ public class ChunkWriter {
                 embeddingService.modelVersion());
 
         // 4) 只对「待嵌入」调 API —— 未变的块零 API 调用（验收口径）
-        List<float[]> fresh = embeddingService.embedAll(reuse.toEmbedTexts());
+        //    进度：55%「切块完成」→ 95%「向量化 x/y」，按<b>条数</b>插值（最后一批常不满 10 条）
+        List<String> toEmbed = reuse.toEmbedTexts();
+        progress.step(documentId, DocumentProgress.CHUNKED, DocumentProgress.STAGE_CHUNKED);
+        int totalChildren = childrenPerGroup.stream().mapToInt(List::size).sum();
+        tracker.begin(documentId, IngestStep.CHUNKED);
+        tracker.finish(documentId, IngestStep.CHUNKED,
+                "Parent " + parents.size() + " / Child " + totalChildren);
+        tracker.begin(documentId, IngestStep.EMBEDDING);
+        tracker.heartbeatNow(documentId, "已嵌入 0/" + toEmbed.size());
+        List<float[]> fresh = embeddingService.embedAll(toEmbed, done -> {
+            progress.embeddingStep(documentId, done, toEmbed.size());
+            // 批次只改 detail，不新增行 —— 否则「第 7/8 步」会随着批次变成第 20/8 步
+            tracker.heartbeat(documentId, "已嵌入 " + done + "/" + toEmbed.size());
+        });
+        tracker.finish(documentId, IngestStep.EMBEDDING,
+                "新嵌 " + fresh.size() + " / 复用 " + (texts.size() - fresh.size()));
         log.info("文档 {} 增量重嵌：复用 {} / 新嵌 {}", documentId,
                 texts.size() - fresh.size(), fresh.size());
 
@@ -77,7 +100,15 @@ public class ChunkWriter {
         WritePlan plan = WritePlan.assemble(parents, childrenPerGroup, texts, vectors);
 
         // 7) 事务内：写 -> 校验 -> 原子切换
-        return persister.persistAndSwitch(documentId, plan, parserVersion,
+        int version = persister.persistAndSwitch(documentId, plan, parserVersion,
                 embeddingService.modelName(), embeddingService.modelVersion());
+        // 切换成功才算「入库完成」：进度 100 与 active_chunk_version 可见性同时成立
+        progress.step(documentId, DocumentProgress.DONE, DocumentProgress.STAGE_DONE);
+        tracker.begin(documentId, IngestStep.SWITCHED);
+        tracker.finish(documentId, IngestStep.SWITCHED, "v" + version);
+        tracker.succeed(documentId, IngestTracker.summary(
+                "chunks", totalChildren, "version", version,
+                "embedded", fresh.size(), "reused", texts.size() - fresh.size()));
+        return version;
     }
 }

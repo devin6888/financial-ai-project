@@ -1,5 +1,6 @@
 package com.finagent.chat;
 
+import com.finagent.agent.AgentStreamService;
 import com.finagent.answer.AnswerResult;
 import com.finagent.citation.BBox;
 import com.finagent.citation.Citation;
@@ -36,7 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * HTTP 层：状态码与错误码。业务细节在 ChatServiceTest 里测。
+ * HTTP 层：状态码与错误码。业务细节在 AgentStreamServiceTest 里测。
  *
  * <p>用 standaloneSetup 而不是 @WebMvcTest：Spring Boot 4 把测试切片拆到了独立模块，
  * 本项目没有引入那个模块。standalone 只验路由 / 绑定 / 状态码，正好是这层要验的东西。
@@ -44,7 +45,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ChatControllerTest {
 
     private MockMvc mvc;
-    private ChatService chatService;
+    private AgentStreamService agentStreams;
     private DocumentRepository documents;
     private ScopeAuthorizer authorizer;
 
@@ -66,19 +67,19 @@ class ChatControllerTest {
 
     @BeforeEach
     void setUp() {
-        chatService = mock(ChatService.class);
+        agentStreams = mock(AgentStreamService.class);
         documents = mock(DocumentRepository.class);
         authorizer = mock(ScopeAuthorizer.class);
         // 默认「全都可读」，不关心 ACL 的用例就不用重复打桩
         when(authorizer.filterReadable(any())).thenAnswer(inv -> inv.getArgument(0));
-        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chatService, documents, authorizer,
-                streamExecutor, streamPinger, new StreamProperties(180_000L, 15_000L))).build();
+        mvc = MockMvcBuilders.standaloneSetup(new ChatController(agentStreams, documents, authorizer,
+                new SseStreamTemplate(streamExecutor, streamPinger, new StreamProperties(180_000L, 15_000L)))).build();
     }
 
     @Test
     @DisplayName("正常问答 → 200，带引用与 traceId")
     void chatReturnsAnswer() throws Exception {
-        when(chatService.ask(any())).thenReturn(response());
+        when(agentStreams.ask(any())).thenReturn(response());
 
         mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"question\":\"2024年营业总收入是多少\",\"scope\":{\"kind\":\"DOCUMENTS\",\"documentIds\":[38]}}"))
@@ -92,7 +93,7 @@ class ChatControllerTest {
     @Test
     @DisplayName("作用域解析出 0 份 → 409 + SCOPE_EMPTY（不是 200 空答案）")
     void emptyScopeIsConflict() throws Exception {
-        when(chatService.ask(any()))
+        when(agentStreams.ask(any()))
                 .thenThrow(new ScopeEmptyException("范围内没有可检索的文档", List.of("scope_not_retrievable_99_FAILED")));
 
         mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
@@ -109,7 +110,7 @@ class ChatControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("BAD_REQUEST"));
 
-        verify(chatService, never()).ask(any());
+        verify(agentStreams, never()).ask(any());
     }
 
     @Test

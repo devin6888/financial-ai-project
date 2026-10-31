@@ -44,10 +44,10 @@ class DocumentQueryControllerTest {
         when(documents.listDocuments(50)).thenReturn(List.of(
                 new DocumentRepository.DocumentRow(7L, "东方财富2025年年度报告", "300059", "东方财富",
                         2025, "ANNUAL", "DONE", 181, null, 7, 654,
-                        OffsetDateTime.parse("2026-10-20T10:00:00+08:00")),
+                        OffsetDateTime.parse("2026-10-20T10:00:00+08:00"), 100, "已完成"),
                 new DocumentRepository.DocumentRow(4L, "恢复测试文档", "600519", "贵州茅台",
                         2024, "ANNUAL", "FAILED", 0, "PDF 解析失败", null, 0,
-                        OffsetDateTime.parse("2026-10-21T10:00:00+08:00"))));
+                        OffsetDateTime.parse("2026-10-21T10:00:00+08:00"), 12, "失败")));
 
         mvc.perform(get("/api/documents"))
                 .andExpect(status().isOk())
@@ -121,10 +121,52 @@ class DocumentQueryControllerTest {
         verify(authorizer).filterReadable(List.of(9L));
     }
 
+    @Test
+    @DisplayName("单块正文 → 200，带定位信息与完整 content（引用悬浮卡的数据来源）")
+    void chunkDetailReturnsContent() throws Exception {
+        when(chunks.findViewById(7216L)).thenReturn(java.util.Optional.of(chunkView(7216L, 7L)));
+
+        mvc.perform(get("/api/chunks/7216"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.documentId").value(7))
+                .andExpect(jsonPath("$.docTitle").value("东方财富2025年年度报告"))
+                .andExpect(jsonPath("$.pageStart").value(7))
+                .andExpect(jsonPath("$.chunkType").value("TABLE"))
+                .andExpect(jsonPath("$.content").value("| 营业总收入（元） | 16,067,741,039.51 |"));
+    }
+
+    @Test
+    @DisplayName("单块不存在 → 404 CHUNK_NOT_FOUND（不能 200 空体：前端分不清「没这块」和「取失败」）")
+    void chunkDetailNotFound() throws Exception {
+        when(chunks.findViewById(999L)).thenReturn(java.util.Optional.empty());
+
+        mvc.perform(get("/api/chunks/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("CHUNK_NOT_FOUND"));
+    }
+
+    @Test
+    @DisplayName("单块所属文档不可读 → 404（不用 403：403 等于告诉对方「这个块存在」）")
+    void chunkDetailOfUnreadableDocumentIs404() throws Exception {
+        when(chunks.findViewById(7216L)).thenReturn(java.util.Optional.of(chunkView(7216L, 7L)));
+        when(authorizer.filterReadable(List.of(7L))).thenReturn(List.of());
+
+        mvc.perform(get("/api/chunks/7216"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("CHUNK_NOT_FOUND"));
+    }
+
+    private static ChunkRepository.ChunkView chunkView(long id, long documentId) {
+        return new ChunkRepository.ChunkView(id, documentId, null, "CHILD", "TABLE",
+                "第二节 公司简介和主要财务指标 § 五、主要会计数据和财务指标", "五、主要会计数据和财务指标",
+                "| 营业总收入（元） | 16,067,741,039.51 |", 7, 7, 469, 2, null, null, null, null,
+                "东方财富2025年年度报告");
+    }
+
     private static DocumentRepository.DocumentRow row(long id, String title, String status) {
         return new DocumentRepository.DocumentRow(id, title, "300059", "东方财富",
                 2025, "ANNUAL", status, 181, null, 9, 654,
-                OffsetDateTime.parse("2026-10-20T10:00:00+08:00"));
+                OffsetDateTime.parse("2026-10-20T10:00:00+08:00"), 100, "已完成");
     }
 
     @Test

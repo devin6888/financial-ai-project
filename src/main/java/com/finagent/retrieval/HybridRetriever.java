@@ -141,8 +141,7 @@ public class HybridRetriever {
         }
         sparseMs += System.currentTimeMillis() - t;
 
-        // QU 推出来的过滤条件是「猜测」，猜错（比如年份写成 2024 而库里有 2025）会
-        // 静默清空结果。调用方给的显式过滤不走这条退路 —— 那是他明确要的。
+        // QU 推出来的过滤条件是「猜测」，猜错（比如年份写成 2024 而库里有 2025）会静默清空结果。调用方给的显式过滤不走这条退路 —— 那是他明确要的。
         if (denseHits.isEmpty() && sparseHits.isEmpty() && eff.hasQuPart()) {
             warnings.add("qu_filter_empty_fallback");
             log.debug("QU 过滤条件导致结果为空，去掉 QU 部分重试：{}", req.query());
@@ -169,6 +168,7 @@ public class HybridRetriever {
             log.debug("作用域内无证据：{}（范围 {} 份文档）", req.query(), scope.size());
         }
 
+        //-----RRF 融合-----
         // 路内去重：同一 chunk 被两路都召回时合并成一条，两路名次都保留 —— RRF 要的就是两个名次。
         progress.onPhase("fuse", denseHits.size() + sparseHits.size());
         t = System.currentTimeMillis();
@@ -202,7 +202,7 @@ public class HybridRetriever {
         List<RetrievedChunk> result;
         int limit = Math.min(req.topRerank(), candidates.size());
 
-        //-----rerank-----
+        //-----rerank 重排-----
         if (!req.useRerank()) {
             // 评测时关掉精排看 RRF 的原始排序 —— 这是「没启用」，不是「降级」
             result = candidates.subList(0, limit);

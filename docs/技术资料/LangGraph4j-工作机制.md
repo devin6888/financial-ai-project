@@ -272,21 +272,35 @@ GraphInput.resume(checkpoint);           // 从指定检查点重放
 ### 7.2 机制
 
 1. 编译时声明 `interruptsBefore(Set.of("answer"))`（也可以是 `interruptsAfter`）。
-2. 运行到该节点**之前**，框架抛 `GraphInterruptException`（**这不是错误，是控制流**，业务代码要单独 catch）。
-3. 中断的「为什么停」用 `InterruptionMetadata<State>` 表达：`nodeId()`、`state()`（当前完整状态，前端就靠它渲染草稿）、`reason()`、`metadata(key)`。它由 `PostgresSaver` 一并存档（`javap` 里只有 checkpoint 相关类引用它），**具体从哪个入口取（snapshot 的 metadata 还是 checkpoint 的 state）要在 Task 1 spike 里确认**——这一点不写死，避免照文档写出不存在的 API。
-4. 用户点「通过 / 修改 / 驳回」→ 服务端用**同一个 threadId** 调 `stream(GraphInput.resume(Map.of("decision", ...)), cfg)`。
+2. 运行到该节点**之前**，框架**既不调用该节点也不抛异常**，流就停在那里（2026-10-29 在 1.9.7 上实测，见 §7.4）。判断「停在哪」看状态快照的 `nextNodeId()`：它等于 `answer` 就说明「卡在 answer 之前等人」。
+3. 真正的「中断异常」`GraphInterruptException` 仍然存在（`GraphInterruptException.of(Throwable)` 可取回），但它服务的是**节点内部主动中断**那条路径（`InterruptibleAction`），不是 `interruptsBefore`。
+4. 中断的「为什么停」另有 `InterruptionMetadata<State>`：`nodeId()`、`state()`、`reason()`、`metadata(key)`；它只被 checkpoint 相关类引用，取用入口在 Task 6 接 PostgresSaver 时确认。
+5. 用户点「通过 / 修改 / 驳回」→ 服务端用**同一个 threadId** 调 `stream(GraphInput.resume(Map.of("decision", ...)), cfg)`；**resume 的 Map 会被合并进状态**（实测），所以人工决定不需要另存一张表。
 
 ```java
-try {
-    app.stream(Map.of("question", q), cfg);
-} catch (GraphInterruptException e) {
-    // 已确认存在：GraphInterruptException.of(Throwable) 可取回中断异常
-    // 当前停在哪、状态是什么：app.getState(cfg) / app.getStateHistory(cfg)
-    StateSnapshot<AnalysisState> snap = app.getState(cfg);
-    approvalService.save(snap.node(), snap.state().data());
-    // 立刻返回 WAITING_APPROVAL，不阻塞任何线程
+// 跑一轮：可能停在 answer 之前，不抛异常
+for (NodeOutput<AnalysisState> out : app.stream(GraphInput.args(input), cfg)) {
+    if (out.isSTART() || out.isEND()) continue;   // 两个哨兵，别映射成阶段
+    sink.send(stage(out.node(), out.state()));
 }
+
+StateSnapshot<AnalysisState> snap = app.getState(cfg);
+if ("answer".equals(snap.nextNodeId())) {
+    approvalService.save(runId, snap.state().data());   // 落 WAITING_APPROVAL
+    // 立刻返回，不占用任何线程；SseEmitter 在这里 complete
+}
+
+// 人点了之后（新的请求）：同一个 threadId 继续
+for (NodeOutput<AnalysisState> out : app.stream(GraphInput.resume(Map.of("decision", "APPROVE")), cfg)) { ... }
 ```
+
+### 7.4 三条实测结论（1.9.7，2026-10-29）
+
+| 结论 | 细节 |
+| --- | --- |
+| 中断是「静停」不是「抛异常」 | `stream` 正常结束，`getState(cfg).nextNodeId()` = 被中断的节点 |
+| `resume(Map)` 的键会合并进状态 | 传 `decision=APPROVE`，下游节点 `value("decision")` 读得到，最终 `data()` 里也有 |
+| `releaseThread` 默认 `true` | 跑到 END 就释放线程，之后 `getState` 抛 `Missing Checkpoint!`；要「跑完还能查/还能续」必须 `releaseThread(false)` |
 
 ### 7.3 四条硬规则（血泪向）
 
@@ -381,7 +395,9 @@ try {
 | 7 | `recursionLimit` 设太大 | 死循环跑了 90 步才失败，账单很难看 | 默认 25，有人图省事改成 1000 | 按最长路径 + 2 设置 |
 | 8 | 并发共用状态 | 两个用户的答案串了 | 状态如果被当成员变量持有 | 每次运行用新的输入 Map + 不同 threadId |
 | 9 | 检查点无限增长 | 表几十 GB | 每步都存，永不清理 | 定时清理 + 只存摘要 |
-| 10 | 把大对象放状态 | 检查点单行几十 MB，jsonb 写入变慢 | `state_data` 存的是序列化字节 | 状态只放 id，正文按需回查 |
+| 10 | 把大对象放状态 | 检查点单行几十 MB，写入变慢 | `state_data` 存的是序列化字节 | 状态只放 id，正文按需回查 |
+| 11 | 以为中断会抛 `GraphInterruptException` | `catch` 永远进不去，代码以为没停 | 1.9.7 的 `interruptsBefore` 是「静停」，异常只用于节点内部主动中断 | 用 `getState(cfg).nextNodeId()` 判断 |
+| 12 | `stream` 的输出直接映射成阶段 | 前端多出 `__START__` / `__END__` 两段空状态 | `stream` 会推哨兵 | 先 `isSTART()/isEND()` 过滤 |
 
 ## 14. 与其它方案对比（面试高频）
 
@@ -440,7 +456,7 @@ try {
 一句话：存在 `LG4JThread` / `LG4JCheckpoint` 两张表（我们选 PostgresSaver），粒度是**节点边界**，恢复时已完成的节点不重跑、中断的那个节点会重跑。所以中断点必须幂等。
 
 **Q5：HITL 怎么实现？中断期间线程在干什么？**
-一句话：编译时声明 `interruptsBefore`，跑到该节点前抛 `GraphInterruptException`，状态存档、**线程直接结束**（不占用任何资源），人点了再 `resume`。
+一句话：编译时声明 `interruptsBefore`，跑到该节点前**静停**（不抛异常，看 `nextNodeId()` 就知道停在哪），状态已存档、**线程直接结束**（不占用任何资源），人点了用同一个 `threadId` 加 `GraphInput.resume(Map)` 继续，`Map` 里的键会合并进状态。
 
 **Q6：为什么不能在节点里 sleep 等审批？**
 一句话：会占住线程和数据库连接，重启后全部丢失，还得处理超时与并发。中断+恢复是把「等待」变成「一次数据库写入」。

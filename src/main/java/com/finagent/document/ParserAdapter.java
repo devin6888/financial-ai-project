@@ -1,5 +1,7 @@
 package com.finagent.document;
 
+import java.util.function.Consumer;
+
 /**
  * 文档解析器抽象（设计文档 §8.3）。
  *
@@ -24,6 +26,27 @@ public interface ParserAdapter {
      */
     ParsedDocument fetchResult(String jobId);
 
+    /**
+     * 同上，但每次轮询回调一次作业快照 —— 供执行记录写心跳（阶段 19）。
+     *
+     * <p>为什么用回调而不是让调用方自己轮询：轮询节奏（{@code poll-interval-seconds}）属于适配器，
+     * 调用方再实现一遍就会有两套节奏；而「什么时候算一次心跳」应该由业务层决定（30 秒节流）。
+     *
+     * <p>默认实现直接调用 {@link #fetchResult(String)}：假适配器与不支持轮询的实现不必改。
+     */
+    default ParsedDocument fetchResult(String jobId, Consumer<ParseJobStatus> onPoll) {
+        return fetchResult(jobId);
+    }
+
     /** 实现名，便于日志与降级判断。 */
     String name();
+
+    /**
+     * 解析作业的轮询快照。
+     *
+     * @param status         queued / running / done / failed
+     * @param elapsedSeconds 服务端已跑秒数（不是我方计时，避免两端时钟不一致）
+     */
+    record ParseJobStatus(String status, double elapsedSeconds) {
+    }
 }

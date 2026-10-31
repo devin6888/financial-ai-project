@@ -33,13 +33,17 @@ class DocumentUploadServiceTest {
     private DocumentRepository documents;
     private ObjectStorage storage;
     private DocumentTaskProducer producer;
+    private DocumentProgress progress;
+    private com.finagent.ingest.IngestTracker tracker;
 
     @BeforeEach
     void setUp() {
         documents = mock(DocumentRepository.class);
         storage = mock(ObjectStorage.class);
         producer = mock(DocumentTaskProducer.class);
-        service = new DocumentUploadService(documents, storage, producer);
+        progress = new DocumentProgress(documents);
+        tracker = mock(com.finagent.ingest.IngestTracker.class);
+        service = new DocumentUploadService(documents, storage, producer, progress, tracker);
         // 上传是 HTTP 请求线程：没有身份就不该能上传（对应 TenantContext.require()）
         TenantContext.set(new CurrentUser(2L, 1L, "analyst", "演示分析师", java.util.Set.of("ANALYST")));
     }

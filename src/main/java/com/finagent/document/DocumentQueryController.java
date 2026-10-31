@@ -2,6 +2,8 @@ package com.finagent.document;
 
 import com.finagent.chunk.ChunkRepository;
 import com.finagent.scope.ScopeAuthorizer;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -9,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -75,5 +78,32 @@ public class DocumentQueryController {
             return List.of();
         }
         return chunks.listActiveChunks(id, version, limit, offset);
+    }
+
+    /**
+     * 单块正文（正文角标的悬浮卡用，2026-10-30 ST18 需求 5）。
+     *
+     * <p>为什么单独一个端点而不是把正文塞进 citations：一次回答通常只用 2~5 条引用，
+     * 但生成阶段要把整个证据包发给模型；引用里带全长正文会让每轮响应多几十 KB，
+     * 而用户可能一次都不悬停。按需取 + 前端会话级缓存才是合适的粒度。
+     *
+     * <p>不可读一律 404（不是 403）：404 不泄漏「这个 chunkId 存在」。
+     */
+    @GetMapping("/api/chunks/{id}")
+    public ResponseEntity<?> chunk(@PathVariable long id) {
+        return chunks.findViewById(id)
+                .filter(view -> authorizer.filterReadable(List.of(view.documentId())).contains(view.documentId()))
+                .<ResponseEntity<?>>map(view -> ResponseEntity.ok(new ChunkDetail(
+                        view.id(), view.documentId(), view.docTitle(), view.sectionPath(), view.title(),
+                        view.chunkType(), view.pageStart(), view.pageEnd(), view.tokenCount(),
+                        view.caption(), view.unit(), view.content())))
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of("error", "CHUNK_NOT_FOUND", "message", "切块不存在 id=" + id)));
+    }
+
+    /** 一块正文 + 定位信息（给前端悬浮卡渲染，不求全：只要用户能确认「这块在说什么」）。 */
+    public record ChunkDetail(long id, long documentId, String docTitle, String sectionPath, String title,
+                              String chunkType, Integer pageStart, Integer pageEnd, int tokenCount,
+                              String caption, String unit, String content) {
     }
 }

@@ -93,6 +93,19 @@ finagent:
     # trace 一行一条 JSON；置空则关闭落盘
     trace-file: logs/chat-trace.jsonl
 
+  # ---------- Agent 工作流（阶段 11，契约 C17） ----------
+  # enabled 默认 false：Agent 路径要等 Task 7 接进对话链路后才打开，
+  # 否则「同一条问题既走直线又走图」会让人分不清答案是谁生成的。
+  agent:
+    enabled: false
+    # verify 判「证据够」的最少命中条数；1 会把「只召回一条无关表格」也当成够
+    min-evidence: 2
+    max-sub-questions: 4
+    recursion-limit: 25
+    # 复杂问题在 answer 前等人批（Task 5）
+    hitl: true
+    # 人批超时（分钟）：超时只标失败，绝不自动通过（自动通过等于「没人看也给答案」）
+    approval-timeout-minutes: 30
   # ---------- 流式问答（阶段 12，契约 C15） ----------
   # timeout-ms 是「浏览器还在等」的兜底；ping-ms 必须小于常见网关 60 秒的空闲超时，
   # 否则检索 + 生成之间没有事件的时间段会被中间层当成死连接掐掉。

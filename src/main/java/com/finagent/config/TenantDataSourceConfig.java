@@ -41,8 +41,16 @@ public class TenantDataSourceConfig {
         return new DataSourceProperties();
     }
 
-    /** 原始连接池（按 spring.datasource.* 绑定，含 spring.datasource.hikari.* 子键）。 */
+    /**
+     * 原始连接池。
+     *
+     * <p>两段绑定缺一不可：{@link DataSourceProperties} 负责 {@code url → jdbcUrl}；
+     * {@code spring.datasource.hikari.*}（池大小、超时）必须再单独绑一次 —— 手写 {@code new HikariDataSource}
+     * 时会绕过 Boot 的 DataSourceAutoConfiguration，那些子键以前是<b>静默不生效</b>的
+     * （2026-10-29 全量测试撞到 FATAL: sorry, too many clients already 才发现）。
+     */
     @Bean
+    @ConfigurationProperties("spring.datasource.hikari")
     public DataSource rawDataSource(@Qualifier("dataSourceProperties") DataSourceProperties props) {
         return props.initializeDataSourceBuilder().type(HikariDataSource.class).build();
     }

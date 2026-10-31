@@ -29,6 +29,8 @@ public record ChatStreamEvent(String event, Object data) {
     public static final String DELTA = "delta";
     public static final String FINAL = "final";
     public static final String ERROR = "error";
+    /** Agent 路径专用：停在 answer 前，等人批（阶段 11，契约 C17）。 */
+    public static final String APPROVAL = "approval";
 
     /** 阶段名：正在理解问题（QU，一次 LLM 调用）。 */
     public static final String PHASE_UNDERSTANDING = "understanding";
@@ -88,12 +90,52 @@ public record ChatStreamEvent(String event, Object data) {
         return new ChatStreamEvent(META, data);
     }
 
+    /**
+     * 图路径的 meta：证据在 verify 节点之后就已经确定（retrieve 的 hits），不必等模型。
+     *
+     * <p>字段与 {@link #meta} 对齐（no / childChunkId / documentId / pageStart / pageEnd /
+     * sectionPath / evidenceType），但只有命中块，没有上下文装配后的编号与 token 数 ——
+     * 图里的编号在 answer 节点内部才产生（ST14 P4）。
+     */
+    public static ChatStreamEvent metaEvidence(String traceId, List<Map<String, Object>> evidence,
+                                               int contextTokens) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("traceId", traceId);
+        List<Map<String, Object>> items = new ArrayList<>();
+        int no = 0;
+        for (Map<String, Object> hit : evidence == null ? List.<Map<String, Object>>of() : evidence) {
+            no++;
+            Map<String, Object> e = new LinkedHashMap<>();
+            e.put("no", no);
+            e.put("childChunkId", hit.get("chunkId"));
+            e.put("documentId", hit.get("documentId"));
+            e.put("pageStart", hit.get("page"));
+            e.put("pageEnd", hit.get("page"));
+            e.put("sectionPath", hit.get("sectionPath"));
+            e.put("evidenceType", hit.get("type"));
+            items.add(e);
+        }
+        data.put("evidence", items);
+        data.put("contextTokens", contextTokens);
+        return new ChatStreamEvent(META, data);
+    }
+
     public static ChatStreamEvent delta(String text) {
         return new ChatStreamEvent(DELTA, Map.of("text", text == null ? "" : text));
     }
 
     public static ChatStreamEvent finalEvent(ChatResponse response) {
         return new ChatStreamEvent(FINAL, response);
+    }
+
+    /** Agent 的 final：载荷不是 ChatResponse（它有自己的 plan / steps / evidence）。 */
+    public static ChatStreamEvent finalData(Object data) {
+        return new ChatStreamEvent(FINAL, data);
+    }
+
+    /** Agent 停在 answer 前：给人看「打算怎么做」与「已经拿到什么证据」。 */
+    public static ChatStreamEvent approval(Object data) {
+        return new ChatStreamEvent(APPROVAL, data);
     }
 
     public static ChatStreamEvent error(String code, String message) {

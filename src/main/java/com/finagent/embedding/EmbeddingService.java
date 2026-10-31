@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.IntConsumer;
 
 /**
  * 向量化服务。
@@ -58,6 +59,16 @@ public class EmbeddingService {
      * @throws IllegalStateException 返回数量与输入不符（宁可失败也不要错位入库）
      */
     public List<float[]> embedAll(List<String> texts) {
+        return embedAll(texts, null);
+    }
+
+    /**
+     * 带进度回调的批量向量化（ST18 需求 2：让「向量化 x/y」能显示出来）。
+     *
+     * <p>回调参数是<b>已完成条数</b>（不是批次序号）：最后一批常常不满 10 条，
+     * 传批次会让进度提前跳满。回调异常一律吞掉 —— 进度上报不能中断入库。
+     */
+    public List<float[]> embedAll(List<String> texts, IntConsumer onBatchDone) {
         if (texts == null || texts.isEmpty()) {
             return List.of();
         }
@@ -73,6 +84,13 @@ public class EmbeddingService {
             }
             result.addAll(vectors);
             log.debug("已向量化 {}/{}", end, texts.size());
+            if (onBatchDone != null) {
+                try {
+                    onBatchDone.accept(end);
+                } catch (RuntimeException e) {
+                    log.warn("向量化进度回调失败（忽略）：{}", e.toString());
+                }
+            }
         }
         return result;
     }

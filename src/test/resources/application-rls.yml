@@ -7,6 +7,10 @@ spring:
     url: jdbc:postgresql://localhost:5432/finagent
     username: finagent_app
     password: finagent_app
+    hikari:
+      # 与 application-test.yml 同理：多上下文并存时默认 10 条会打满 PG 的连接配额
+      maximum-pool-size: 4
+      minimum-idle: 0
   flyway:
     # 迁移必须用 owner：finagent_app 没有 DDL 权限。
     # 注意：一旦单独给 flyway 指定 user/password，就必须同时给 url，
