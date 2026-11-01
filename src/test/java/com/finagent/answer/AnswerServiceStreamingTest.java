@@ -100,8 +100,11 @@ class AnswerServiceStreamingTest {
     }
 
     private static QueryUnderstanding qu() {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of("300059"), new int[]{2025, 2025},
-                List.of("营业总收入"), false, false, null, false, "TEST");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业总收入"))
+                .withRoute("TEST");
     }
 
     private static ContextPackage pkg(ContextBlock... blocks) {

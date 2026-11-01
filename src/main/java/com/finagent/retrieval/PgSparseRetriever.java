@@ -45,11 +45,28 @@ public class PgSparseRetriever implements SparseRetriever {
 
     // ---------------- EXACT：精确子串 ----------------
 
+    /** 实体命中在标题/章节路径里的额外分（比正文命中更可信：整块都在讲这件事）。 */
+    private static final int TITLE_BONUS = 3;
+
+    /** 位置哨兵：strpos 找不到返回 0，用最大整数参与 LEAST，等价于「排到最后」。 */
+    private static final int NO_POS = Integer.MAX_VALUE;
+
     /**
-     * 任一实体命中即可（OR），按<b>命中实体个数</b>降序。
+     * 任一实体命中即可（OR），按<b>加权命中分</b>降序，再按<b>首个命中位置</b>升序。
      *
-     * <p>为什么用命中个数当相关性：这一路没有 IDF 可用，
-     * 「同时命中多个实体」是最朴素也最可靠的信号。
+     * <p><b>为什么不再只数命中个数</b>（阶段 20 技术债 #1）：实测「每股收益」这类查询，
+     * 命中的 17 条里有 16 条只命中 1 个词，分数全是 1 → {@code ORDER BY score DESC, id ASC}
+     * 退化成按主键排序，等于没排序；命中数超过 topSparse 时还会按 id 截断，把正确的块截掉。
+     *
+     * <p>现在的三档信号，全部是 SQL 里一次算完（不额外查库、不调模型）：
+     * <ol>
+     *   <li><b>实体长度</b>：{@code char_length(term)} 当权重 —— 「每股收益」(4) 比「每股」(2) 更具体，
+     *       这是没有 IDF 时最廉价的「具体程度」代理；</li>
+     *   <li><b>标题/章节命中</b>：title 或 section_path 里出现的，每个实体加 {@link #TITLE_BONUS} 分 —— 整块都在讲这件事，
+     *       比正文里顺带提一句更相关；</li>
+     *   <li><b>首次出现位置</b>：所有命中词里最早出现的那个字符位置（{@code LEAST(strpos...)})，
+     *       越靠前越可能是「表头/首段」，同分时用它兜底。</li>
+     * </ol>
      *
      * <p>为什么用 ILIKE 而不是全文检索：这条路径的全部价值就是<b>不过分词器</b>。
      */
@@ -68,32 +85,46 @@ public class PgSparseRetriever implements SparseRetriever {
 
         StringBuilder where = new StringBuilder(" AND (");
         StringBuilder score = new StringBuilder("(");
+        StringBuilder pos = new StringBuilder("LEAST(");
         for (int i = 0; i < effective.size(); i++) {
             if (i > 0) {
                 where.append(" OR ");
                 score.append(" + ");
+                pos.append(", ");
             }
             where.append("dc.content ILIKE ?");
-            score.append("(CASE WHEN dc.content ILIKE ? THEN 1 ELSE 0 END)");
+            // 每命中一个实体，加「实体长度」分；命中标题/章节路径再加 TITLE_BONUS
+            score.append("(CASE WHEN dc.content ILIKE ? THEN char_length(?) ELSE 0 END)");
+            score.append(" + (CASE WHEN (coalesce(dc.title, '') || ' ' || coalesce(dc.section_path, '')) ILIKE ?")
+                 .append(" THEN ").append(TITLE_BONUS).append(" ELSE 0 END)");
+            pos.append("CASE WHEN strpos(dc.content, ?) > 0 THEN strpos(dc.content, ?) ELSE ")
+                 .append(NO_POS).append(" END");
         }
         where.append(")");
         score.append(")");
+        pos.append(")");
 
         StringBuilder sql = new StringBuilder(BASE_SELECT);
         List<Object> args = new ArrayList<>();
         args.add(f.chunkVersion());
         sql.append(where);
-        // WHERE 里的占位符先绑定
+        // 1) WHERE 里的占位符先绑定
         for (String t : effective) {
             args.add("%" + t + "%");
         }
 
         DenseRetriever.appendFilters(sql, args, f);
 
-        sql.append(" ORDER BY ").append(score).append(" DESC, dc.id ASC LIMIT ?");
-        // ORDER BY 里的占位符后绑定
+        sql.append(" ORDER BY ").append(score).append(" DESC, ").append(pos).append(" ASC, dc.id ASC LIMIT ?");
+        // 2) ORDER BY 里的占位符后绑定（顺序必须与 SQL 文本一致：score 的 3n 个，再 pos 的 2n 个）
         for (String t : effective) {
             args.add("%" + t + "%");
+            args.add(t);
+            args.add("%" + t + "%");
+        }
+        for (String t : effective) {
+            args.add(t);
+            args.add(t);
         }
         args.add(topK);
 

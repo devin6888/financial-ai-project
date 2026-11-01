@@ -55,9 +55,11 @@ public class RuleBasedRouter {
 
         int minYear = years.stream().mapToInt(Integer::intValue).min().orElse(0);
         int maxYear = years.stream().mapToInt(Integer::intValue).max().orElse(0);
-        return new QueryUnderstanding(QueryType.EXACT_FACT, query, codes,
-                new int[]{minYear, maxYear}, foundMetrics, false, false,
-                DocTypes.detect(query), false, "RULE");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, query)
+                .withCompanyCodes(codes)
+                .withYears(minYear, maxYear)
+                .withMetrics(foundMetrics)
+                .withDocType(DocTypes.detect(query));
     }
 
     private static List<String> findAll(Pattern p, String text) {

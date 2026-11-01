@@ -169,8 +169,11 @@ class ConversationContextServiceTest {
 
     private static QueryUnderstanding qu(List<String> companies, Integer from, Integer to,
                                          List<String> metrics) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "q", companies,
-                new int[]{from, to}, metrics, false, false, null, false, "LLM");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(companies)
+                .withYears(from, to)
+                .withMetrics(metrics)
+                .withRoute("LLM");
     }
 
     private static ResolvedScope scope(List<DocMeta> docs) {

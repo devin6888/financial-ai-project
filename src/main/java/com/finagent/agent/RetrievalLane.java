@@ -40,6 +40,15 @@ record RetrievalLane(String id, String text, Integer docYear, String sectionPref
         return new RetrievalLane(ID_SECTION, text, null, RetrievalLanes.SECTION_PREFIX, topK);
     }
 
+    /**
+     * 方向车道（阶段 17，ST17 Task 2）：按「本节要什么素材」追加关键词，仍限定在第三节。
+     *
+     * @param direction 方向名（structure / operation / cost / profit / yoy），车道 id 记为 {@code dir:xxx}
+     */
+    static RetrievalLane direction(String direction, String text, int topK) {
+        return new RetrievalLane("dir:" + direction, text, null, RetrievalLanes.SECTION_PREFIX, topK);
+    }
+
     boolean hasFilter() {
         return docYear != null || (sectionPrefix != null && !sectionPrefix.isBlank());
     }

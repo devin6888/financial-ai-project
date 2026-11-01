@@ -5,6 +5,7 @@ import com.finagent.citation.CitationValidator;
 import com.finagent.context.ContextBlock;
 import com.finagent.context.ContextPackage;
 import com.finagent.fact.FactPack;
+import com.finagent.understanding.AnswerSectionPlan;
 import com.finagent.understanding.QueryType;
 import com.finagent.understanding.QueryUnderstanding;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -274,8 +276,11 @@ class AnswerServiceTest {
     // ------------------------------------------------------------ helpers
 
     private static QueryUnderstanding qu(int from, int to) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of("300059"), new int[]{from, to},
-                List.of("营业总收入"), false, false, null, false, "TEST");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(from, to)
+                .withMetrics(List.of("营业总收入"))
+                .withRoute("TEST");
     }
 
     private static ContextPackage pkg(ContextBlock... blocks) {
@@ -452,6 +457,65 @@ class AnswerServiceTest {
         // 标签后面是普通文字时不动
         assertThat(AnswerService.normalizeSkeleton("结论：增长 38.46%。"))
                 .isEqualTo("结论：增长 38.46%。");
+    }
+
+    @Test
+    @DisplayName("阶段 17：接在句末的小标题与「> 注：」也要断行（真链路里五节被读成四节）")
+    void splitsGluedHeadingAndQuote() {
+        // 实测原文：「…[E1]。## 一、营业总收入总体情况」—— 前端只认行首 ##，这一节会退化成正文
+        assertThat(AnswerService.normalizeSkeleton("营收 116.04 亿元 [E1]。## 一、营业总收入总体情况\n正文"))
+                .contains("。\n\n## 一、营业总收入总体情况");
+        // 引用块紧跟段落时同理（markdown 会当续行，前端认不出 blockquote）
+        assertThat(AnswerService.normalizeSkeleton("结论段。> 注：口径为合并报表。"))
+                .contains("。\n\n> 注：口径为合并报表。");
+        // 已经是行首的标题不能被破坏成 "#\n\n## …"
+        assertThat(AnswerService.normalizeSkeleton("归因：### 证券业\n正文"))
+                .isEqualTo("归因：\n\n### 证券业\n正文");
+    }
+
+    // ---------------------------------------------------------------- 阶段 17：版式与缺口声明
+
+    @Test
+    @DisplayName("缺口声明矛盾：正文说「未披露交易额」，但证据里有交易额 → gap_claim_contradicted")
+    void gapClaimContradictedByContext() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"2024年营业总收入 11,604,343,090.16 元 [E1]。证据未披露交易额。",
+                 "facts":[],"usedEvidence":["E1"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("分析下2024年的营收情况", qu(2024, 2024),
+                pkg(block(1, 101, 7, 1650, "TEXT", "营业总收入 11,604,343,090.16 元；股基交易额 6.2 万亿元 [E1]")));
+
+        assertThat(r.warnings()).contains("gap_claim_contradicted:交易额");
+        assertThat(r.confidence()).isEqualTo(AnswerResult.CONFIDENCE_LOW);
+        assertThat(r.sufficient()).isTrue();          // 说错一句不拒答
+        assertThat(AnswerService.gapClaims("证据未披露分红方案。", pkg(block(1, 101, 7, 1650, "TEXT", "营业总收入")))
+                .isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("章节不足：计划要三节、答案只写一段 → sections_missing，降 medium 但不拒答")
+    void sectionCheckFlagsMissingHeadings() {
+        String answer = "2024年营业总收入 11,604,343,090.16 元 [E1]。\n\n注：单位为人民币元。";
+        AnswerSectionPlan plan = AnswerSectionPlan.fromRows(List.of(
+                Map.of("id", "overview", "title", "总体情况", "layout", "paragraph", "evidenceNos", List.of("E1")),
+                Map.of("id", "structure", "title", "结构", "layout", "table", "evidenceNos", List.of()),
+                Map.of("id", "summary", "title", "总结", "layout", "paragraph", "evidenceNos", List.of())),
+                java.util.Set.of());
+
+        assertThat(AnswerService.sectionsMissing(answer, plan)).isEqualTo("sections_missing:0/3");
+        assertThat(AnswerService.sectionsMissing("## 一、总体\n\n## 二、结构\n\n## 三、总结", plan)).isNull();
+        assertThat(AnswerService.sectionsMissing(answer, AnswerSectionPlan.empty())).isNull();
+    }
+
+    @Test
+    @DisplayName("「注：」接在句末时也提成独立段落（阶段 17 的末段承诺）")
+    void splitsInlineNoteLabel() {
+        assertThat(AnswerService.normalizeSkeleton("增长 38.46% [E1]。注：单位为人民币元。"))
+                .isEqualTo("增长 38.46% [E1]。\n\n注：单位为人民币元。");
+        // 引用块形式不动（前端要把它渲染成引用块）
+        assertThat(AnswerService.normalizeSkeleton("增长 38.46% [E1]。\n\n> 注：单位为人民币元。"))
+                .contains("> 注：单位为人民币元。");
     }
 
     @Test

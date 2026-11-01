@@ -7,6 +7,7 @@ import com.finagent.context.ContextBlock;
 import com.finagent.context.ContextPackage;
 import com.finagent.fact.FactPack;
 import com.finagent.memory.MemoryContext;
+import com.finagent.understanding.AnswerSectionPlan;
 import com.finagent.understanding.AnswerShape;
 import com.finagent.understanding.QueryUnderstanding;
 import org.slf4j.Logger;
@@ -53,7 +54,12 @@ public class AnswerService {
     }
 
     public AnswerResult answer(String question, QueryUnderstanding qu, ContextPackage pkg) {
-        return answer(question, qu, pkg, null, FactPack.EMPTY);
+        return answer(question, qu, pkg, null, FactPack.EMPTY, AnswerSectionPlan.empty());
+    }
+
+    public AnswerResult answer(String question, QueryUnderstanding qu, ContextPackage pkg,
+                               MemoryContext memory, FactPack factPack) {
+        return answer(question, qu, pkg, memory, factPack, AnswerSectionPlan.empty());
     }
 
     /**
@@ -62,7 +68,7 @@ public class AnswerService {
      *               引用编号只由证据块产生，所以记忆不可能出现在 citations 里（D4）。
      */
     public AnswerResult answer(String question, QueryUnderstanding qu, ContextPackage pkg,
-                               MemoryContext memory, FactPack factPack) {
+                               MemoryContext memory, FactPack factPack, AnswerSectionPlan plan) {
         FactPack pack = factPack == null ? FactPack.EMPTY : factPack;
         if (pkg == null || pkg.isEmpty()) {
             // 拒答不调模型：没有证据时让模型「自由发挥」是金融场景最危险的路径
@@ -75,13 +81,13 @@ public class AnswerService {
         try {
             String raw = generator.complete(AnswerPrompts.SYSTEM,
                     AnswerPrompts.user(question, pkg, memory == null ? null : memory.text(),
-                            shapesOf(question, qu), pack.prompt()));
+                            shapesOf(question, qu), pack.prompt(), plan));
             dto = parser.parse(raw);
         } catch (RuntimeException e) {
             log.warn("答案生成失败，降级为 error：{}", e.getMessage());
             return generationFailed();
         }
-        return evaluate(dto, qu, pkg, pack);
+        return evaluate(dto, qu, pkg, pack, plan);
     }
 
     /**
@@ -102,9 +108,18 @@ public class AnswerService {
         return answerStreaming(question, qu, pkg, memory, FactPack.EMPTY, onDelta);
     }
 
-    /** @param factPack 事实包（compute 节点产出）；空包与旧行为完全一致。 */
     public AnswerResult answerStreaming(String question, QueryUnderstanding qu, ContextPackage pkg,
                                         MemoryContext memory, FactPack factPack, Consumer<String> onDelta) {
+        return answerStreaming(question, qu, pkg, memory, factPack, onDelta, AnswerSectionPlan.empty());
+    }
+
+    /**
+     * @param factPack 事实包（compute 节点产出）；空包与旧行为完全一致。
+     * @param plan     章节计划（阶段 17，compute 节点算好放进状态）；空计划 = 按形态给要求
+     */
+    public AnswerResult answerStreaming(String question, QueryUnderstanding qu, ContextPackage pkg,
+                                        MemoryContext memory, FactPack factPack, Consumer<String> onDelta,
+                                        AnswerSectionPlan plan) {
         FactPack pack = factPack == null ? FactPack.EMPTY : factPack;
         if (pkg == null || pkg.isEmpty()) {
             log.debug("证据包为空，拒答（不调模型）：question={}", question);
@@ -118,7 +133,7 @@ public class AnswerService {
         try {
             generator.stream(AnswerPrompts.SYSTEM,
                     AnswerPrompts.user(question, pkg, memory == null ? null : memory.text(),
-                            shapesOf(question, qu), pack.prompt()),
+                            shapesOf(question, qu), pack.prompt(), plan),
                     chunk -> {
                         raw.append(chunk);
                         String delta = extractor.feed(chunk);
@@ -131,7 +146,7 @@ public class AnswerService {
             log.warn("流式答案生成失败，降级为 error：{}", e.getMessage());
             return generationFailed();
         }
-        return evaluate(dto, qu, pkg, pack);
+        return evaluate(dto, qu, pkg, pack, plan);
     }
 
     /**
@@ -153,7 +168,7 @@ public class AnswerService {
 
     /** 拿到结构化答案之后的四层校验（流式与非流式共用这一个实现，行为不可能分叉）。 */
     private AnswerResult evaluate(AnswerDto dto, QueryUnderstanding qu, ContextPackage pkg,
-                                  FactPack factPack) {
+                                  FactPack factPack, AnswerSectionPlan plan) {
         List<String> warnings = new ArrayList<>();
         if (!dto.sufficient()) {
             // 模型自己说「答不了」时，也必须给用户一句能读的话 + 一个机器可读的原因。
@@ -219,6 +234,19 @@ public class AnswerService {
                     AnswerResult.CONFIDENCE_INSUFFICIENT,
                     "引用块里没有出现答案中的数值，按无证据处理。",
                     List.copyOf(warnings), citations.dropped().size());
+        }
+
+        // 第五层（阶段 17）：版式与「缺口声明」。
+        // 版式不合格只降 confidence、不拒答 —— 章节不够是"写得不够好"，不是"数字不可信"。
+        String sectionIssue = sectionsMissing(answerText, plan);
+        if (sectionIssue != null) {
+            warnings.add(sectionIssue);
+            confidence = lower(confidence, AnswerResult.CONFIDENCE_MEDIUM);
+        }
+        List<String> gaps = gapClaims(answerText, pkg);
+        warnings.addAll(gaps);
+        if (!gaps.isEmpty()) {
+            confidence = lower(confidence, AnswerResult.CONFIDENCE_LOW);
         }
 
         List<AnswerResult.Fact> outFacts = mergeFacts(factPack, grounding.facts(), warnings);
@@ -415,6 +443,82 @@ public class AnswerService {
         return out.toString();
     }
 
+    // ------------------------------------------------------------ 版式与缺口（阶段 17）
+
+    private static final java.util.regex.Pattern SECTION_HEAD = java.util.regex.Pattern.compile("(?m)^##\\s+\\S");
+
+    /** 缺口词后面 0~12 字里出现这些指标名，就算「在说某个指标不可得」。 */
+    private static final java.util.regex.Pattern GAP_CLAIM = java.util.regex.Pattern.compile(
+            "(未披露|未提供|不可得|未列示|无相关数据|未说明|未给出)([^。；;\\n]{0,12})");
+
+    private static final List<String> GAP_METRICS = List.of(
+            "交易额", "保有规模", "销售额", "手续费及佣金", "利息净收入", "成本构成",
+            "研发投入", "客户数", "毛利率", "净利率", "员工");
+
+    /**
+     * 计划要求几节，答案就得有几节标题（阶段 17）。
+     *
+     * <p>只判「## 标题个数 ≥ min(3, 计划节数)」：判标题文字会把「模型换了个说法」误判成失败，
+     * 而版式这件事本来就只有「够不够分节」这一个可断言的点。
+     *
+     * @return 不合格时返回 warning 码 {@code sections_missing:<实际>/<要求>}；合格返回 null
+     */
+    static String sectionsMissing(String answer, AnswerSectionPlan plan) {
+        if (plan == null || plan.isEmpty() || answer == null || answer.isBlank()) {
+            return null;
+        }
+        int required = Math.min(3, plan.sections().size());
+        long actual = SECTION_HEAD.matcher(answer).results().count();
+        return actual >= required ? null : "sections_missing:" + actual + "/" + required;
+    }
+
+    /**
+     * 上下文里这个指标后面有没有跟数字。
+     *
+     * <p>为什么不能只看「词出现过」：真链路里 Q3 说「未披露销售额」，而上下文里有一句
+     * 「占年度销售总额 5.74%」—— 词出现了，但那个数字说的是客户集中度，不是销售额本身。
+     * 只有「指标 + 数字」才算真矛盾。
+     */
+    private static boolean hasMetricValue(String ctx, String metric) {
+        return java.util.regex.Pattern
+                .compile(java.util.regex.Pattern.quote(metric) + "[^。；;\n]{0,12}?[0-9]")
+                .matcher(ctx)
+                .find();
+    }
+
+    /**
+     * 缺口声明校验（治 ST17 的 E3）：答案说「未披露交易额」，但上下文里明明有 —— 要能抓到。
+     *
+     * <p>只查「缺口词 + 12 字以内的指标名」，不查整段：整段比对会把
+     * 「交易额有披露，但保有规模没有」这种混合句误判成矛盾。
+     *
+     * <p>命中后只降 confidence（low）并留痕，不拒答：句子可能是在说「某一年未披露」，
+     * 直接作废整份答案比说错一句更糟。
+     */
+    static List<String> gapClaims(String answer, ContextPackage pkg) {
+        if (answer == null || answer.isBlank() || pkg == null || pkg.isEmpty()) {
+            return List.of();
+        }
+        StringBuilder context = new StringBuilder();
+        for (ContextBlock block : pkg.blocks()) {
+            if (block.content() != null) {
+                context.append(block.content()).append('\n');
+            }
+        }
+        String ctx = context.toString();
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher m = GAP_CLAIM.matcher(answer);
+        while (m.find()) {
+            String tail = m.group(2);
+            for (String metric : GAP_METRICS) {
+                if (tail.contains(metric) && hasMetricValue(ctx, metric)) {
+                    out.add("gap_claim_contradicted:" + metric);
+                }
+            }
+        }
+        return List.copyOf(out);
+    }
+
     /**
      * 段标签断行：把接在句末的「归因：」「数据：」「口径：」「结论：」提成独立段落。
      *
@@ -431,6 +535,14 @@ public class AnswerService {
         // 标签后面紧跟表格或小标题时也要断行：实测模型会写成「数据：| 指标 | 2025年 |」一行，
         // 前端解析器只认「行首是竖线」的表格，不断行就整张表退化成一段乱码文本。
         out = out.replaceAll("(数据：|归因：|口径：|结论：)[ \\t]*(?=(?:\\||#{2,4}\\s))", "$1\n\n");
+        // 阶段 17：末段「注：」是唯一保留的段标签，同样要独占一段（> 注： 的引用块不动）
+        out = out.replaceAll("([。；;！!？?\\]）])\\s*(?=注：)", "$1\n\n");
+        // 阶段 17 真链路：模型把「## 一、…」直接接在结论段句末（"…[E1]。## 一、营业总收入总体情况"），
+        // 前端解析器只认行首 ##，这一行会整段退化成正文 —— 五节结构看起来只有四节
+        // 注意 [^\n#]：写成 [^\n] 会在「### 」中间再断一次（# 被当成普通字符），标题变成 "#\n\n## 证券业"
+        out = out.replaceAll("([^\\n#])\\s*(?=#{2,4}\\s+\\S)", "$1\n\n");
+        // 引用块（> 注：）同理：紧跟上一段时 markdown 当续行，前端也认不出引用块
+        out = out.replaceAll("([^\\n>])\\s*(?=>\\s*注：)", "$1\n\n");
         return out.replaceAll("\n{3,}", "\n\n");
     }
 

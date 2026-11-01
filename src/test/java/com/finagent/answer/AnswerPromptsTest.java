@@ -13,17 +13,46 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AnswerPromptsTest {
 
     @Test
-    @DisplayName("SYSTEM 里有四段骨架，并且明确「没有对应形态就省略」")
-    void systemContainsSkeleton() {
+    @DisplayName("SYSTEM 用「结论段 + ## 章节 + 注段」三承诺，四段标签已经作废（C25）")
+    void systemUsesSectionSkeleton() {
         assertThat(AnswerPrompts.SYSTEM)
-                .contains("答案骨架")
-                .contains("① 结论").contains("② 数据").contains("③ 归因").contains("④ 口径与缺口")
-                .contains("不要为了凑结构编归因")
-                // 段落标签是现在唯一能让四段「看得见」的手段：markdown 标题要等前端渲染器支持
-                .contains("「结论：」「数据：」「归因：」「口径：」")
-                .contains("四个段标签是骨架的一部分")
+                .contains("第一段就是结论")
+                .contains("## 一、标题")
+                .contains("最后一段是「> 注：…」引用块")
+                .contains("引用块是这一段唯一允许的格式标记")
+                .contains("这是唯一保留的段标签")
+                // 阶段 17：四段标签不许再出现在 SYSTEM 里，否则模型照旧写「结论：」「数据：」
+                .doesNotContain("「结论：」「数据：」「归因：」「口径：」")
+                .doesNotContain("四个段标签是骨架的一部分")
                 .contains("### 小标题")
                 .contains("表格最多 6 列、12 行");
+    }
+
+    @Test
+    @DisplayName("SYSTEM 的三条风格约束（篇幅、不注水、不模板化）")
+    void systemHasStyleRules() {
+        assertThat(AnswerPrompts.SYSTEM)
+                .contains("按信息量控制篇幅")
+                .contains("不为凑结构编内容")
+                .contains("避免机械模板化措辞");
+    }
+
+    @Test
+    @DisplayName("有章节计划时【回答要求】按计划逐节展开，并带「优先看 E#」")
+    void requirementsFromPlan() {
+        com.finagent.context.ContextBlock block = new com.finagent.context.ContextBlock(
+                4, 104L, 1L, 7L, "东方财富2024年年度报告", "第三节 § 四、主营业务分析", "费用",
+                "| 项目 | 2024年 |\n| 销售费用 | 2,345,678,901.23 |\n| 管理费用 | 1,234,567,890.12 |",
+                11, 11, "TABLE", null, "元", null, null,
+                0.9, 4, 100, com.finagent.context.ContextBlock.ROLE_HIT);
+        java.util.List<com.finagent.context.ContextBlock> blocks = java.util.List.of(block);
+        com.finagent.understanding.AnswerSectionPlan plan = com.finagent.understanding.AnswerSectionPlan.of(
+                EnumSet.of(AnswerShape.OVERVIEW), com.finagent.context.EvidenceProfile.of(blocks), blocks);
+
+        String text = AnswerPrompts.requirements(EnumSet.of(AnswerShape.OVERVIEW), plan);
+
+        assertThat(text).contains("【回答要求】").contains("概览").contains("一、营业总收入总体情况")
+                .contains("成本与费用情况").contains("优先看 E4").endsWith("\n\n");
     }
 
     @Test

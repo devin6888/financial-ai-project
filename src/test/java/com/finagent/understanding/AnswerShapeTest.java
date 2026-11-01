@@ -89,6 +89,50 @@ class AnswerShapeTest {
         assertThat(AnswerShape.detect("为什么", new int[]{2025})).contains(AnswerShape.ATTRIBUTION);
     }
 
+    // ---------------------------------------------------------------- 阶段 17：概览 / 成本费用
+
+    @Test
+    @DisplayName("问「营收情况」→ 概览（D4：这句话以前一个形态都不命中）")
+    void detectsOverviewFromPhrase() {
+        assertThat(AnswerShape.detect("分析下2024年的营收情况")).contains(AnswerShape.OVERVIEW);
+    }
+
+    @Test
+    @DisplayName("「分析…情况」共现也算概览，但中间不能隔太远")
+    void detectsOverviewFromAnalysisVerb() {
+        assertThat(AnswerShape.detect("看下2024年的整体情况")).contains(AnswerShape.OVERVIEW);
+        // 「分析」与「情况」之间隔了 6 个字以上：说的是某一个数，不是全貌
+        assertThat(AnswerShape.detect("分析下2024年第一季度营业收入同比变化的具体情况是什么"))
+                .doesNotContain(AnswerShape.OVERVIEW)
+                .contains(AnswerShape.COMPARISON);
+    }
+
+    @Test
+    @DisplayName("「分析」「情况」单独出现不算概览：问一个数不该变成五节报告")
+    void analysisWordAloneIsNotOverview() {
+        assertThat(AnswerShape.detect("分析下这个数字")).doesNotContain(AnswerShape.OVERVIEW);
+        assertThat(AnswerShape.detect("这个情况正常吗")).doesNotContain(AnswerShape.OVERVIEW);
+    }
+
+    @Test
+    @DisplayName("问毛利率 → 成本费用")
+    void detectsCostFromMargin() {
+        assertThat(AnswerShape.detect("2024年毛利率是多少")).contains(AnswerShape.COST);
+    }
+
+    @Test
+    @DisplayName("问费用 / 成本 → 成本费用")
+    void detectsCostFromExpense() {
+        assertThat(AnswerShape.detect("2024年的销售费用和管理费用分别是多少")).contains(AnswerShape.COST);
+        assertThat(AnswerShape.detect("营业成本同比变化")).contains(AnswerShape.COST);
+    }
+
+    @Test
+    @DisplayName("只问收入 → 不带成本费用形态")
+    void revenueQuestionIsNotCost() {
+        assertThat(AnswerShape.detect("2025年营业总收入是多少")).doesNotContain(AnswerShape.COST);
+    }
+
     @Test
     @DisplayName("状态里存名字、读回来还是同一组；坏值跳过")
     void namesRoundTrip() {

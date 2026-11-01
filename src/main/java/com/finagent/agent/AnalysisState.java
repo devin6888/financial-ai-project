@@ -69,6 +69,14 @@ public class AnalysisState extends AgentState {
      * 每行键：no / metric / period / value / unit / scope / evidence / origin / formula / display / note。
      */
     public static final String FACTS = "facts";
+    /**
+     * 章节计划（{@code List<Map<String,Object>>}），compute 节点写、answer 节点读（阶段 17）。
+     *
+     * <p>每行键：id / title / purpose / layout / evidenceNos —— 全是字符串与列表，可序列化，
+     * 不违反「结果不进状态」的约束（C18.2）。它进状态的理由与 ANSWER_SHAPES 相同：
+     * verify 要按同一份计划判「章节够不够」，answer 要按同一份计划写【回答要求】。
+     */
+    public static final String ANSWER_PLAN = "answerPlan";
     /** 本轮实际跑过的检索车道标识（full / sub:0 / year:2024 / attr），只用于排障。 */
     public static final String LANES = "lanes";
     public static final String WARNINGS = "warnings";
@@ -128,6 +136,7 @@ public class AnalysisState extends AgentState {
             Map.entry(REFUSE_REASON, Channels.base(() -> "")),
             Map.entry(METRICS, Channels.<List<String>>base(() -> List.of())),
             Map.entry(ANSWER_SHAPES, Channels.<List<String>>base(() -> List.of())),
+    Map.entry(ANSWER_PLAN, Channels.<List<Map<String, Object>>>base(() -> List.of())),
             Map.entry(FACTS, Channels.<List<Map<String, Object>>>base(() -> List.of())),
             Map.entry(LANES, Channels.<String>appender(ArrayList::new)),
             Map.entry(WARNINGS, Channels.<String>appender(ArrayList::new)),
@@ -287,6 +296,11 @@ public class AnalysisState extends AgentState {
     /** 答案形态的名字列表；空表示「问题没有明确形态」（纯取数）。 */
     public List<String> answerShapes() {
         return this.value(ANSWER_SHAPES, List.of());
+    }
+
+    /** 章节计划，每行键见 {@link #ANSWER_PLAN}；空表示「本题不分节」。 */
+    public List<Map<String, Object>> answerPlan() {
+        return this.value(ANSWER_PLAN, List.of());
     }
 
     /** 事实清单，每行键见 {@link #FACTS}；空表示这次没有表格或没抽到数。 */

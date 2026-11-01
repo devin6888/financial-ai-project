@@ -60,8 +60,10 @@ class RetrievalProgressTest {
     }
 
     @Test
-    @DisplayName("有候选且启用精排：dense → sparse → fuse → rerank，且 rerank 带候选数")
+    @DisplayName("有候选且启用精排：sparse → dense → fuse → rerank，且 rerank 带候选数")
     void reportsFourPhases() {
+        // 顺序在阶段 20 变了：精准事实题（EXACT_FACT + 指标名）要先跑 Sparse 才知道「能不能省掉 Dense」，
+        // 所以 dense 阶段排到 sparse 后面。这里 sparse 只回 1 条（< 3），Dense 照常跑 —— 见 C31.1。
         when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(ranked(1, 2, true));
         when(sparse.retrieve(anyString(), anyList(), any(), any(), anyInt())).thenReturn(ranked(10, 1, false));
         List<String> phases = new ArrayList<>();
@@ -72,9 +74,20 @@ class RetrievalProgressTest {
             counts.add(count);
         });
 
-        assertThat(phases).containsExactly("dense", "sparse", "fuse", RetrievalProgress.PHASE_RERANK);
+        assertThat(phases).containsExactly("sparse", "dense", "fuse", RetrievalProgress.PHASE_RERANK);
         // 融合后 3 条候选（2 dense + 1 sparse，无重复）
         assertThat(counts.get(3)).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("跳过 Dense 时不报 dense 阶段：sparse → fuse → rerank")
+    void noDensePhaseWhenSkipped() {
+        when(sparse.retrieve(anyString(), anyList(), any(), any(), anyInt())).thenReturn(ranked(10, 5, false));
+        List<String> phases = new ArrayList<>();
+
+        retriever.retrieve(req(true), qu(), null, (phase, count) -> phases.add(phase));
+
+        assertThat(phases).containsExactly("sparse", "fuse", RetrievalProgress.PHASE_RERANK);
     }
 
     @Test
@@ -115,8 +128,10 @@ class RetrievalProgressTest {
     }
 
     private static QueryUnderstanding qu() {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入", List.of(),
-                new int[]{2025, 2025}, List.of("营业收入"), false, false, false, "LLM");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "2025年营业收入")
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业收入"))
+                .withRoute("LLM");
     }
 
     private static List<RetrievedChunk> ranked(int from, int count, boolean denseSide) {

@@ -40,9 +40,10 @@ class RouterServiceContextTest {
     @Test
     @DisplayName("规则命中时不消解：问题本身已经带了实体")
     void ruleHitSkipsContextResolution() {
-        when(rule.tryRoute("600519 2025年营业收入")).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "600519 2025年营业收入", List.of("600519"),
-                new int[]{2025, 2025}, List.of("营业收入"), false, false, null, false, "RULE"));
+        when(rule.tryRoute("600519 2025年营业收入")).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "600519 2025年营业收入")
+                .withCompanyCodes(List.of("600519"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业收入")));
 
         QueryUnderstanding qu = service.understand("600519 2025年营业收入", context());
 
@@ -54,9 +55,12 @@ class RouterServiceContextTest {
     @Test
     @DisplayName("带上下文调 LLM：背景块非空，resolved=true 时标记「推出来的」")
     void llmGetsContextBlockAndMarksInferred() {
-        when(llm.route(anyString(), anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "东方财富（300059） 2025年 那净利润呢", List.of("300059"),
-                new int[]{2025, 2025}, List.of("净利润"), false, false, null, false, "LLM", true));
+        when(llm.route(anyString(), anyString())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "东方财富（300059） 2025年 那净利润呢")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM")
+                .withInferredFromContext(true));
 
         QueryUnderstanding qu = service.understand("那净利润呢", context());
 
@@ -88,18 +92,18 @@ class RouterServiceContextTest {
     @Test
     @DisplayName("LLM 没给年份 → 用上下文补；已经给了年份 → 不动")
     void fillsOnlyMissingSlots() {
-        when(llm.route(anyString(), anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null, List.of(),
-                false, false, null, false, "LLM"));
+        when(llm.route(anyString(), anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withRoute("LLM"));
 
         QueryUnderstanding filled = service.understand("q", context());
 
         assertThat(filled.companyCodes()).containsExactly("300059");
         assertThat(filled.yearRange()).containsExactly(2025, 2025);
 
-        when(llm.route(anyString(), anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of("600519"), new int[]{2023, 2023},
-                List.of(), false, false, null, false, "LLM"));
+        when(llm.route(anyString(), anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withCompanyCodes(List.of("600519"))
+                .withYears(2023, 2023)
+                .withRoute("LLM"));
 
         QueryUnderstanding kept = service.understand("600519 2023年净利润是多少", context());
 
@@ -110,9 +114,8 @@ class RouterServiceContextTest {
     @Test
     @DisplayName("上下文为空 → 走单轮重载（阶段 8 的行为零变化）")
     void emptyContextUsesSingleTurnPath() {
-        when(llm.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null, List.of(),
-                false, false, null, false, "LLM"));
+        when(llm.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withRoute("LLM"));
 
         QueryUnderstanding qu = service.understand("q", TurnContext.EMPTY);
 
@@ -136,9 +139,8 @@ class RouterServiceContextTest {
     @Test
     @DisplayName("判 ExactFact 但三要素不全 → 降级，且保留已补的槽位")
     void weakEvidenceKeepsFilledSlots() {
-        when(llm.route(anyString(), anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "那净利润呢", List.of(), null, List.of(),
-                false, false, null, false, "LLM"));
+        when(llm.route(anyString(), anyString())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "那净利润呢")
+                .withRoute("LLM"));
 
         QueryUnderstanding qu = service.understand("那净利润呢", context());
 

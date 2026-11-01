@@ -35,14 +35,6 @@ public record ChatResponse(
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
     }
 
-    /** 兼容构造器：单轮问答的构造点（阶段 5~8）不用改。 */
-    public ChatResponse(boolean sufficient, String answer, List<AnswerResult.Fact> facts,
-                        List<Citation> citations, String confidence, String note, ScopeInfo scope,
-                        List<String> warnings, ChatTrace trace, ExtensionSuggestion extensionSuggested) {
-        this(sufficient, answer, facts, citations, confidence, note, scope, warnings, trace,
-                extensionSuggested, null, null);
-    }
-
     public ChatResponse withConversation(Long conversationId, Long messageId) {
         return new ChatResponse(sufficient, answer, facts, citations, confidence, note, scope,
                 warnings, trace, extensionSuggested, conversationId, messageId);

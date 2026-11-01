@@ -28,7 +28,9 @@ public final class TableRowParser {
 
     private static final String[] PERCENT_WORDS = {"占比", "比重", "比例"};
     private static final String[] AMOUNT_WORDS = {"金额"};
-    private static final String[] GROWTH_WORDS = {"增减", "增长", "变动"};
+    // 「同比」也要算增长列：单年费用表的表头是 | 项目 | 2024年 | 同比 |，
+    // 这里少了它就凑不出「一年 + 一个增长列」，整张表会被当成没有表头而跳过（ST17 Task 2）
+    private static final String[] GROWTH_WORDS = {"增减", "增长", "变动", "同比"};
 
     private TableRowParser() {
     }
@@ -102,7 +104,9 @@ public final class TableRowParser {
         for (String[] cells : rows) {
             if (numbersIn(cells) == 0) {
                 int yearCells = yearCells(cells);
-                if (yearCells >= 2) {
+                // 单年 + 同比列（费用表常见：| 项目 | 2024年 | 同比 |）也要认 ——
+                // 年列只有 1 个，靠 GROWTH 列把「表头」与「只有一列数字的数据行」区分开（ST17 Task 2）
+                if (yearCells >= 2 || (yearCells >= 1 && hasGrowthCell(cells))) {
                     // 新一段表头：列映射从零开始，绝不沿用上一段的年份（7216 有两段）
                     year = new Integer[width];
                     kind = new Kind[width];
@@ -271,6 +275,15 @@ public final class TableRowParser {
             }
         }
         return n;
+    }
+
+    private static boolean hasGrowthCell(String[] cells) {
+        for (String c : cells) {
+            if (kindOf(c) == Kind.GROWTH) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int nonBlank(String[] cells) {

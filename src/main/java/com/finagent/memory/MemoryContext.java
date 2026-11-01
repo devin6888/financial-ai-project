@@ -30,16 +30,6 @@ public record MemoryContext(String text, Stats stats, List<ContextTurn> recentTu
         recentTurns = recentTurns == null ? List.of() : List.copyOf(recentTurns);
     }
 
-    /** 兼容阶段 9 Task 5 的 3 参调用点（sections 之前不存在）。 */
-    public MemoryContext(String text, Stats stats, List<ContextTurn> recentTurns) {
-        this(text, stats, recentTurns, null);
-    }
-
-    /** 兼容阶段 9 Task 3 的 2 参调用点（recentTurns 之前不存在）。 */
-    public MemoryContext(String text, Stats stats) {
-        this(text, stats, List.of(), null);
-    }
-
     public record Stats(int shortTermMessages, int shortTermDropped, int summaryChars,
                         int longTermItems, boolean gateHit) {
 

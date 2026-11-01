@@ -26,7 +26,7 @@ class AnswerStreamBridgeTest {
     @DisplayName("记忆：登记后能读回统计；没登记返回 EMPTY")
     void memoryRoundTrip() {
         AnswerStreamBridge bridge = new AnswerStreamBridge();
-        MemoryContext memory = new MemoryContext("背景", new MemoryContext.Stats(3, 1, 20, 0, false), List.of());
+        MemoryContext memory = new MemoryContext("背景", new MemoryContext.Stats(3, 1, 20, 0, false), List.of(), null);
 
         bridge.memory("run-1", memory);
 
@@ -40,7 +40,7 @@ class AnswerStreamBridgeTest {
     @DisplayName("记忆：understand 节点召回后用 memoryTrace 覆盖统计（gateHit / longTermItems）")
     void memoryTraceCanBeOverwritten() {
         AnswerStreamBridge bridge = new AnswerStreamBridge();
-        bridge.memory("run-1", new MemoryContext("背景", MemoryContext.Stats.EMPTY, List.of()));
+        bridge.memory("run-1", new MemoryContext("背景", MemoryContext.Stats.EMPTY, List.of(), null));
 
         bridge.memoryTrace("run-1", new MemoryTrace(0, 0, 0, 2, true));
 
@@ -64,8 +64,11 @@ class AnswerStreamBridgeTest {
     @DisplayName("QU 与作用域：收尾落库要用的两样都要能读回")
     void queryAndScopeRoundTrip() {
         AnswerStreamBridge bridge = new AnswerStreamBridge();
-        QueryUnderstanding qu = new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of("300059"),
-                new int[]{2025, 2025}, List.of("营业总收入"), false, false, null, false, "LLM");
+        QueryUnderstanding qu = QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业总收入"))
+                .withRoute("LLM");
         ResolvedScope scope = ResolvedScope.of(ScopeKind.CORPUS, List.of(), ResolvedScope.REASON_SESSION, List.of());
 
         bridge.query("run-1", qu);
@@ -79,10 +82,11 @@ class AnswerStreamBridgeTest {
     @DisplayName("clear：四条旁路一起清掉，避免按请求数增长")
     void clearRemovesEverything() {
         AnswerStreamBridge bridge = new AnswerStreamBridge();
-        bridge.memory("run-1", new MemoryContext("背景", MemoryContext.Stats.EMPTY, List.of()));
+        bridge.memory("run-1", new MemoryContext("背景", MemoryContext.Stats.EMPTY, List.of(), null));
         bridge.turnContext("run-1", new TurnContext("300059", null, null, null, List.of(), null, List.of()));
-        bridge.query("run-1", new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of(),
-                new int[]{2025, 2025}, List.of(), false, false, null, false, "LLM"));
+        bridge.query("run-1", QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withYears(2025, 2025)
+                .withRoute("LLM"));
         bridge.scope("run-1", ResolvedScope.of(ScopeKind.CORPUS, List.of(), ResolvedScope.REASON_SESSION, List.of()));
 
         bridge.clear("run-1");

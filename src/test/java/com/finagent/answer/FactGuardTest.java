@@ -101,7 +101,8 @@ class FactGuardTest {
     }
 
     private static QueryUnderstanding qu(int from, int to) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of(), new int[]{from, to},
-                List.of(), false, false, null, false, "TEST");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withYears(from, to)
+                .withRoute("TEST");
     }
 }

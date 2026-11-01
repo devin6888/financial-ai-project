@@ -37,6 +37,19 @@ public class HybridRetriever {
 
     private static final Logger log = LoggerFactory.getLogger(HybridRetriever.class);
 
+    /**
+     * 精准事实跳过 Dense 的命中数安全区间（技术债 #2，左闭右开）。
+     *
+     * <p>少于 3 条说明「实体写法与文档对不上」（比如 QU 抽到「每股收益」而表里写「基本每股收益(元/股)」），
+     * 此时正需要 Dense 的语义召回兜底；达到 30 条说明过滤没真正收窄（EXACT 命中了几乎整份文档），
+     * 排序会退化成位置排序，同样需要 Dense 参与融合。只有落在 [3, 30) 才认为「Sparse 已经足够准」。
+     */
+    static final int DENSE_SKIP_MIN = 3;
+    static final int DENSE_SKIP_MAX = 30;
+
+    /** trace 里记录「本条跳过了 Dense」的 warning 码。 */
+    static final String WARN_DENSE_SKIPPED = "dense_skipped_exact_fact";
+
     private final RouterService router;
     private final DocumentRepository documents;
     private final DenseRetriever dense;
@@ -119,27 +132,56 @@ public class HybridRetriever {
         long denseMs = 0;
         long sparseMs = 0;
 
+        //-----「精准事实」先跑 Sparse，可能省掉整条 Dense-----
+        // 技术债 #2：EXACT_FACT + 指标名 + EXACT 时，精确子串已能定位到行，再跑 Dense 只是多一次
+        // embedding
+        // （实测 174~373 ms）+ 一路向量检索。但命中太少说明实体写法与文档对不上、
+        // 命中太多说明过滤没生效 —— 这两种情况必须保留 Dense，否则会静默丢证据。
+        boolean exactFactQuery = qu.queryType() == QueryType.EXACT_FACT
+                && sq.mode() == SparseMode.EXACT
+                && qu.metrics() != null && !qu.metrics().isEmpty();
+        List<RetrievedChunk> sparseHits = null;
+        List<RetrievedChunk> denseHits = List.of();
+        boolean denseSkipped = false;
+        long t = System.currentTimeMillis();
+
+        if (exactFactQuery) {
+            progress.onPhase("sparse", 0);
+            sparseHits = sparse.retrieve(req.query(), sq.terms(), sq.mode(),
+                    eff.filters(), req.topSparse());
+            sparseMs += System.currentTimeMillis() - t;
+            if (sparseHits.size() >= DENSE_SKIP_MIN && sparseHits.size() < DENSE_SKIP_MAX) {
+                denseSkipped = true;
+                warnings.add(WARN_DENSE_SKIPPED);
+                log.debug("精准事实命中 {} 条，跳过 Dense：{}", sparseHits.size(), req.query());
+            }
+        }
 
         //-----dense 检索-----
-        long t = System.currentTimeMillis();
-        progress.onPhase("dense", 0);
-        List<RetrievedChunk> denseHits = dense.retrieve(req.query(), eff.filters(), req.topDense());
-        denseMs += System.currentTimeMillis() - t;
+        if (!denseSkipped) {
+            t = System.currentTimeMillis();
+            progress.onPhase("dense", 0);
+            denseHits = dense.retrieve(req.query(), eff.filters(), req.topDense());
+            denseMs += System.currentTimeMillis() - t;
+        }
 
-
-        //-----sparse 检索-----
-        t = System.currentTimeMillis();
-        progress.onPhase("sparse", 0);
-        List<RetrievedChunk> sparseHits = sparse.retrieve(req.query(), sq.terms(), sq.mode(),
-                eff.filters(), req.topSparse());
+        //-----sparse 检索（上面没跑过才跑）-----
+        if (sparseHits == null) {
+            t = System.currentTimeMillis();
+            progress.onPhase("sparse", 0);
+            sparseHits = sparse.retrieve(req.query(), sq.terms(), sq.mode(),
+                    eff.filters(), req.topSparse());
+            sparseMs += System.currentTimeMillis() - t;
+        }
         if (sparseHits.isEmpty() && sq.mode() == SparseMode.EXACT) {
             // QU 抽到了实体，但文档里的写法不一样（「每股收益」vs「基本每股收益(元/股)」）。
             // 精确子串落空时退回词级召回，否则这一路等于白设。
             warnings.add("sparse_exact_empty_fallback");
+            t = System.currentTimeMillis();
             sparseHits = sparse.retrieve(req.query(), List.of(), SparseMode.FTS_OR,
                     eff.filters(), req.topSparse());
+            sparseMs += System.currentTimeMillis() - t;
         }
-        sparseMs += System.currentTimeMillis() - t;
 
         // QU 推出来的过滤条件是「猜测」，猜错（比如年份写成 2024 而库里有 2025）会静默清空结果。调用方给的显式过滤不走这条退路 —— 那是他明确要的。
         if (denseHits.isEmpty() && sparseHits.isEmpty() && eff.hasQuPart()) {

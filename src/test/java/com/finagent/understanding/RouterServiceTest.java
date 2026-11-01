@@ -60,9 +60,10 @@ class RouterServiceTest {
     @Test
     void exactFactWithoutAllThreeFieldsIsDegraded() {
         LlmRouter weak = mock(LlmRouter.class);
-        when(weak.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "q", List.of("600519"), new int[]{2025, 2025},
-                List.of(), false, false, false, "LLM"));
+        when(weak.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("600519"))
+                .withYears(2025, 2025)
+                .withRoute("LLM"));
 
         var u = serviceWith(weak).understand("600519 2025年那个数");
 
@@ -74,9 +75,11 @@ class RouterServiceTest {
     @Test
     void exactFactWithAllThreeFieldsSurvives() {
         LlmRouter good = mock(LlmRouter.class);
-        when(good.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "q", List.of("600519"), new int[]{2025, 2025},
-                List.of("净利润"), false, false, false, "LLM"));
+        when(good.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("600519"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM"));
 
         // 问题里必须真出现代码：新规则要求代码是原文子串（ST9 §16.3）
         var u = serviceWith(good).understand("600519 2025年净利润是多少");
@@ -88,9 +91,11 @@ class RouterServiceTest {
     @Test
     void invalidYearIsDroppedButOtherFieldsSurvive() {
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of("600519"), new int[]{1800, 1800},
-                List.of("净利润"), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withCompanyCodes(List.of("600519"))
+                .withYears(1800, 1800)
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM"));
 
         var u = serviceWith(bad).understand("某问题");
 
@@ -102,9 +107,9 @@ class RouterServiceTest {
     @Test
     void futureYearIsAlsoDropped() {
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), new int[]{2999, 2999},
-                List.of(), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withYears(2999, 2999)
+                .withRoute("LLM"));
 
         assertThat(serviceWith(bad).understand("某问题").yearRange()).isNull();
     }
@@ -113,9 +118,10 @@ class RouterServiceTest {
     void companyCodeMustAppearInQuestion() {
         // 新规则（ST9 §16.3）：代码必须字面出现在问题原文里。模型编的 600519 就是被这一条挡掉的
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of("999999"), null,
-                List.of("净利润"), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withCompanyCodes(List.of("999999"))
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM"));
 
         assertThat(serviceWith(bad).understand("某问题").companyCodes()).isEmpty();
     }
@@ -124,9 +130,10 @@ class RouterServiceTest {
     void companyCodeInQuestionIsKeptForScopeCheck() {
         // 写字原文里的代码必须保留：作用域层要靠它判断「问的公司在不在范围内」并拒答（阶段 6 的教训）
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of("999999"), null,
-                List.of("净利润"), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withCompanyCodes(List.of("999999"))
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM"));
 
         assertThat(serviceWith(bad).understand("999999 2024年净利润").companyCodes())
                 .containsExactly("999999");
@@ -135,9 +142,10 @@ class RouterServiceTest {
     @Test
     void malformedCompanyCodeIsDropped() {
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of("五粮液"), null,
-                List.of("净利润"), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withCompanyCodes(List.of("五粮液"))
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM"));
 
         assertThat(serviceWith(bad).understand("某问题").companyCodes()).isEmpty();
     }
@@ -146,9 +154,10 @@ class RouterServiceTest {
     void companyMentionMustBeSubstringOfQuestion() {
         // 模型编不出来：提到「贵州茅台」但原文里没有 → 丢弃（子串校验）
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null,
-                List.of("净利润"), false, false, null, false, "LLM", false, false, List.of("贵州茅台")));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM")
+                .withCompanyMentions(List.of("贵州茅台")));
 
         assertThat(serviceWith(bad).understand("东方财富2024年净利润").companyMentions()).isEmpty();
     }
@@ -156,9 +165,10 @@ class RouterServiceTest {
     @Test
     void companyMentionFromQuestionIsKept() {
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.SEMANTIC_EXPLANATION, "q", List.of(), null,
-                List.of("净利润"), false, false, null, false, "LLM", false, false, List.of("东方财富")));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withMetrics(List.of("净利润"))
+                .withRoute("LLM")
+                .withCompanyMentions(List.of("东方财富")));
 
         assertThat(serviceWith(bad).understand("东方财富2024年净利润").companyMentions())
                 .containsExactly("东方财富");
@@ -167,8 +177,8 @@ class RouterServiceTest {
     @Test
     void badQueryTypeFallsBackToSemantic() {
         LlmRouter bad = mock(LlmRouter.class);
-        when(bad.route(anyString())).thenReturn(new QueryUnderstanding(
-                null, "q", List.of(), null, List.of(), false, false, false, "LLM"));
+        when(bad.route(anyString())).thenReturn(QueryUnderstanding.of(null, "q")
+                .withRoute("LLM"));
 
         assertThat(serviceWith(bad).understand("某问题").queryType())
                 .isEqualTo(QueryType.SEMANTIC_EXPLANATION);

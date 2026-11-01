@@ -1,6 +1,7 @@
 package com.finagent.answer;
 
 import com.finagent.context.ContextPackage;
+import com.finagent.understanding.AnswerSectionPlan;
 import com.finagent.understanding.AnswerShape;
 
 import java.util.Collection;
@@ -34,25 +35,21 @@ public final class AnswerPrompts {
                表头没有年份或对不上时，在 note 里说明按哪一列取值。禁止默认取第一列。
             8. 只输出 JSON，不要 markdown 代码块。
 
-            答案骨架（这是 answer 字段内部的结构，不是额外字段）：
-            ① 结论：一句话给结论，带关键数字与引用；
-            ② 数据：逐年或逐项列出，数字照抄证据（单位与精度不变）；
-            ③ 归因：按业务线或按科目拆开，每条都要落在证据里出现过的经营指标上
-               （交易额、保有规模、销售额、手续费及佣金净收入、利息净收入、成本构成）；
-               证据里只有定性描述时，写「仅有定性表述，报告未给出定量归因」，
-               不要用「市场回暖」「AI 赋能」这类没有出处的判断代替；
-            ④ 口径与缺口：写清单位、期间、口径（合并/母公司），以及本次证据里不可得的项。
-            问题没有对应形态的段落就省略：只取一个数时，不要为了凑结构编归因。
+            答案结构（这是 answer 字段内部的结构，不是额外字段）：
+            - **第一段就是结论**：一句话给答案，带关键数字与引用。不要写「结论：」这类标签；
+            - 需要分节时写「## 一、标题」，按内容起名（例如「## 二、分行业与分产品结构」），
+              最多 5 节；不要用「数据」「分析」「归因」这种空标题；
+            - 节内可以再分「### 小标题」，最多 6 个；
+            - **最后一段是「> 注：…」引用块**（行首一个尖括号加空格，再写「注：」）：写清单位、期间、口径（合并/母公司），
+              以及本次证据里不可得的项。引用块是这一段唯一允许的格式标记。
+              这是唯一保留的段标签 —— 它承担「口径诚实」这条承诺，别的段都不要加标签；
+            - 只取一个数的问题不要分节：一段结论 + 一段「> 注：」就够了。
 
             排版（answer 字段内部）：
-            - 段落之间空一行；每段以「结论：」「数据：」「归因：」「口径：」开头，
-              没有内容的段整段省略（只取一个数时就只有「结论：」一段）；
-            - 每个标签必须独占一段、写在段首，段与段之间空一行：
-              不要把「归因：」接在结论段句末，也不要在一段里出现两个标签；
-              有归因内容就必须另起一段，写成「归因：……」；
-            - 四个段标签是骨架的一部分，必须保留（不要用标题代替它们）；
-            - 段内需要分小标题时用「### 小标题」，最多 6 个；不要用 # 或 ##，
-              也不要用代码块；
+            - 段落之间空一行；
+            - 章节标题写作「## 一、xxx」，子标题写作「### xxx」；不要用单个 #，也不要用代码块；
+            - 引用块只用于最后的注段；需要断开话题时单独一行写「---」作分隔线；
+            - 项目符号用「- 」，编号用「1. 2. 3.」；同一个列表里的编号必须连续，不要每个条目重新从 1 开始；
             - 并列数字必须用表格：同一指标的多期数字、多个分项的数字，加起来有 3 个及以上
               就要放进表格（不要写成一段长句）；只有两个数字时可以写成一句话；
               表格只用于「同一指标多期并列」或「多个分项同期并列」，不要把整段文字塞进单元格；
@@ -64,6 +61,13 @@ public final class AnswerPrompts {
               表格前后各留一个空行；
             - 多期或多分项的数字也可以用「2025 年 / 2024 年」这样的行首并列写，
               不要为了排版把数字重新四舍五入。
+
+            风格：
+            1. 按信息量控制篇幅：证据多的问题可以写长，证据少的问题不要注水；
+            2. 不为凑结构编内容：没有素材的章节直接删掉，禁止用「该部分未披露」占位凑节数；
+            3. 避免机械模板化措辞：不要每节都用「综上所述」「值得注意的是」开头，不要重复同一句结论；
+            4. 金额与比率逐字照抄：证据里是 9,610,120,743.64 就写 9,610,120,743.64，不要换算成「96.10 亿元」塞进表格，
+               更不要写成 9,610,000,000 —— 那不是精度问题，是编造一个不存在的数字。
             """;
 
     /**
@@ -123,8 +127,20 @@ public final class AnswerPrompts {
      */
     public static String user(String question, ContextPackage pkg, String background,
                               Collection<AnswerShape> shapes, String factPrompt) {
+        return user(question, pkg, background, shapes, factPrompt, AnswerSectionPlan.empty());
+    }
+
+    /**
+     * 阶段 17：有章节计划时，【回答要求】由计划生成（逐节列出「这节写什么」）。
+     *
+     * <p>计划为空（纯取数题、或证据里没有素材）时退回按形态给要求 ——
+     * 不能因为「没有计划」就什么都不写，取数题的「两个期间并列」仍然要提示。
+     */
+    public static String user(String question, ContextPackage pkg, String background,
+                              Collection<AnswerShape> shapes, String factPrompt,
+                              AnswerSectionPlan plan) {
         String bg = background == null || background.isBlank() ? "" : background.strip() + "\n\n";
-        String req = requirements(shapes);
+        String req = requirements(shapes, plan);
         String facts = factPrompt == null || factPrompt.isBlank() ? "" : factPrompt.strip() + "\n\n";
         return USER_TEMPLATE.formatted(question == null ? "" : question.trim(), bg, req, pkg.text(), facts);
     }
@@ -135,6 +151,19 @@ public final class AnswerPrompts {
      * <p>包内可见：单测直接验「哪些形态生成哪些句子」，不用把整段提示词拿来做字符串匹配。
      */
     static String requirements(Collection<AnswerShape> shapes) {
+        return requirements(shapes, AnswerSectionPlan.empty());
+    }
+
+    /**
+     * 计划优先：有章节时按章节写要求，没有时按形态写要求。
+     *
+     * <p>两者不同时出现 —— 章节计划本身已经包含「每节写什么」，
+     * 再叠一遍形态句子会让提示词互相打架（「必须给结构」+「只写总体情况」）。
+     */
+    static String requirements(Collection<AnswerShape> shapes, AnswerSectionPlan plan) {
+        if (plan != null && !plan.isEmpty()) {
+            return plan.requirement() + "\n\n";
+        }
         if (shapes == null || shapes.isEmpty()) {
             return "";
         }
@@ -154,6 +183,10 @@ public final class AnswerPrompts {
                     + "合计与分项必须同期同口径。";
             case COMPARISON -> "必须给出对比：两个期间并列，给出变化量；"
                     + "证据没有直接给出比率时写「证据未披露」，不要自行计算。";
+            case OVERVIEW -> "按「总体 → 结构 → 经营数据 → 成本费用 → 总结」的顺序组织，"
+                    + "证据里没有素材的章节直接删掉，不要用「该部分未披露」占位凑节数。";
+            case COST -> "成本与费用要按费用科目分项列出（销售/管理/财务/研发），给出同比；"
+                    + "证据里没有费用表时，只写证据里确实出现过的费用数字。";
         };
     }
 }

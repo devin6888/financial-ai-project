@@ -32,21 +32,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 class EmbeddingTextRoundTripTest {
 
-    /** 阶段 3 入库的一个 TEXT 子块。 */
-    private static final long CHUNK_ID = 805L;
+    // 不写死 chunk id：文档重切、以及阶段 20 的旧版本清理都会换 id（805 就属于已被清掉的 v1）。
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private EmbeddingService embeddingService;
 
     @Test
     void storedVectorEqualsEmbeddingOfReconstructedText() {
+        // 取「当前 active 版本里的一个 TEXT 子块」—— 只有这种块才走 embedding_text 拼接路径（C1）
         Map<String, Object> row = jdbc.queryForMap("""
                 SELECT dc.id, dc.content, dc.title, dc.section_path, dc.caption,
                        dc.embedding::text AS vec, d.title AS doc_title
                   FROM document_chunk dc
                   JOIN document d ON d.id = dc.document_id
-                 WHERE dc.id = ?
-                """, CHUNK_ID);
+                 WHERE dc.chunk_level = 'CHILD'
+                   AND dc.chunk_type = 'TEXT'
+                   AND dc.status = 'ACTIVE'
+                   AND dc.chunk_version = d.active_chunk_version
+                   AND dc.embedding IS NOT NULL
+                 ORDER BY dc.id
+                 LIMIT 1
+                """);
 
         String sectionPath = (String) row.get("section_path");
         Chunk chunk = new Chunk(
@@ -69,7 +75,7 @@ class EmbeddingTextRoundTripTest {
         assertThat(fresh).hasSize(1024);
 
         double cos = cosine(stored, fresh);
-        System.out.printf("chunk %d 的向量一致性（余弦相似度）: %.6f%n", CHUNK_ID, cos);
+        System.out.printf("chunk %d 的向量一致性（余弦相似度）: %.6f%n", row.get("id"), cos);
 
         // 同一文本 + 同一模型 -> 应该几乎完全一致
         // 留一点余量是因为 embedding 服务本身可能有浮点级的不确定性

@@ -84,9 +84,12 @@ class RealAnalysisNodesTest {
     }
 
     private static QueryUnderstanding qu(QueryType type, List<String> codes, List<String> metrics) {
-        return new QueryUnderstanding(type, "东方财富2025年营业总收入是多少", codes,
-                new int[]{2025, 2025}, metrics, false, false, null, false, "LLM",
-                false, false, List.of("东方财富"));
+        return QueryUnderstanding.of(type, "东方财富2025年营业总收入是多少")
+                .withCompanyCodes(codes)
+                .withYears(2025, 2025)
+                .withMetrics(metrics)
+                .withRoute("LLM")
+                .withCompanyMentions(List.of("东方财富"));
     }
 
     private static AnalysisState state(Map<String, Object> overrides) {
@@ -145,10 +148,11 @@ class RealAnalysisNodesTest {
         when(router.understand(anyString()))
                 .thenReturn(qu(QueryType.EXACT_FACT, List.of(), List.of("营业总收入")));
         // qu 没有代码但模型抽到了「五粮液」→ CompanyResolver 在作用域里找不到 → blocked
-        when(router.understand(anyString())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "五粮液2025年营业总收入", List.of(), new int[]{2025, 2025},
-                List.of("营业总收入"), false, false, null, false, "LLM", false, false,
-                List.of("五粮液")));
+        when(router.understand(anyString())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "五粮液2025年营业总收入")
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业总收入"))
+                .withRoute("LLM")
+                .withCompanyMentions(List.of("五粮液")));
 
         Map<String, Object> patch = nodes.understand(state(Map.of()));
 
@@ -173,10 +177,13 @@ class RealAnalysisNodesTest {
     void understandUsesTurnContextAndFlagsInference() {
         bridge.turnContext("run-1", new com.finagent.understanding.TurnContext(
                 "300059", "东方财富", 2025, 2025, List.of(7L), "营业总收入", List.of()));
-        when(router.understand(anyString(), any())).thenReturn(new QueryUnderstanding(
-                QueryType.EXACT_FACT, "东方财富2025年营业总收入", List.of("300059"), new int[]{2025, 2025},
-                List.of("营业总收入"), false, false, null, false, "LLM", true, false,
-                List.of("东方财富")));
+        when(router.understand(anyString(), any())).thenReturn(QueryUnderstanding.of(QueryType.EXACT_FACT, "东方财富2025年营业总收入")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业总收入"))
+                .withRoute("LLM")
+                .withInferredFromContext(true)
+                .withCompanyMentions(List.of("东方财富")));
 
         Map<String, Object> patch = nodes.understand(state(Map.of()));
 
@@ -201,7 +208,7 @@ class RealAnalysisNodesTest {
         when(longTermRecaller.recall(anyString())).thenReturn(List.of(instruction));
         com.finagent.memory.MemoryContext merged = new com.finagent.memory.MemoryContext(
                 "用户偏好：每个结论都要标注出处",
-                new com.finagent.memory.MemoryContext.Stats(0, 0, 0, 1, true), List.of());
+                new com.finagent.memory.MemoryContext.Stats(0, 0, 0, 1, true), List.of(), null);
         when(memoryAssembler.withLongTerm(any(), anyList()))
                 .thenReturn(new com.finagent.memory.MemoryAssembler.WithLongTerm(merged, false));
 
@@ -384,7 +391,7 @@ class RealAnalysisNodesTest {
     @Test
     @DisplayName("answer：引用来自别的年份的报告 → 补期间告警与说明，答案与引用原样保留")
     void answerFlagsPeriodMismatch() {
-        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any()))
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(new AnswerResult(true, "2023年营业总收入 110.5 亿元 [E1]", List.of(),
                         List.of(new com.finagent.citation.Citation(7L, 1L, 101L, 60, 60, null, null,
                                 "TEXT", null, null, "东方财富2025年年度报告", "第三节")),
@@ -418,7 +425,7 @@ class RealAnalysisNodesTest {
     @Test
     @DisplayName("answer：调 answerStreaming，delta 通过桥按 runId 送出去")
     void answerStreamsThroughBridge() {
-        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any()))
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
                 .thenAnswer(inv -> {
                     java.util.function.Consumer<String> sink = inv.getArgument(5);
                     sink.accept("营业总收入 ");
@@ -437,7 +444,7 @@ class RealAnalysisNodesTest {
         assertThat(String.valueOf(patch.get(AnalysisState.ANSWER))).contains("120.8");
         assertThat(patch).containsEntry(AnalysisState.STATUS, AgentRun.STATUS_DONE);
         verify(answers).answerStreaming(eq("东方财富2025年营业总收入是多少"), any(),
-                any(ContextPackage.class), any(MemoryContext.class), any(FactPack.class), any());
+                any(ContextPackage.class), any(MemoryContext.class), any(FactPack.class), any(), any());
     }
 
     @Test
@@ -639,9 +646,37 @@ class RealAnalysisNodesTest {
     }
 
     @Test
+    @DisplayName("compute：按证据画像算章节计划，写进 ANSWER_PLAN 并加一条计划步骤")
+    void computeWritesSectionPlan() {
+        String prose = "营业总收入 11,604,343,090.16 元，同比 4.72%；股基交易额 6.2 万亿元，天天基金上线 160 家";
+        when(contextBuilder.build(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContextPackage("[E1] 经营讨论",
+                        List.of(new ContextBlock(1, 7246L, 600L, 7L, "东方财富2024年年度报告",
+                                "第三节 § 主营业务分析", "经营讨论", prose, 11, 11, "TEXT",
+                                null, "元", null, null, 0.9, 42, 300, ContextBlock.ROLE_HIT)),
+                        900, List.of(), 0, 0));
+
+        Map<String, Object> patch = nodes.compute(state(Map.of(
+                AnalysisState.QUESTION, "分析下东方财富2024年的经营情况",
+                AnalysisState.ANSWER_SHAPES, List.of("OVERVIEW"),
+                AnalysisState.HITS, List.of(hit(7246, "第三节", "营业总收入")),
+                AnalysisState.EVIDENCE_COUNT, 1)));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> plan = (List<Map<String, Object>>) patch.get(AnalysisState.ANSWER_PLAN);
+        assertThat(plan).isNotEmpty();
+        assertThat(plan).extracting(row -> row.get("title"))
+                .contains("营业总收入总体情况", "核心业务经营数据", "总结");
+        // 每条都带 purpose 与 layout：answer 节点要用它们拼【回答要求】
+        assertThat(plan).allSatisfy(row -> assertThat(row).containsKeys("id", "title", "purpose", "layout"));
+        assertThat((List<String>) patch.get(AnalysisState.PLAN))
+                .anyMatch(step -> step.startsWith("答案按 ") && step.contains("节组织"));
+    }
+
+    @Test
     @DisplayName("answer：状态里的事实被打包成 FactPack 传给 AnswerService（提示词里能见到【已报事实】）")
     void answerPassesFactPack() {
-        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any()))
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(new AnswerResult(true, "营业总收入 160.68 亿元 [E1]", List.of(), List.of(),
                         AnswerResult.CONFIDENCE_HIGH, null, List.of(), 0));
 
@@ -652,7 +687,7 @@ class RealAnalysisNodesTest {
 
         org.mockito.ArgumentCaptor<FactPack> captor =
                 org.mockito.ArgumentCaptor.forClass(FactPack.class);
-        verify(answers).answerStreaming(anyString(), any(), any(), any(), captor.capture(), any());
+        verify(answers).answerStreaming(anyString(), any(), any(), any(), captor.capture(), any(), any());
         assertThat(captor.getValue().prompt()).contains("【已报事实】").contains("16067741039.51");
     }
 

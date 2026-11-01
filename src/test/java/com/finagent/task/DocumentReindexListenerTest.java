@@ -27,15 +27,13 @@ class DocumentReindexListenerTest {
     private ReindexService reindexService;
     private TaskMessageRepository taskMessages;
     private DocumentReindexListener listener;
-    private com.finagent.ingest.IngestTracker tracker;
 
     @BeforeEach
     void setUp() {
         reindexService = mock(ReindexService.class);
         taskMessages = mock(TaskMessageRepository.class);
-        tracker = mock(com.finagent.ingest.IngestTracker.class);
         listener = new DocumentReindexListener(reindexService, taskMessages,
-                JsonMapper.builder().build(), tracker);
+                JsonMapper.builder().build());
     }
 
     @Test

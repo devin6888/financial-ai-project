@@ -25,6 +25,7 @@ import java.util.Set;
  * 子问题        needDecompose 且拆出 >= 1 条        空                 8
  * 按年份        yearRange 跨年，每年一条，最多 3 年  docYear = Y        4
  * 章节定向      形态命中 ATTRIBUTION 或 BREAKDOWN    sectionPath 前缀   4
+ * 方向车道      形态/问句词（ST17 Task 2），最多 4 路          sectionPath 前缀   4
  * </pre>
  */
 final class RetrievalLanes {
@@ -43,6 +44,33 @@ final class RetrievalLanes {
 
     /** 最多支持几年的区间；再宽就不是「年」的问题了，退化为不加年份过滤。 */
     static final int MAX_YEAR_LANES = 3;
+
+    /** 方向车道（ST17 Task 2）：一次最多四个，按下面的优先级截断。 */
+    static final int MAX_DIRECTIONS = 4;
+    static final int DIRECTION_TOP_K = 4;
+    static final int MAX_LANES = 8;
+    static final String WARN_LANES_TRUNCATED = "lanes_truncated";
+
+    static final String DIR_STRUCTURE = "structure";
+    static final String DIR_OPERATION = "operation";
+    static final String DIR_COST = "cost";
+    static final String DIR_PROFIT = "profit";
+    static final String DIR_YOY = "yoy";
+
+    /** 优先级：结构 → 经营数据 → 成本费用 → 盈利 → 同比（ST17 §2.1）。 */
+    private static final List<String> DIRECTION_ORDER =
+            List.of(DIR_STRUCTURE, DIR_OPERATION, DIR_COST, DIR_PROFIT, DIR_YOY);
+
+    /** 每个方向追加在原问题后面的关键词（不能太长：会稀释原问题的语义）。 */
+    private static final Map<String, String> DIRECTION_TERMS = Map.of(
+            DIR_STRUCTURE, "分行业 分产品 分地区 占比",
+            DIR_OPERATION, "交易额 保有规模 销售额 客户数",
+            DIR_COST, "成本 费用 毛利率 期间费用",
+            DIR_PROFIT, "净利润 归母 扣非 净利率",
+            DIR_YOY, "同比 增减 变动");
+
+    /** 问句里出现这些词就要一路「盈利」：净利润不在上面的形态里，只能看词。 */
+    private static final List<String> PROFIT_WORDS = List.of("净利润", "盈利", "利润", "归母", "扣非");
 
     static final String WARN_YEAR_TOO_WIDE = "year_range_too_wide";
     static final String WARN_YEAR_MISSING_PREFIX = "year_coverage_missing:";
@@ -84,11 +112,11 @@ final class RetrievalLanes {
         if (shapes != null) {
             set.addAll(shapes);
         }
-        if (set.contains(AnswerShape.ATTRIBUTION) || set.contains(AnswerShape.BREAKDOWN)) {
-            lanes.add(RetrievalLane.section(full, SECTION_TOP_K));
-        }
+        // 先算年份路：跨年问题已经有「每年一路」，再补一路「同比」是重复检索
+        List<Integer> years = yearsOf(yearRange, warnings);
+        lanes.addAll(directions(full, question, set, !years.isEmpty()));
 
-        for (Integer year : yearsOf(yearRange, warnings)) {
+        for (Integer year : years) {
             // 作用域里根本没有这一年的文档：加一路只会白花一次 rerank，
             // 直接记告警，让答案第 ④ 段写「作用域内无该年文档」
             if (!scopeYears.isEmpty() && !scopeYears.contains(year)) {
@@ -96,6 +124,61 @@ final class RetrievalLanes {
                 continue;
             }
             lanes.add(RetrievalLane.year(year, full, YEAR_TOP_K));
+        }
+        // 保序截断：整句 → 子问题 → 方向 → 年份。年份排最后，超限时先丢年份（
+        // 宁可少一年证据，也不砍掉「这一节该看什么」的方向路）
+        if (lanes.size() > MAX_LANES) {
+            lanes = new ArrayList<>(lanes.subList(0, MAX_LANES));
+            addOnce(warnings, WARN_LANES_TRUNCATED);
+        }
+        return lanes;
+    }
+
+    /**
+     * 选方向车道。
+     *
+     * <p><b>与计划的一处偏差</b>：ST17 §2.1 写「方向由答案形态 + 证据画像选」，
+     * 但车道在 retrieve 节点就要定，那时还没有上下文、算不出证据画像（画像是 compute 节点
+     * 拿上下文算的）。硬要画像就得先检索一轮再检索一轮，代价翻倍。这里改成只看问题侧信号
+     * （形态 + 问句里的词），代价是「经营数据」在概览题里总会跑一路 —— topK 只有 4，可接受。
+     */
+    static List<RetrievalLane> directions(String full, String question, Set<AnswerShape> shapes) {
+        return directions(full, question, shapes, false);
+    }
+
+    /**
+     * @param yearsCovered 已经有「每年一路」的车道（跨年问题）—— 此时不再补「同比」方向
+     */
+    static List<RetrievalLane> directions(String full, String question, Set<AnswerShape> shapes,
+                                          boolean yearsCovered) {
+        Set<AnswerShape> set = shapes == null ? EnumSet.noneOf(AnswerShape.class) : shapes;
+        Set<String> wanted = new LinkedHashSet<>();
+        if (set.contains(AnswerShape.BREAKDOWN) || set.contains(AnswerShape.OVERVIEW)) {
+            wanted.add(DIR_STRUCTURE);
+        }
+        if (set.contains(AnswerShape.OVERVIEW) || set.contains(AnswerShape.ATTRIBUTION)) {
+            wanted.add(DIR_OPERATION);
+        }
+        // 概览题也要看成本：问「营收情况」时，费用与毛利率是「情况」的一半；
+        // 只按 COST 形态加的话，「分析下2024年的营收情况」永远检索不到费用表（真链路验收发现）
+        if (set.contains(AnswerShape.COST) || set.contains(AnswerShape.OVERVIEW)) {
+            wanted.add(DIR_COST);
+        }
+        if (question != null && PROFIT_WORDS.stream().anyMatch(question::contains)) {
+            wanted.add(DIR_PROFIT);
+        }
+        if (set.contains(AnswerShape.COMPARISON) && !yearsCovered) {
+            wanted.add(DIR_YOY);
+        }
+        List<RetrievalLane> lanes = new ArrayList<>();
+        for (String direction : DIRECTION_ORDER) {
+            if (lanes.size() >= MAX_DIRECTIONS) {
+                break;
+            }
+            if (wanted.contains(direction)) {
+                lanes.add(RetrievalLane.direction(direction,
+                        full + " " + DIRECTION_TERMS.get(direction), DIRECTION_TOP_K));
+            }
         }
         return lanes;
     }

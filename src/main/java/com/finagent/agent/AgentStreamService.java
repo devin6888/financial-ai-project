@@ -266,7 +266,7 @@ public class AgentStreamService {
         ChatTrace trace = trace(runId, view, conversation, citations,
                 result == null ? 0 : result.citationsDropped());
         return new ChatResponse(sufficient, text, facts, citations, confidence, note, scopeInfo,
-                view.warnings(), trace, null);
+                view.warnings(), trace, null, null, null);
     }
 
     /**
@@ -383,6 +383,17 @@ public class AgentStreamService {
                         .count();
                 detail.put("facts", state.facts().size());
                 detail.put("computed", (int) computed);
+                // 章节计划只带标题（阶段 17）：purpose 是给模型的，前端不展示，别白占载荷
+                List<String> titles = new ArrayList<>();
+                for (Map<String, Object> row : state.answerPlan()) {
+                    Object title = row.get("title");
+                    if (title != null) {
+                        titles.add(String.valueOf(title));
+                    }
+                }
+                if (!titles.isEmpty()) {
+                    detail.put("plan", titles);
+                }
             }
             case AnalysisGraph.NODE_ANSWER -> label = "生成答案";
             case AnalysisGraph.NODE_CITE_CHECK -> {

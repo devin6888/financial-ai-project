@@ -10,9 +10,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** 召回闸门：该召回才召回，不该召回时一次外部调用都不多花。 */
 class MemoryGateTest {
 
-    private static final QueryUnderstanding FACTS = new QueryUnderstanding(
-            QueryType.EXACT_FACT, "东方财富2025年营业收入", java.util.List.of("300059"),
-            new int[]{2025, 2025}, java.util.List.of("营业收入"), false, false, null, false, "LLM");
+    private static final QueryUnderstanding FACTS = QueryUnderstanding.of(QueryType.EXACT_FACT, "东方财富2025年营业收入")
+            .withCompanyCodes(java.util.List.of("300059"))
+            .withYears(2025, 2025)
+            .withMetrics(java.util.List.of("营业收入"))
+            .withRoute("LLM");
 
     @Test
     @DisplayName("词典命中：「以后」")
@@ -33,9 +35,9 @@ class MemoryGateTest {
     @Test
     @DisplayName("QU 字段命中：needLongTermMemory=true 也召回")
     void llmFlagHit() {
-        QueryUnderstanding flagged = new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, "q",
-                java.util.List.of(), null, java.util.List.of(), false, false, null, false, "LLM",
-                false, true);
+        QueryUnderstanding flagged = QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "q")
+                .withRoute("LLM")
+                .withNeedLongTermMemory(true);
         assertThat(gate(true).shouldRecall("我平时怎么问的", flagged)).isTrue();
     }
 

@@ -18,6 +18,10 @@ Spring Boot + Spring AI + LangGraph4j + PostgreSQL/pgvector + Redis + Kafka。
 
 我们最终要达到的目标是：你能够独立设计一个完整的金融研报 Agent 工作流，而不仅仅是会使用几个 API。
 
+
+
+![LangGraph4j 完整工作流程图 Tiếng Trung 5  words_](C:\Users\67564\Downloads\LangGraph4j 完整工作流程图 Tiếng Trung 5  words_.png)
+
 # 一、先建立 LangGraph4j 的整体认知
 
 ## 1. LangGraph4j 到底解决什么问题？

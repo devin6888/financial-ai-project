@@ -87,15 +87,86 @@ class RetrievalLanesTest {
     }
 
     @Test
-    @DisplayName("归因/结构形态加一路「第三节」；两种形态同时命中只加一路")
-    void sectionLaneAddedOnce() {
+    @DisplayName("归因 + 结构 → 两路方向车道（结构、经营数据），都限定第三节")
+    void directionLanesForAttributionAndBreakdown() {
         List<RetrievalLane> lanes = RetrievalLanes.plan("收入增长的原因与结构", "q", List.of(),
                 Set.of(AnswerShape.ATTRIBUTION, AnswerShape.BREAKDOWN), new int[]{2025, 2025},
                 Set.of(2025), new ArrayList<>());
 
-        assertThat(ids(lanes)).containsExactly("full", "attr");
-        assertThat(lanes.get(1).sectionPrefix()).isEqualTo("第三节");
-        assertThat(lanes.get(1).topK()).isEqualTo(RetrievalLanes.SECTION_TOP_K);
+        assertThat(ids(lanes)).containsExactly("full", "dir:structure", "dir:operation");
+        assertThat(lanes.get(1).sectionPrefix()).isEqualTo(RetrievalLanes.SECTION_PREFIX);
+        // 归因 + 结构不带 OVERVIEW/COST：成本路不该被加进来（它是概览题的一半，不是归因题）
+        assertThat(ids(lanes)).doesNotContain("dir:cost");
+        assertThat(lanes.get(1).topK()).isEqualTo(RetrievalLanes.DIRECTION_TOP_K);
+        // 追加的关键词要真的进检索文本，否则这一路等于把整句再查一遍
+        assertThat(lanes.get(1).text()).contains("分行业").contains("占比");
+    }
+
+    @Test
+    @DisplayName("概览题 + 成本形态 → 结构 / 经营数据 / 成本费用 三路（阶段 17）")
+    void directionLanesForOverviewAndCost() {
+        List<RetrievalLane> lanes = RetrievalLanes.directions("分析下2024年的营收情况",
+                "分析下2024年的营收情况", Set.of(AnswerShape.OVERVIEW, AnswerShape.COST));
+
+        assertThat(ids(lanes)).containsExactly("dir:structure", "dir:operation", "dir:cost");
+    }
+
+    @Test
+    @DisplayName("概览题不带成本形态也要看成本（「营收情况」的一半是费用与毛利率）")
+    void overviewAloneStillPlansCostLane() {
+        List<RetrievalLane> lanes = RetrievalLanes.directions("分析下2024年的营收情况",
+                "分析下2024年的营收情况", Set.of(AnswerShape.OVERVIEW));
+
+        assertThat(ids(lanes)).containsExactly("dir:structure", "dir:operation", "dir:cost");
+    }
+
+    @Test
+    @DisplayName("问句里有「利润」→ 加一路盈利；没有就不加（不白花一次 rerank）")
+    void profitLaneOnlyWhenAsked() {
+        assertThat(ids(RetrievalLanes.directions("q", "2024年净利润是多少", Set.of())))
+                .containsExactly("dir:profit");
+        assertThat(ids(RetrievalLanes.directions("q", "2024年营业收入是多少", Set.of())))
+                .doesNotContain("dir:profit");
+    }
+
+    @Test
+    @DisplayName("方向车道最多四路：优先级 结构 → 经营数据 → 成本费用 → 盈利 → 同比")
+    void directionsCappedAtFour() {
+        List<RetrievalLane> lanes = RetrievalLanes.directions("q", "净利润", Set.of(
+                AnswerShape.OVERVIEW, AnswerShape.BREAKDOWN, AnswerShape.ATTRIBUTION,
+                AnswerShape.COST, AnswerShape.COMPARISON));
+
+        assertThat(lanes).hasSize(RetrievalLanes.MAX_DIRECTIONS);
+        assertThat(ids(lanes)).containsExactly("dir:structure", "dir:operation", "dir:cost", "dir:profit");
+    }
+
+    @Test
+    @DisplayName("车道总数封顶 8：超了先丢年份路并记 lanes_truncated")
+    void lanesTruncatedToEight() {
+        List<String> warnings = new ArrayList<>();
+
+        List<RetrievalLane> lanes = RetrievalLanes.plan("2024年和2025年营业总收入与净利润",
+                "2024年和2025年营业总收入与净利润",
+                List.of("子问题1", "子问题2", "子问题3"),
+                Set.of(AnswerShape.OVERVIEW, AnswerShape.COST, AnswerShape.COMPARISON),
+                new int[]{2024, 2025}, Set.of(2024, 2025), warnings);
+
+        assertThat(lanes).hasSize(RetrievalLanes.MAX_LANES);
+        assertThat(ids(lanes).get(0)).isEqualTo("full");
+        assertThat(warnings).contains(RetrievalLanes.WARN_LANES_TRUNCATED);
+    }
+
+    @Test
+    @DisplayName("跨年问题已经有每年一路，就不再补「同比」方向（同一批证据检索两次）")
+    void yoyDirectionSkippedWhenYearsCovered() {
+        List<String> warnings = new ArrayList<>();
+
+        List<RetrievalLane> lanes = RetrievalLanes.plan("2024年和2025年的营业总收入",
+                "2024年和2025年的营业总收入", List.of(),
+                Set.of(AnswerShape.COMPARISON), new int[]{2024, 2025}, Set.of(2024, 2025), warnings);
+
+        assertThat(ids(lanes)).containsExactly("full", "year:2025", "year:2024");
+        assertThat(warnings).isEmpty();
     }
 
     @Test

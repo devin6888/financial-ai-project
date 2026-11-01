@@ -355,7 +355,17 @@ Task 1 只是允许这两节出现；如果检索没给素材，模型还是写�
 
 | # | 计划怎么写 | 实际怎么做 | 为什么 | 影响 |
 | --- | --- | --- | --- | --- |
-|  |  |  |  |  |
+| 1 | 新增契约 C25 / C26 | 写成 **C33 / C34** | C26 已被阶段 18「引用角标与悬浮原文」占用，C25 从未落笔；顺着已有的 C27~C32 往后编号才不会撞车 | 文档编号与计划不一致，检索请用 C33/C34 |
+| 2 | 方向车道按「形态 + 证据画像」选 | 只按形态与问句词选 | 车道在 retrieve 节点定，那时还没有上下文，画像要到 compute 节点才算得出来 | 概览题固定多跑一路「经营数据」与「成本费用」 |
+| 3 | 列表合并用 `items: Segment[][][]` | `items: Segment[][]` | 本项目答案的列表项没有缩进续行，第三层永远是空数组 | 渲染与测试都少一层 |
+| 4 | 概览题不加成本车道 | 概览题也加 | 验收发现「营收情况」检索不到费用表（不是闸门拦的，是素材就没拿到） | 多一路 topK=4 检索，约 +50 ms |
+| 5 | 对比题加「同比」方向车道 | 跨年问题已有每年一路时不加 | 每年的车道已经把两年数字都拿回来了，再补同比是同一批证据检索两次 | 少一路 |
+| 6 | 四条闸门 | 五条（新增「分析意图」闸门） | 单值问题「同比增长多少」被判成 COMPARISON → 排出 2 节，被扣 `sections_missing` | 无（单值问题一律一段话） |
+| 7 | `hasCostTable` = 表里出现任一费用词 | 要求 ≥2 个不同费用科目 | 假阳性导致「成本与费用」节整节写「未披露」；一个词能同时出现在标题、口径和别人的表里 | 部分真实费用表会被判 false（宁可少一节，不可空一节） |
+| 8 | 缺口判定 = 指标词出现在上下文 | 要求「指标 + 12 字内出现数字」 | 「占年度销售总额 5.74%」这种句子含「销售额」，被误判成矛盾 | 漏检变多，误报变少 |
+| 9 | 末段写「注：」 | 末段写 `> 注：` 引用块 | 前端 Task 3 的引用块渲染要对上；提示词、断行正则、前端样式三处必须统一 | 提示词与 `normalizeSkeleton` 都按引用块写 |
+| 10 | 验收要求 Q1 表格 ≥2 张 | 软提示：`layout=table` 的节追加一句「（这一节用管道表格呈现）」 | 表格数由模型决定，硬校验会把「用段落说清楚更好」判成失败 | 实测 Q1 表格 1 → 2 张，不保证 |
+| 11 | A11 用 gzip 增幅 ≤6 KB（基线 47.23 kB） | 改记绝对值 72.70 kB / gzip 26.18 kB + 「未新增依赖」 | 前端仓库没有 initial commit，`git stash` 取不到改动前体积；计划里的基线来自旧构建配置（未分包），不可比 | 见报告 §5.2 注 |
 
 ---
 
@@ -453,3 +463,62 @@ A1~A12 全绿，且：
 3. 前端页面截图与 ima 并排，层级与留白不再「压缩到一起」；
 4. 全量回归（非 db / db / e2e / 前端三件套）全绿；
 5. 报告、契约、README、roadmap 同步，代码已 `git add`（不 commit）。
+
+---
+
+## 11. 实施记录（2026-10-31 22:20~23:45）
+
+### 11.1 落地清单
+
+| 层 | 文件 | 做了什么 |
+| --- | --- | --- |
+| 形态 | `src/main/java/com/finagent/understanding/AnswerShape.java` | 加 `OVERVIEW`（概览）、`COST`（成本费用）与两份词表；`OVERVIEW_ASK` 要求「分析/看看…」与「情况/表现/概况」相距 ≤6 字 |
+| 画像 | `src/main/java/com/finagent/context/EvidenceProfile.java` | 新增。三字段：`hasCostTable`（TABLE 且 ≥2 个费用科目）、`hasOperatingMetrics`、`hasMultiPeriod` |
+| 计划 | `src/main/java/com/finagent/understanding/AnswerSectionPlan.java` | 新增。形态→章节表、5 条闸门、`toMap()/fromRows()` 往返、`requirementOf()` 拼【回答要求】 |
+| 提示词 | `src/main/java/com/finagent/answer/AnswerPrompts.java` | SYSTEM 骨架重写；STYLE 第 4 条「金额逐字照抄」；`requirements(shapes, plan)` 有计划时用计划的 |
+| 生成与校验 | `src/main/java/com/finagent/answer/AnswerService.java` | `answer/answerStreaming/evaluate` 加 `plan` 重载；verify 第五层 `sectionsMissing` 与 `gapClaims`；`normalizeSkeleton` 补两种断行 |
+| 状态 | `src/main/java/com/finagent/agent/AnalysisState.java` | `ANSWER_PLAN` 通道 + `answerPlan()` |
+| 节点 | `src/main/java/com/finagent/agent/RealAnalysisNodes.java` | compute 算计划并写状态；answer 读出传给提示词 |
+| 检索 | `src/main/java/com/finagent/agent/RetrievalLane.java` / `RetrievalLanes.java` | `direction(...)` 工厂；五条方向路（结构/经营数据/成本费用/盈利/同比），≤4 路、总车道 ≤8、超出记 `lanes_truncated` |
+| 事实 | `src/main/java/com/finagent/fact/FactCollector.java` | 叙述型指标 ≤8 条；单年 + 同比费用表也能出比率事实 |
+| 事实 | `src/main/java/com/finagent/fact/TableRowParser.java` | 「同比」进 `GROWTH_WORDS` + `hasGrowthCell` |
+| 前端解析 | `src/utils/answer.ts` | `quote` / `divider` 两种块；列表合并成一块（`items`） |
+| 前端渲染 | `src/components/AnswerText.vue` | `h2` 20px / `h3` 17px / `h4` 15.5px；段距 14px；引用块 3px 竖线；数值列右对齐 + `tabular-nums` |
+| 前端复制 | `src/utils/copyAnswer.ts` | 引用块与分隔线前后强制空行（`---` 贴段落会被当成 setext 标题） |
+
+### 11.2 真链路实测（qwen-plus + qwen3-rerank，东方财富 2025/2024 年报）
+
+| # | 问题 | 节数 | 表格 | 注段 | 耗时 | warnings |
+| --- | --- | --- | --- | --- | --- | --- |
+| Q1 | 分析下2024年的营收情况 | 5 | 2 | `> 注：` | ~45 s | `fact_value_not_in_evidence:归属于上市公司股东净利润`、`answer_value_not_in_evidence:1` |
+| Q2 | 2025年营业总收入同比增长多少 | 0（一段 87 字） | 0 | — | ~15 s | 只有 `facts_table_skipped` ×2 |
+| Q3 | 分析下2024年和2025年的营业总收入，然后看下是什么原因导致的 | 5 | 1 | `> 注：` | ~42 s | `gap_claim_contradicted:销售额`、`answer_value_not_in_evidence:1` |
+
+Q1 章节：营业总收入总体情况 / 分行业与分产品结构 / 核心业务经营数据 / 成本与费用情况 / 总结。
+Q3 章节：增长驱动因素 / 核心业务经营数据 / 期间对比 / 分项说明 / 总结。
+
+验收脚本留档：`target/st17-accept.ps1`（ASCII-only，用 `[IO.File]::ReadAllText(..., UTF8)` 读题面，逐题 POST `/api/chat`）、
+`target/st17-questions.json`、`target/q1.json`~`target/q3.json`。
+
+### 11.3 回归
+
+| 组 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端全量 | `mvn -o test`（含 db 组） | **843 通过 / 0 失败**（`target/st17-final.log`，23:42） |
+| 前端 | `vitest` / `vue-tsc --build` / `eslint --max-warnings=0` / `vite build` | 69 通过 / 0 错 / 0 error / 通过（ChatView 72.70 kB、gzip 26.18 kB） |
+
+### 11.4 六个坑（现象 → 原因 → 修法 → 教训）
+
+1. **`###` 被断成 `#\n\n##`**：给 `normalizeSkeleton` 加「标题前断行」后，`([^\n])\s*(?=#{2,4}\s+\S)`
+   从 `#` 内部开始匹配也能命中 → 修法是左侧字符类排除 `#`（`[^\n#]`）→ 教训：插入分隔符的正则必须把记号本身的字符排除在左侧。
+2. **单年费用表整张被跳过**：`GROWTH_WORDS` 缺「同比」，`| 项目 | 2024年 | 同比 |` 既不算多期表也不算带增长列 → 加词 + 加分支 → 教训：中文财务表增长列有三种写法，词表少一个等于整类表不可用。
+3. **`hasCostTable` 假阳性**：判据是「出现任一费用词」，命中的是分行业成本表（只有「营业成本」）→ 要求 ≥2 个科目 → 教训：「有没有这类证据」和「有没有这个词」是两件事。
+4. **单值问题被扣 `sections_missing`**：形态带 COMPARISON 就排了 2 节 → 加「分析意图」闸门 → 教训：形态说的是「问哪类事」，分节说的是「要不要看结构」。
+5. **模型自己四舍五入**：`9,610,120,743.64` 被写成 `9,610,000,000（≈96.10亿元）` → STYLE 加「逐字照抄」+ 反例 → 教训：「不是编造」和「不会改写」是两件事。
+6. **概览题拿不到费用表**：成本方向车道只在 COST 形态加，而「营收情况」是 OVERVIEW → 概览题也加 → 教训：车道选得早（retrieve 时无上下文），宁可多跑一路 topK=4，也别让常见问题缺一半素材。
+
+### 11.5 结论
+
+DoD 五条全部满足：Q1 五节两表带注段、Q2 仍是一段话、前端层级与 ima 并排不再「压缩到一起」、
+四组回归全绿、报告与契约（C33/C34）已同步。计划原文估的 3.5 天，实际一个晚间完成，
+省下来的时间主要来自「章节计划用规则算、不用 LLM 挑」这一条设计。

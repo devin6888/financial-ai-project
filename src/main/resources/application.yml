@@ -134,6 +134,16 @@ finagent:
     connect-timeout: 2s
     read-timeout: 15s
 
+  # ---------- 旧 chunk 版本清理（阶段 20 技术债 #3，契约 C32） ----------
+  # 默认关闭：删除是破坏性动作，只能由人显式触发并先看干跑计划。
+  #   document-id=0 表示「全部文档」；keep-versions 是「保留最近几版」（含当前版本）。
+  #   被历史消息引用到的版本与行永远保留 —— 否则旧答案点引用会 404。
+  retention:
+    enabled: false
+    apply: false
+    document-id: 0
+    keep-versions: 3
+
   # ---------- 租户与认证（阶段 8） ----------
   # 认证默认开启：生产里「忘记开」比「忘记关」危险得多。
   # 测试 profile 在 application-test.yml 里显式关掉（见该文件的注释）。

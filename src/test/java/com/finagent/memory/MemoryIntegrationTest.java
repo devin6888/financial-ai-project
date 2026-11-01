@@ -79,7 +79,7 @@ class MemoryIntegrationTest {
         ResolvedScope scope = ResolvedScope.of(ScopeKind.CORPUS, List.of(),
                 ResolvedScope.REASON_SESSION, List.of());
         ChatResponse first = new ChatResponse(true, "2025 年营业总收入 120.8 亿元 [E1]",
-                List.of(), List.of(), "HIGH", null, null, List.of(), null, null);
+                List.of(), List.of(), "HIGH", null, null, List.of(), null, null, null, null);
         conversations.recordTurn(conversation, "2025 年营业总收入是多少？", first, scope);
 
         MemoryContext memory = assembler.assembleMemory(conversation);

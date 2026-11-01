@@ -268,7 +268,8 @@ public class RouterService {
 
     /** 兜底：保守策略 + degraded 标记。 */
     static QueryUnderstanding degraded(String query, String reason) {
-        return new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, query,
-                List.of(), null, List.of(), false, false, null, true, "DEGRADED:" + reason);
+        return QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, query)
+                .withDegraded(true)
+                .withRoute("DEGRADED:" + reason);
     }
 }

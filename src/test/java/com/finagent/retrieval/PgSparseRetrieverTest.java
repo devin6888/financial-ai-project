@@ -41,29 +41,64 @@ class PgSparseRetrieverTest {
     }
 
     @Test
-    void exactModeRanksByHitCount() {
-        // 命中两个实体的应排在只命中一个的前面。
-        // 注意不能断言「每条都含每股收益」—— EXACT 是多词 OR，只含净利润的也会进来。
-        var hits = sparse.retrieve("每股收益 净利润",
-                List.of("每股收益", "净利润"), SparseMode.EXACT, F, 20);
+    void exactModeRanksByWeightedScore() {
+        // 排序契约（阶段 20 技术债 #1）：加权分单调不增。
+        // 权重 = 实体长度（越具体越值钱），标题/章节路径命中每个实体再加 3 分。
+        List<String> terms = List.of("每股收益", "净利润");
+        var hits = sparse.retrieve("每股收益 净利润", terms, SparseMode.EXACT, F, 20);
 
         assertThat(hits).isNotEmpty();
+        // 注意不能断言「每条都含每股收益」—— EXACT 是多词 OR，只含净利润的也会进来。
         assertThat(hits).allSatisfy(c -> assertThat(
                 c.content().contains("每股收益") || c.content().contains("净利润")).isTrue());
 
-        // 排序契约：命中数必须单调不增
         int prev = Integer.MAX_VALUE;
         for (var c : hits) {
-            int n = 0;
-            if (c.content().contains("每股收益")) {
-                n++;
+            int score = 0;
+            for (String t : terms) {
+                if (c.content().contains(t)) {
+                    score += t.length();
+                }
+                String title = c.title() == null ? "" : c.title();
+                String path = c.sectionPath() == null ? "" : c.sectionPath();
+                if (title.contains(t) || path.contains(t)) {
+                    score += 3;
+                }
             }
-            if (c.content().contains("净利润")) {
-                n++;
-            }
-            assertThat(n).as("命中数应单调不增").isLessThanOrEqualTo(prev);
-            prev = n;
+            assertThat(score).as("加权分应单调不增（chunk %s）", c.chunkId())
+                    .isLessThanOrEqualTo(prev);
+            prev = score;
         }
+    }
+
+    @Test
+    void exactModePrefersLongerEntity() {
+        // 「每股」是「每股收益」的前缀：同时命中两个词的行（4+2=6 分）必须排在
+        // 只命中「每股」的行（2 分，标题命中最多 5 分）前面 —— 这正是旧版「数命中个数」做不到的。
+        var hits = sparse.retrieve("每股 每股收益", List.of("每股", "每股收益"),
+                SparseMode.EXACT, F, 30);
+
+        assertThat(hits).hasSizeGreaterThan(1);
+        // 只看「标题/章节路径都没提到这些词」的对照行，排除 TITLE_BONUS 干扰
+        var pure = hits.stream().filter(c -> {
+            String meta = (c.title() == null ? "" : c.title())
+                    + (c.sectionPath() == null ? "" : c.sectionPath());
+            return !meta.contains("每股");
+        }).toList();
+        int lastLong = -1;
+        int firstShortOnly = -1;
+        for (int i = 0; i < pure.size(); i++) {
+            if (pure.get(i).content().contains("每股收益")) {
+                lastLong = i;
+            } else if (firstShortOnly < 0) {
+                firstShortOnly = i;
+            }
+        }
+        assertThat(lastLong).as("必须有命中长词的对照行").isGreaterThanOrEqualTo(0);
+        assertThat(firstShortOnly).as("必须有只命中短词的对照行，否则用例没意义")
+                .isGreaterThanOrEqualTo(0);
+        assertThat(lastLong).as("命中长词（4+2=6 分）的行必须排在只命中短词（2 分）的行之前")
+                .isLessThan(firstShortOnly);
     }
 
     @Test

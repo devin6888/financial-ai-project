@@ -16,6 +16,8 @@ public enum IngestStep {
     CHUNKED("切块完成"),
     EMBEDDING("向量化"),
     SWITCHED("切换 ACTIVE"),
+    /** 只重建检索数据（RETRIEVAL_ONLY / REEMBED）：切块沿用现有版本，不重新切。 */
+    REUSED("沿用现有切块"),
     SKIPPED("已存在，跳过");
 
     private final String label;

@@ -26,6 +26,64 @@ public class ChunkRepository {
     }
 
     /**
+     * 读某个版本的全部块（PARENT + CHILD），供「不重新切块、只重建检索数据」用（RETRIEVAL_ONLY / REEMBED）。
+     *
+     * <p>为什么要把 section_path 原样读出来再拆：embedding_text 是用 {@code " > "} 拼 sectionPath 的，
+     * 而库里存的是 {@code " § "}。拆回来必须精确还原成同一个 List，否则 embedding_text 变了
+     * → hash 变了 → 复用全部失效，一次「零成本重建」会变成 654 次 API 调用。
+     *
+     * <p>{@code parent_index} 是父块自己的 chunk_index：重建父子关系时用它分组，
+     * 不去比 parent_id（新版本会重新分配主键）。
+     */
+    public List<StoredChunk> findVersionChunks(long documentId, int chunkVersion) {
+        return jdbc.query("""
+                SELECT c.chunk_level, c.chunk_type, c.section_path, c.title, c.content,
+                       coalesce(c.page_start, 0) AS page_start,
+                       coalesce(c.page_end, 0)   AS page_end,
+                       c.source_block_ids,
+                       c.bbox::text              AS bbox_json,
+                       coalesce(c.token_count, 0) AS token_count,
+                       c.chunk_index,
+                       coalesce(p.chunk_index, -1) AS parent_index,
+                       c.caption, c.unit, c.currency,
+                       c.headers_json::text      AS headers_json,
+                       c.related_footnote_ids,
+                       c.parser_version
+                  FROM document_chunk c
+                  LEFT JOIN document_chunk p ON p.id = c.parent_id
+                 WHERE c.document_id = ? AND c.chunk_version = ? AND c.status = 'ACTIVE'
+                 ORDER BY c.chunk_level DESC, c.chunk_index
+                """, (rs, n) -> new StoredChunk(
+                        rs.getString("chunk_level"),
+                        rs.getString("chunk_type"),
+                        rs.getString("section_path"),
+                        rs.getString("title"),
+                        rs.getString("content"),
+                        rs.getInt("page_start"),
+                        rs.getInt("page_end"),
+                        rs.getString("source_block_ids"),
+                        rs.getString("bbox_json"),
+                        rs.getInt("token_count"),
+                        rs.getInt("chunk_index"),
+                        rs.getInt("parent_index"),
+                        rs.getString("caption"),
+                        rs.getString("unit"),
+                        rs.getString("currency"),
+                        rs.getString("headers_json"),
+                        rs.getString("related_footnote_ids"),
+                        rs.getString("parser_version")),
+                documentId, chunkVersion);
+    }
+
+    /** 库里一行 chunk 的原始形态（只在「不重新切块」的重建路径上用）。 */
+    public record StoredChunk(String level, String type, String sectionPath, String title,
+                              String content, int pageStart, int pageEnd, String sourceBlockIds,
+                              String bboxJson, int tokenCount, int chunkIndex, int parentIndex,
+                              String caption, String unit, String currency, String headersJson,
+                              String relatedFootnoteIds, String parserVersion) {
+    }
+
+    /**
      * 读旧 ACTIVE 版本的 CHILD 向量（契约 C10 的复用源）。
      *
      * <p>只取 CHILD：Parent 不存向量。embedding 用 {@code ::text} 读出来再解析成 float[] ——

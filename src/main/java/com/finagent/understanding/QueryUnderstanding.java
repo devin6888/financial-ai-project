@@ -50,46 +50,80 @@ public record QueryUnderstanding(
         List<String> companyMentions
 ) {
     /**
-     * 兼容阶段 9 Task 8 之前的 12 参调用点（companyMentions 之前不存在）。
+     * 只带「类型 + 查询」的最小构造：其余字段取默认值（无实体、无年份、路由记为 RULE）。
      *
-     * <p>那些调用点都在单轮或规则路径上，本来就没有「原文公司名」这一层，传空即可。
+     * <p>为什么要它：这个 record 有 13 个组件，其中两个相邻的 {@code List<String>}
+     * （companyCodes / companyMentions）一旦按位置传参就会静默错位 —— 编译器不报错，
+     * 运行时表现为「把公司名当成了证券代码」。所以对外只留两个入口：
+     * 这个工厂给出默认值，其余字段用 {@code withXxx} 逐个点名改。
+     * 历史上那 4 个「少几个参数」的兼容构造器正是靠位置猜语义，已全部删除。
      */
-    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyCodes,
-                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
-                              boolean needDecompose, String docType, boolean degraded, String route,
-                              boolean inferredFromContext, boolean needLongTermMemory) {
-        this(queryType, normalizedQuery, companyCodes, yearRange, metrics, needMultiQuery,
-                needDecompose, docType, degraded, route, inferredFromContext, needLongTermMemory, List.of());
+    public static QueryUnderstanding of(QueryType queryType, String normalizedQuery) {
+        return new QueryUnderstanding(queryType, normalizedQuery, List.of(), null, List.of(),
+                false, false, null, false, "RULE", false, false, List.of());
     }
 
-    /** 兼容阶段 9 Task 5 的 11 参调用点（needLongTermMemory 之前不存在）。 */
-    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyCodes,
-                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
-                              boolean needDecompose, String docType, boolean degraded, String route,
-                              boolean inferredFromContext) {
-        this(queryType, normalizedQuery, companyCodes, yearRange, metrics, needMultiQuery,
-                needDecompose, docType, degraded, route, inferredFromContext, false, List.of());
+    /** 改年份区间（单一年份传同一个数）。 */
+    public QueryUnderstanding withYears(int from, int to) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, new int[]{from, to},
+                metrics, needMultiQuery, needDecompose, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
     }
 
-    /**
-     * 兼容阶段 4~9 的 10 参调用点（inferredFromContext 之前不存在）。
-     *
-     * <p>保留而不是逐个改调用点，是因为那些调用点没有一处与「是否来自上下文」相关 ——
-     * 它们本来就只处理单轮问题，答案恒为 false。
-     */
-    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyCodes,
-                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
-                              boolean needDecompose, String docType, boolean degraded, String route) {
-        this(queryType, normalizedQuery, companyCodes, yearRange, metrics, needMultiQuery,
-                needDecompose, docType, degraded, route, false, false, List.of());
+    /** 改年份区间（手里已经是一个 int[] 时用它；null 表示不限年份）。 */
+    public QueryUnderstanding withYearRange(int[] range) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, range, metrics,
+                needMultiQuery, needDecompose, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
     }
 
-    /** 兼容阶段 4 的 9 参调用点（docType 之前不存在）。 */
-    public QueryUnderstanding(QueryType queryType, String normalizedQuery, List<String> companyCodes,
-                              int[] yearRange, List<String> metrics, boolean needMultiQuery,
-                              boolean needDecompose, boolean degraded, String route) {
-        this(queryType, normalizedQuery, companyCodes, yearRange, metrics, needMultiQuery,
-                needDecompose, null, degraded, route, false, false, List.of());
+    /** 改命中的指标名。 */
+    public QueryUnderstanding withMetrics(List<String> newMetrics) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, newMetrics,
+                needMultiQuery, needDecompose, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
+    }
+
+    /** 改路由标记（RULE / LLM / DEGRADED:原因 / NONE）。 */
+    public QueryUnderstanding withRoute(String newRoute) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                needMultiQuery, needDecompose, docType, degraded, newRoute,
+                inferredFromContext, needLongTermMemory, companyMentions);
+    }
+
+    /** 改降级标记。 */
+    public QueryUnderstanding withDegraded(boolean isDegraded) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                needMultiQuery, needDecompose, docType, isDegraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
+    }
+
+    /** 改报告类型（ANNUAL / SEMI_ANNUAL / Q1 / Q3）。 */
+    public QueryUnderstanding withDocType(String newDocType) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                needMultiQuery, needDecompose, newDocType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
+    }
+
+    /** 改问题原文里的公司名字面（模型抽取的那一层，不是证券代码）。 */
+    public QueryUnderstanding withCompanyMentions(List<String> mentions) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                needMultiQuery, needDecompose, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, mentions);
+    }
+
+    /** 改「是否要多查询扩展」。 */
+    public QueryUnderstanding withNeedMultiQuery(boolean need) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                need, needDecompose, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
+    }
+
+    /** 改「是否要查询分解」。 */
+    public QueryUnderstanding withNeedDecompose(boolean need) {
+        return new QueryUnderstanding(queryType, normalizedQuery, companyCodes, yearRange, metrics,
+                needMultiQuery, need, docType, degraded, route,
+                inferredFromContext, needLongTermMemory, companyMentions);
     }
 
     /** Sparse 路是否需要走精确子串模式（有实体才走得通）。 */

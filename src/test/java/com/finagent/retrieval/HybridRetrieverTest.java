@@ -325,8 +325,10 @@ class HybridRetrieverTest {
     @Test
     @DisplayName("trace 带上 QU 的 queryType / route")
     void traceCarriesQuFields() {
-        QueryUnderstanding qu = new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入",
-                List.of(), new int[]{2025, 2025}, List.of("营业收入"), false, false, false, "LLM");
+        QueryUnderstanding qu = QueryUnderstanding.of(QueryType.EXACT_FACT, "2025年营业收入")
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业收入"))
+                .withRoute("LLM");
 
         HybridRetriever.Result r = retriever.retrieve(req(true), qu);
 
@@ -353,6 +355,80 @@ class HybridRetrieverTest {
         verify(sparse).retrieve(anyString(), eq(List.of()), eq(SparseMode.FTS_OR), any(), anyInt());
     }
 
+    // ------------------------------------------------------------ 技术债 #2：精准事实跳过 Dense
+
+    @Test
+    @DisplayName("精准事实 + Sparse 命中落在 [3,30) → 跳过 Dense，trace 记 dense_skipped_exact_fact")
+    void denseSkippedForExactFactWithHealthySparseHits() {
+        when(sparse.retrieve(anyString(), anyList(), eq(SparseMode.EXACT), any(), anyInt()))
+                .thenReturn(ranked(100, 5, false));
+
+        HybridRetriever.Result r = retriever.retrieve(req(false),
+                qu(List.of(), null, List.of("营业收入"), "RULE"));
+
+        verify(dense, never()).retrieve(anyString(), any(), anyInt());
+        assertThat(r.trace().warnings()).contains(HybridRetriever.WARN_DENSE_SKIPPED);
+        assertThat(r.trace().denseHits()).isZero();
+        assertThat(r.chunks()).hasSize(5);
+    }
+
+    @Test
+    @DisplayName("Sparse 只命中 2 条（< 3）→ 说明实体写法对不上，必须保留 Dense")
+    void denseKeptWhenExactHitsTooFew() {
+        when(sparse.retrieve(anyString(), anyList(), eq(SparseMode.EXACT), any(), anyInt()))
+                .thenReturn(ranked(100, 2, false));
+        when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(ranked(200, 3, true));
+
+        HybridRetriever.Result r = retriever.retrieve(req(false),
+                qu(List.of(), null, List.of("营业收入"), "RULE"));
+
+        verify(dense).retrieve(anyString(), any(), anyInt());
+        assertThat(r.trace().warnings()).doesNotContain(HybridRetriever.WARN_DENSE_SKIPPED);
+        assertThat(r.trace().denseHits()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("Sparse 命中 30 条（>= 30）→ 过滤没真正收窄，必须保留 Dense")
+    void denseKeptWhenExactHitsTooMany() {
+        when(sparse.retrieve(anyString(), anyList(), eq(SparseMode.EXACT), any(), anyInt()))
+                .thenReturn(ranked(100, 30, false));
+        when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(ranked(200, 2, true));
+
+        HybridRetriever.Result r = retriever.retrieve(req(false),
+                qu(List.of(), null, List.of("营业收入"), "RULE"));
+
+        verify(dense).retrieve(anyString(), any(), anyInt());
+        assertThat(r.trace().warnings()).doesNotContain(HybridRetriever.WARN_DENSE_SKIPPED);
+    }
+
+    @Test
+    @DisplayName("没有指标名的 EXACT（只有公司代码）→ 不算精准事实，Dense 照常先跑")
+    void denseNotSkippedWithoutMetrics() {
+        when(documents.findCompanyIdByCode("300059")).thenReturn(7L);
+        when(sparse.retrieve(anyString(), anyList(), eq(SparseMode.EXACT), any(), anyInt()))
+                .thenReturn(ranked(100, 5, false));
+        when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(ranked(200, 2, true));
+
+        HybridRetriever.Result r = retriever.retrieve(req(false),
+                qu(List.of("300059"), null, List.of(), "RULE"));
+
+        verify(dense).retrieve(anyString(), any(), anyInt());
+        assertThat(r.trace().warnings()).doesNotContain(HybridRetriever.WARN_DENSE_SKIPPED);
+    }
+    @Test
+    @DisplayName("NARRATIVE 题即使抽到指标名也不跳 Dense（叙事题靠语义召回）")
+    void denseNotSkippedForNarrativeQuery() {
+        when(sparse.retrieve(anyString(), anyList(), eq(SparseMode.EXACT), any(), anyInt()))
+                .thenReturn(ranked(100, 5, false));
+        when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(ranked(200, 2, true));
+        QueryUnderstanding narrative = QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "2025年营业收入")
+                .withMetrics(List.of("营业收入"));
+
+        HybridRetriever.Result r = retriever.retrieve(req(false), narrative);
+
+        verify(dense).retrieve(anyString(), any(), anyInt());
+        assertThat(r.trace().warnings()).doesNotContain(HybridRetriever.WARN_DENSE_SKIPPED);
+    }
     // ------------------------------------------------------------ helpers
 
     private static RetrievalRequest req(boolean useRerank) {
@@ -362,8 +438,11 @@ class HybridRetrieverTest {
     /** 第 3 参是**证券代码**（companyCodes），不是数据库 company.id —— 见 C13。 */
     private static QueryUnderstanding qu(List<String> companyCodes, int[] years,
                                          List<String> metrics, String route) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入", companyCodes, years,
-                metrics, false, false, false, route);
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "2025年营业收入")
+                .withCompanyCodes(companyCodes)
+                .withYearRange(years)
+                .withMetrics(metrics)
+                .withRoute(route);
     }
 
     private static RetrievedChunk chunk(long id, Integer denseRank, Integer sparseRank) {

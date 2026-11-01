@@ -70,7 +70,9 @@ class PeriodLabelerTest {
     }
 
     private static QueryUnderstanding qu(int from, int to) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "q", List.of("300059"), new int[]{from, to},
-                List.of(), false, false, null, false, "TEST");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "q")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(from, to)
+                .withRoute("TEST");
     }
 }

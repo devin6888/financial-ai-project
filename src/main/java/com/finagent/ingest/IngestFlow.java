@@ -31,6 +31,17 @@ public enum IngestFlow {
             IngestStep.EMBEDDING,
             IngestStep.SWITCHED)),
 
+    /**
+     * 只重建检索数据（RETRIEVAL_ONLY / REEMBED）：<b>不重新切块</b>，3 步。
+     *
+     * <p>为什么单独一个流程而不是复用 REINDEX：REINDEX 的第 1 步是「切块中」，
+     * 而这三种模式恰恰不切块 —— 用同一个模板会让时间线写着「切块中」却不切，比缺一步更糟。
+     */
+    RETRIEVAL(List.of(
+            IngestStep.REUSED,
+            IngestStep.EMBEDDING,
+            IngestStep.SWITCHED)),
+
     /** 断点恢复：沿用 PARSE 的模板（总步数不变，前面已完成的步骤保留）。 */
     RESUME(List.of(
             IngestStep.RECEIVED,

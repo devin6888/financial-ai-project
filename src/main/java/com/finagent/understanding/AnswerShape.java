@@ -26,7 +26,13 @@ public enum AnswerShape {
     BREAKDOWN("结构"),
 
     /** 要对比：两期并列、同比、变化。 */
-    COMPARISON("对比");
+    COMPARISON("对比"),
+
+    /** 要全景：营收情况 / 经营情况 / 整体表现（阶段 17 新增，ST17 D4）。 */
+    OVERVIEW("概览"),
+
+    /** 要成本费用：成本 / 费用 / 毛利率 / 期间费用（阶段 17 新增，ST17 D2）。 */
+    COST("成本费用");
 
     /** 词表刻意保守：宁可漏判（少一段要求），不要误判（逼模型编归因）。 */
     private static final List<String> ATTRIBUTION_WORDS = List.of(
@@ -37,6 +43,29 @@ public enum AnswerShape {
 
     private static final List<String> COMPARISON_WORDS = List.of(
             "对比", "相比", "同比", "环比", "较", "差异");
+
+    /**
+     * 概览类词表（阶段 17）。
+     *
+     * <p>只收「明确在问全貌」的说法：「分析」「情况」单独出现不算 ——
+     * 「分析下这个数字」要的是一个解释，不是五个章节。
+     */
+    private static final List<String> OVERVIEW_WORDS = List.of(
+            "营收情况", "经营情况", "财务状况", "整体表现", "整体情况", "概况", "业绩", "经营成果");
+
+    /** 成本费用类词表（阶段 17）。「毛利」被「毛利率」包含，不需要重复列。 */
+    private static final List<String> COST_WORDS = List.of(
+            "成本", "费用", "毛利率", "毛利", "期间费用");
+
+    /**
+     * 「分析 / 看看 / 介绍」+ 若干字 + 「情况 / 表现 / 概况」也算概览。
+     *
+     * <p>这是计划里 D4 那条的直接修法：「分析下2024年的营收情况」原本一个形态都不命中，
+     * 于是答案被按「纯取数」对待，只写一段。限定 6 个字以内，避免把
+     * 「分析一下为什么毛利率下降」也判成概览（那句里有「为什么」，该走归因）。
+     */
+    private static final Pattern OVERVIEW_ASK = Pattern.compile(
+            "(分析|看看|看下|介绍|说说)[^。？?]{0,6}(情况|表现|概况)");
 
     /**
      * 「变化」二字本身不构成对比诉求，要看它在问什么。
@@ -78,6 +107,12 @@ public enum AnswerShape {
             }
             if (containsAny(q, COMPARISON_WORDS) || CHANGE_ASK.matcher(q).find()) {
                 shapes.add(COMPARISON);
+            }
+            if (containsAny(q, OVERVIEW_WORDS) || OVERVIEW_ASK.matcher(q).find()) {
+                shapes.add(OVERVIEW);
+            }
+            if (containsAny(q, COST_WORDS)) {
+                shapes.add(COST);
             }
         }
         if (spansYears(yearRange)) {

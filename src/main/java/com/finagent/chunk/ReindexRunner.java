@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
  * <p>用法：
  * <pre>{@code
  * mvn spring-boot:run -Dspring-boot.run.arguments="--finagent.reindex.document-id=7"
+ * // 只重建检索数据（不重新切块）：再加 --finagent.reindex.mode=RETRIEVAL_ONLY
  * }</pre>
  *
  * <p>为什么用 ApplicationRunner 而不是 REST 接口：本阶段还没有 Web 层需求，
@@ -27,15 +28,18 @@ public class ReindexRunner implements ApplicationRunner {
 
     private final ReindexService reindexService;
     private final long documentId;
+    private final ReindexMode mode;
 
     public ReindexRunner(ReindexService reindexService, Environment env) {
         this.reindexService = reindexService;
         this.documentId = Long.parseLong(env.getProperty("finagent.reindex.document-id", "0"));
+        // 默认 RECHUNK：老用法（只给 document-id）行为不变
+        this.mode = ReindexMode.valueOf(env.getProperty("finagent.reindex.mode", "RECHUNK"));
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        int version = reindexService.reindex(documentId, ReindexMode.RECHUNK);
-        log.info("重切完成：document_id={} 新 chunk 版本={}", documentId, version);
+        int version = reindexService.reindex(documentId, mode);
+        log.info("重索引完成：document_id={} 模式={} 新 chunk 版本={}", documentId, mode, version);
     }
 }

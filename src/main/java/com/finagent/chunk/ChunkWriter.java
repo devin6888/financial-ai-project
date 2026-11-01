@@ -55,6 +55,19 @@ public class ChunkWriter {
     public int writeVersion(long documentId, String documentTitle,
                             List<ParentGroup> parents, List<List<Chunk>> childrenPerGroup,
                             String parserVersion) {
+        return writeVersion(documentId, documentTitle, parents, childrenPerGroup, parserVersion,
+                IngestStep.CHUNKED, false);
+    }
+
+    /**
+     * @param chunkDoneStep 「切块完成」那一步用哪个枚举：正常重切是 {@link IngestStep#CHUNKED}，
+     *                      只重建检索数据时是 {@link IngestStep#REUSED}（时间线上不能写「切块完成」，因为没切）
+     * @param forceReembed  true = 不查复用源，全部重嵌（REEMBED / 换模型的场景）。
+     *                      关掉复用只需把「旧向量」当空列表传下去，复用逻辑本身不用改
+     */
+    public int writeVersion(long documentId, String documentTitle,
+                            List<ParentGroup> parents, List<List<Chunk>> childrenPerGroup,
+                            String parserVersion, IngestStep chunkDoneStep, boolean forceReembed) {
         // 1) 事务外：算 embedding_text 及其 hash（复用键）
         List<String> texts = WritePlan.embeddingTexts(childrenPerGroup, documentTitle);
         List<String> hashes = new ArrayList<>(texts.size());
@@ -64,7 +77,7 @@ public class ChunkWriter {
 
         // 2) 读旧 ACTIVE 版本的 CHILD 向量作为复用源（首次索引没有旧版本 → 空）
         int oldVersion = chunks.activeVersion(documentId);
-        List<ChunkRepository.ChildEmbedding> oldChildren = oldVersion == 0
+        List<ChunkRepository.ChildEmbedding> oldChildren = oldVersion == 0 || forceReembed
                 ? List.of()
                 : chunks.findActiveChildEmbeddings(documentId, oldVersion);
 
@@ -78,8 +91,8 @@ public class ChunkWriter {
         List<String> toEmbed = reuse.toEmbedTexts();
         progress.step(documentId, DocumentProgress.CHUNKED, DocumentProgress.STAGE_CHUNKED);
         int totalChildren = childrenPerGroup.stream().mapToInt(List::size).sum();
-        tracker.begin(documentId, IngestStep.CHUNKED);
-        tracker.finish(documentId, IngestStep.CHUNKED,
+        tracker.begin(documentId, chunkDoneStep);
+        tracker.finish(documentId, chunkDoneStep,
                 "Parent " + parents.size() + " / Child " + totalChildren);
         tracker.begin(documentId, IngestStep.EMBEDDING);
         tracker.heartbeatNow(documentId, "已嵌入 0/" + toEmbed.size());

@@ -164,6 +164,6 @@ class ChatControllerTest {
                 new ScopeInfo(new ScopeInfo.SessionScope(ScopeKind.DOCUMENTS, List.of(38L)),
                         new ScopeInfo.EffectiveScope(ScopeKind.DOCUMENTS, List.of(38L), "SESSION"),
                         List.of(38L), "scope-v1"),
-                List.of(), trace, null);
+                List.of(), trace, null, null, null);
     }
 }

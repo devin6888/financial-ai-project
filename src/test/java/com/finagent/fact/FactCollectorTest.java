@@ -27,8 +27,11 @@ class FactCollectorTest {
     }
 
     private static QueryUnderstanding qu(List<String> metrics) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "东方财富2025年营业总收入是多少", List.of("300059"),
-                new int[]{2025, 2025}, metrics, false, false, null, false, "TEST", false, false, List.of());
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "东方财富2025年营业总收入是多少")
+                .withCompanyCodes(List.of("300059"))
+                .withYears(2025, 2025)
+                .withMetrics(metrics)
+                .withRoute("TEST");
     }
 
     @Test
@@ -84,6 +87,53 @@ class FactCollectorTest {
     void collectsEverythingWhenNoMetricAsked() {
         assertThat(FactCollector.collect(List.of(block(1, 7246L, "TABLE", TABLE)), qu(List.of())).facts())
                 .isNotEmpty();
+    }
+
+    // ---------------------------------------------------------------- 阶段 17：叙述型指标 / 单年费用表
+
+    @Test
+    @DisplayName("叙述型指标：交易额 / 保有规模 / 销售额从正文里抽出来，单位按原文")
+    void extractsNarrativeMetrics() {
+        String prose = "报告期内，公司股基交易额 6.2 万亿元，天天基金保有规模 6,113.62 亿元，"
+                + "基金销售额 1.2 万亿元，客户数 1,234 万人。";
+
+        FactCollector.Result r = FactCollector.collect(List.of(block(3, 1650L, "TEXT", prose)), qu(List.of()));
+
+        assertThat(r.facts()).anyMatch(f -> "股基交易额".equals(f.metric())
+                && "6.2".equals(f.value().toPlainString()) && "万亿元".equals(f.unit())
+                && f.evidenceNo() == 3);
+        assertThat(r.facts()).anyMatch(f -> "保有规模".equals(f.metric()) && "亿元".equals(f.unit()));
+        assertThat(r.facts()).anyMatch(f -> "销售额".equals(f.metric()));
+        assertThat(r.facts()).anyMatch(f -> "客户数".equals(f.metric()) && "万人".equals(f.unit()));
+    }
+
+    @Test
+    @DisplayName("叙述型指标：同一句重复出现只留一条，且不抽没有单位的裸数字")
+    void narrativeIsDeduplicated() {
+        String prose = "股基交易额 6.2 万亿元。……股基交易额 6.2 万亿元。营业收入 11,604,343,090.16 元。";
+
+        FactCollector.Result r = FactCollector.collect(List.of(block(1, 1650L, "TEXT", prose)), qu(List.of()));
+
+        assertThat(r.facts()).hasSize(1);
+        assertThat(r.facts().get(0).metric()).isEqualTo("股基交易额");
+    }
+
+    @Test
+    @DisplayName("单年 + 同比列的费用表：金额与同比都能抽（以前整张表被 skipped）")
+    void extractsSingleYearCostTable() {
+        String cost = """
+                | 项目 | 2024年 | 同比 |
+                | --- | --- | --- |
+                | 销售费用 | 2,345,678,901.23 | 3.2% |
+                | 管理费用 | 1,234,567,890.12 | 5.1% |
+                """;
+
+        FactCollector.Result r = FactCollector.collect(List.of(block(4, 1665L, "TABLE", cost)),
+                qu(List.of("销售费用")));
+
+        assertThat(r.facts()).anyMatch(f -> "销售费用".equals(f.metric()) && "2024".equals(f.period()));
+        assertThat(r.facts()).anyMatch(f -> "销售费用".equals(f.metric()) && "2024同比".equals(f.period())
+                && "3.2".equals(f.value().toPlainString()));
     }
 
     @Test

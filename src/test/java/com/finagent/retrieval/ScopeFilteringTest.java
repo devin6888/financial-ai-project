@@ -128,7 +128,10 @@ class ScopeFilteringTest {
 
     /** 手造 QU：作用域规则的验证不该依赖 LLM 每次是否抽出同一个年份。 */
     private static QueryUnderstanding manualQu(int[] years) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "东方财富营业收入", List.of("300059"),
-                years, List.of("营业收入"), false, false, null, false, "TEST");
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "东方财富营业收入")
+                .withCompanyCodes(List.of("300059"))
+                .withYearRange(years)
+                .withMetrics(List.of("营业收入"))
+                .withRoute("TEST");
     }
 }

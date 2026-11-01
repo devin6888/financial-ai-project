@@ -220,8 +220,9 @@ class HybridRetrieverScopeTest {
     @DisplayName("判为 COMPARISON 且作用域 ≥2 份 → 启用配额，并记进 trace")
     void quotaEnabledForComparison() {
         when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(interleaved(7L, 38L, 30, 30));
-        QueryUnderstanding qu = new QueryUnderstanding(QueryType.COMPARISON, "对比两年营业收入",
-                List.of(), null, List.of("营业收入"), false, false, null, false, "TEST");
+        QueryUnderstanding qu = QueryUnderstanding.of(QueryType.COMPARISON, "对比两年营业收入")
+                .withMetrics(List.of("营业收入"))
+                .withRoute("TEST");
 
         HybridRetriever.Result r = retriever.retrieve(req(), qu, scope(7L, 38L));
 
@@ -232,8 +233,9 @@ class HybridRetrieverScopeTest {
     @DisplayName("年份跨年（2024..2025）也算跨文档问题")
     void quotaEnabledForCrossYear() {
         when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(interleaved(7L, 38L, 30, 30));
-        QueryUnderstanding qu = new QueryUnderstanding(QueryType.SEMANTIC_EXPLANATION, "两年营收变化",
-                List.of(), new int[]{2024, 2025}, List.of(), false, false, null, false, "TEST");
+        QueryUnderstanding qu = QueryUnderstanding.of(QueryType.SEMANTIC_EXPLANATION, "两年营收变化")
+                .withYears(2024, 2025)
+                .withRoute("TEST");
 
         HybridRetriever.Result r = retriever.retrieve(req(), qu, scope(7L, 38L));
 
@@ -244,8 +246,10 @@ class HybridRetrieverScopeTest {
     @DisplayName("单文档问题即使作用域有多份也不套配额（只会把无关块塞进精排）")
     void quotaDisabledForSingleDocumentQuestion() {
         when(dense.retrieve(anyString(), any(), anyInt())).thenReturn(interleaved(7L, 38L, 30, 30));
-        QueryUnderstanding qu = new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入",
-                List.of(), new int[]{2025, 2025}, List.of("营业收入"), false, false, null, false, "TEST");
+        QueryUnderstanding qu = QueryUnderstanding.of(QueryType.EXACT_FACT, "2025年营业收入")
+                .withYears(2025, 2025)
+                .withMetrics(List.of("营业收入"))
+                .withRoute("TEST");
 
         HybridRetriever.Result r = retriever.retrieve(req(), qu, scope(7L, 38L));
 
@@ -255,8 +259,8 @@ class HybridRetrieverScopeTest {
     @Test
     @DisplayName("作用域只有一份文档 → 配额必不启用")
     void quotaDisabledForSingleDocumentScope() {
-        QueryUnderstanding comparison = new QueryUnderstanding(QueryType.COMPARISON, "对比",
-                List.of(), null, List.of(), false, false, null, false, "TEST");
+        QueryUnderstanding comparison = QueryUnderstanding.of(QueryType.COMPARISON, "对比")
+                .withRoute("TEST");
 
         assertThat(HybridRetriever.quotaEnabled(comparison, scope(7L))).isFalse();
         assertThat(HybridRetriever.quotaEnabled(comparison, scope(7L, 38L))).isTrue();
@@ -284,8 +288,12 @@ class HybridRetrieverScopeTest {
 
     private static QueryUnderstanding qu(List<String> companies, int[] years, List<String> metrics,
                                         String docType, String route) {
-        return new QueryUnderstanding(QueryType.EXACT_FACT, "2025年营业收入", companies, years, metrics,
-                false, false, docType, false, route);
+        return QueryUnderstanding.of(QueryType.EXACT_FACT, "2025年营业收入")
+                .withCompanyCodes(companies)
+                .withYearRange(years)
+                .withMetrics(metrics)
+                .withDocType(docType)
+                .withRoute(route);
     }
 
     private static ResolvedScope scope(Long... ids) {

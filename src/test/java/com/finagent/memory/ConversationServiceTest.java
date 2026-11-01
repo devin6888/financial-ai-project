@@ -89,7 +89,7 @@ class ConversationServiceTest {
                         null, null, 3, "东方财富2025年年度报告")),
                 ResolvedScope.REASON_SESSION, List.of());
         ChatResponse response = new ChatResponse(true, "营业总收入 120.8 亿元 [E1]",
-                List.of(), List.of(), "HIGH", null, null, List.of(), null, null);
+                List.of(), List.of(), "HIGH", null, null, List.of(), null, null, null, null);
 
         long assistantId = service.recordTurn(conversation, "  2025 年  营业总收入是多少  ", response, scope);
 
@@ -113,7 +113,7 @@ class ConversationServiceTest {
     void explicitTitleIsNotOverwritten() {
         Conversation conversation = create("test-conv-titled", ChatScope.corpus());
         ChatResponse response = new ChatResponse(false, "证据不足", List.of(), List.of(), "LOW",
-                null, null, List.of(), null, null);
+                null, null, List.of(), null, null, null, null);
 
         service.recordTurn(conversation, "随便问问", response, ResolvedScope.of(ScopeKind.CORPUS, List.of(),
                 ResolvedScope.REASON_SESSION, List.of()));
@@ -142,7 +142,7 @@ class ConversationServiceTest {
 
         assertThat(renamed.title()).isEqualTo("东方财富 2025 年报");
         ChatResponse response = new ChatResponse(false, "证据不足", List.of(), List.of(), "LOW",
-                null, null, List.of(), null, null);
+                null, null, List.of(), null, null, null, null);
         service.recordTurn(renamed, "随便问问", response, ResolvedScope.of(ScopeKind.CORPUS, List.of(),
                 ResolvedScope.REASON_SESSION, List.of()));
 

@@ -3,6 +3,8 @@ package com.finagent.agent;
 import com.finagent.answer.AnswerResult;
 import com.finagent.answer.AnswerService;
 import com.finagent.answer.PeriodLabeler;
+import com.finagent.context.EvidenceProfile;
+import com.finagent.understanding.AnswerSectionPlan;
 import com.finagent.chat.MemoryTrace;
 import com.finagent.chunk.ChunkRepository;
 import com.finagent.chunk.ChunkRepository.ChunkView;
@@ -589,11 +591,24 @@ public class RealAnalysisNodes implements AnalysisNodes {
             rows.add(row);
         }
 
+        // 章节计划（阶段 17）：先用这一轮真实的证据块算画像，再按形态 + 画像出候选章节。
+        // 放在 compute 而不是 plan 节点，因为 plan 阶段还没有证据（画像必然全 false）。
+        EvidenceProfile profile = EvidenceProfile.of(pkg.blocks());
+        AnswerSectionPlan plan = AnswerSectionPlan.of(shapesOf(state), profile, pkg.blocks(),
+                state.question());
+
         Map<String, Object> patch = new LinkedHashMap<>();
         patch.put(AnalysisState.FACTS, List.copyOf(rows));
+        if (!plan.isEmpty()) {
+            patch.put(AnalysisState.ANSWER_PLAN,
+                    plan.sections().stream().map(AnswerSectionPlan.Section::toMap).toList());
+            patch.put(AnalysisState.PLAN, List.of(
+                    "答案按 " + plan.sections().size() + " 节组织：" + String.join(" / ", plan.titles())));
+        }
         if (!warnings.isEmpty()) {
             patch.put(AnalysisState.WARNINGS, List.copyOf(warnings));
         }
+        LOG.debug("证据画像 {} → 章节计划 {}", profile.describe(), plan.titles());
         return patch;
     }
 
@@ -624,8 +639,9 @@ public class RealAnalysisNodes implements AnalysisNodes {
 
         String runId = state.runId();
         // 事实包来自 state.facts()（compute 节点写的 Map 行），这里只做渲染，不重算
+        AnswerSectionPlan plan = AnswerSectionPlan.fromRows(state.answerPlan(), shapesOf(state));
         AnswerResult result = answers.answerStreaming(state.question(), qu, pkg, memory,
-                FactPack.from(state.facts()), delta -> bridge.delta(runId, delta));
+                FactPack.from(state.facts()), delta -> bridge.delta(runId, delta), plan);
         result = withPeriodLabel(result, qu, scope);
         // 完整结果（facts / citations / confidence / note / 丢弃数）走旁路，不进可序列化的状态
         bridge.result(runId, result);
@@ -729,7 +745,7 @@ public class RealAnalysisNodes implements AnalysisNodes {
         if (state.memoryText() == null || state.memoryText().isBlank()) {
             return MemoryContext.EMPTY;
         }
-        return new MemoryContext(state.memoryText(), MemoryContext.Stats.EMPTY);
+        return new MemoryContext(state.memoryText(), MemoryContext.Stats.EMPTY, List.of(), null);
     }
 
     /**
