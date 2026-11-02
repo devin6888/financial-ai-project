@@ -11,6 +11,8 @@ import org.bsc.langgraph4j.checkpoint.BaseCheckpointSaver;
 
 import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -39,6 +41,19 @@ import java.util.function.Function;
  * 发现引用问题时会沿回边重跑 {@code answer}，若中断点挂在 {@code answer} 上，每重试一次就再弹一次审批
  * （2026-10-29 真链路实测：复杂问题批了两次）。{@code approve} 只在 verify 通过后进入一次，重试不再经过它。
  *
+ * <p><b>两张图在实例内各缓存一份</b>（2026-11-02）：{@code StateGraph} 是"装配件"而不是"运行数据"——
+ * {@code CompiledGraph} 的五个字段（stateGraph / nodes / edges / processedData / compileConfig）全是
+ * {@code final}，构造完就不再改；每次运行的变量走 {@code RunnableConfig(threadId)} 与检查点 saver，
+ * 节点 lambda 也只从 state 里读身份。所以同一实例的图可以安全地被所有请求共享。
+ *
+ * <p>为什么要缓存：实测一次"建图 + 编译"是 0.1 ms、约 5 KB 临时对象，本身不慢，但三个理由让它值得缓存 ——
+ * ① 图定义写错会在<b>每个请求</b>里抛 500，而不是启动期炸；
+ * ② 原先有四处构建点（起、恢复、查状态、mermaid），谁也不知道哪张是"当前生效的"；
+ * ③ 以后给节点套耗时统计/指标，不必在每次请求里重建包装。
+ *
+ * <p>缓存是<b>实例级</b>而不是静态：测试会用 {@code FakeAnalysisNodes} + {@code MemorySaver} 另建实例，
+ * 静态缓存会把假节点带进生产。
+ *
  * <p>本类不含任何业务逻辑，节点行为全在 {@link AnalysisNodes}。
  */
 public final class AnalysisGraph {
@@ -59,9 +74,15 @@ public final class AnalysisGraph {
     private static final String START = StateGraph.START;
     private static final String END = StateGraph.END;
 
+    private static final Logger LOG = LoggerFactory.getLogger(AnalysisGraph.class);
+
     private final AnalysisNodes nodes;
     private final BaseCheckpointSaver saver;
     private final int recursionLimit;
+
+    /** 编译好的两张图（懒加载 + 双检锁）。{@code volatile} 是双检锁成立的前提。 */
+    private volatile CompiledGraph<AnalysisState> cachedFast;
+    private volatile CompiledGraph<AnalysisState> cachedHitl;
 
     /**
      * @param saver          检查点存储；{@code null} 表示不持久化（只能用于一次性测试）
@@ -73,17 +94,48 @@ public final class AnalysisGraph {
         this.recursionLimit = recursionLimit;
     }
 
-    /** 不中断的图：简单问题（或测试）用它。 */
+    /** 不中断的图：简单问题（或测试）用它。同一个实例只编译一次。 */
     public CompiledGraph<AnalysisState> fastGraph() {
-        return build(false);
+        CompiledGraph<AnalysisState> cached = cachedFast;
+        if (cached == null) {
+            synchronized (this) {
+                cached = cachedFast;
+                if (cached == null) {
+                    cached = build(false);
+                    cachedFast = cached;
+                }
+            }
+        }
+        return cached;
     }
 
-    /** 在 {@code approve} 前停住等人批的图（每次运行只停一次，ST11 §19）。 */
+    /** 在 {@code approve} 前停住等人批的图（每次运行只停一次，ST11 §19）。同一个实例只编译一次。 */
     public CompiledGraph<AnalysisState> hitlGraph() {
-        return build(true);
+        CompiledGraph<AnalysisState> cached = cachedHitl;
+        if (cached == null) {
+            synchronized (this) {
+                cached = cachedHitl;
+                if (cached == null) {
+                    cached = build(true);
+                    cachedHitl = cached;
+                }
+            }
+        }
+        return cached;
     }
 
-    /** Mermaid 文本（贴进文档/PR，代替 LangGraph4j Studio）。 */
+    /**
+     * 启动期预热：把两张图都编译一遍。
+     *
+     * <p>存在的意义不是"更快"，而是<b>把图定义的错误提前到启动</b>：少一条边、节点名拼错、条件边的目标不存在，
+     * 现在会在 Spring 建 bean 时就抛 {@code IllegalStateException}，而不是等第一个用户提问才 500。
+     */
+    public void warmUp() {
+        fastGraph();
+        hitlGraph();
+    }
+
+    /** Mermaid 文本（贴进文档/PR，代替 LangGraph4j Studio）。用缓存的那张，不额外编译。 */
     public String mermaid() {
         GraphRepresentation rep = fastGraph().getGraph(GraphRepresentation.Type.MERMAID, "AnalysisGraph");
         return rep.content();
@@ -209,7 +261,12 @@ public final class AnalysisGraph {
             config.interruptsBefore(Set.of(NODE_APPROVE));
         }
         try {
-            return graph.compile(config.build());
+            CompiledGraph<AnalysisState> compiled = graph.compile(config.build());
+            LOG.info("Agent 图已编译：{}（recursionLimit={}，interruptsBefore={}，检查点={}）",
+                    hitl ? "hitl" : "fast", recursionLimit,
+                    hitl ? NODE_APPROVE : "无",
+                    saver == null ? "无" : saver.getClass().getSimpleName());
+            return compiled;
         } catch (GraphStateException e) {
             throw new IllegalStateException("Agent 图编译失败：" + e.getMessage(), e);
         }

@@ -50,8 +50,16 @@ public class AgentGraphConfig {
         return builder.build();
     }
 
+    /**
+     * 图在这里建一次、并立刻预热两张（{@code fast} / {@code hitl}）。
+     *
+     * <p>预热的意义是<b>启动期校验</b>：图定义写错（少一条边、节点名拼错、条件边目标不存在）会在建 bean 时抛
+     * {@code IllegalStateException}，而不是等第一个用户提问才 500。编译一次约 0.1 ms，见图内注释。
+     */
     @Bean
     AnalysisGraph analysisGraph(AnalysisNodes nodes, BaseCheckpointSaver saver, AgentProperties props) {
-        return new AnalysisGraph(nodes, saver, props.recursionLimit());
+        AnalysisGraph graph = new AnalysisGraph(nodes, saver, props.recursionLimit());
+        graph.warmUp();
+        return graph;
     }
 }
