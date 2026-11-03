@@ -46,8 +46,10 @@ class DocumentScopeQueryTest {
     @BeforeEach
     void createFailedDocument() {
         failedId = jdbc.queryForObject("""
-                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status)
-                VALUES (1, 'ANNUAL', '作用域测试-解析失败', 'test/scope-failed.pdf', 'scope-query-failed', 'FAILED')
+                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status,
+                                      owner_user_id)
+                VALUES (1, 'ANNUAL', '作用域测试-解析失败', 'test/scope-failed.pdf', 'scope-query-failed', 'FAILED',
+                        (SELECT id FROM app_user WHERE username = 'demo'))
                 RETURNING id
                 """, Long.class);
     }

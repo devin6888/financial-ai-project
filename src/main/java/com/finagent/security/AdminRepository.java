@@ -1,5 +1,6 @@
 package com.finagent.security;
 
+import com.finagent.scope.DocumentAccessSql;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Repository;
@@ -19,40 +20,16 @@ import java.util.List;
  *
  * <p>为什么「某个用户能读哪些文档」要在这里算：``AclScopeAuthorizer`` 只知道"这一批 id 里
  * 哪些可读"，管理端要反过来问"这个人到底能读哪些"。两边共用同一套判定条件
- * （{@link #VISIBLE_TO_USER}），否则管理页显示的和检索时真正能读的会不一致 ——
+ * （{@link DocumentAccessSql}），否则管理页显示的和检索时真正能读的会不一致 ——
  * 那是权限系统最危险的一类 bug：管理员以为自己授过权了。
  */
 @Repository
 public class AdminRepository {
 
-    /**
-     * 一份文档对"某个用户"是否可读，与 {@code AclScopeAuthorizer#filterReadable} 逐条对应：
-     * 管理员全可见 / 私有文档看 owner / 其余看授权（TENANT 文档查 COMPANY 授权，其它查 DOCUMENT 授权），
-     * 授权主体可以是这个用户本人，也可以是他拥有的角色。
-     *
-     * <p>占位符顺序（三次）：管理员判定、owner 判定、主体 id（用户 id 或角色 id）。
-     * 角色版本把第三段换成 {@code g.subject_type = 'ROLE' AND g.subject_id = ?}。
-     */
-    private static final String VISIBLE_TO_USER = """
-            (
-              EXISTS (SELECT 1 FROM user_role ur0 JOIN role r0 ON r0.id = ur0.role_id
-                       WHERE ur0.user_id = %1$s AND r0.tenant_id = d.tenant_id AND r0.code = 'ADMIN')
-              OR (d.visibility = 'PRIVATE' AND d.owner_user_id = %1$s)
-              OR EXISTS (
-                   SELECT 1 FROM resource_grant g
-                    WHERE g.tenant_id = d.tenant_id
-                      AND g.resource_type = CASE d.visibility WHEN 'TENANT' THEN 'COMPANY' ELSE 'DOCUMENT' END
-                      AND g.resource_id = CASE d.visibility WHEN 'TENANT' THEN d.company_id ELSE d.id END
-                      AND g.permission IN ('READ', 'READ_WRITE')
-                      AND (g.expires_at IS NULL OR g.expires_at > now())
-                      AND (
-                           (g.subject_type = 'USER' AND g.subject_id = %1$s)
-                        OR (g.subject_type = 'ROLE' AND EXISTS (
-                             SELECT 1 FROM user_role ur WHERE ur.user_id = %1$s AND ur.role_id = g.subject_id))
-                      )
-              )
-            )
-            """;
+    // 「谁能读这份文档」的判定不在这里写第二份：统一用 {@link DocumentAccessSql}，
+    // 与检索期的 AclScopeAuthorizer 共用同一段 SQL。阶段 21 之前这段谓词被抄了四份，
+    // 每抄一次都可能悄悄漂移一次。
+
 
     private final JdbcTemplate jdbc;
 
@@ -84,7 +61,7 @@ public class AdminRepository {
                 """;
         long total = count("SELECT count(*) FROM app_user u" + where, args);
 
-        String visible = VISIBLE_TO_USER.formatted("u.id");
+        String visible = DocumentAccessSql.visibleTo("u.id");
         List<Object> pageArgs = new ArrayList<>(args);
         pageArgs.add(size);
         pageArgs.add(offset(page, size));
@@ -139,6 +116,24 @@ public class AdminRepository {
                 """, userId, tenantId, roleCodes.toArray(new String[0]));
     }
 
+    /**
+     * 除 this user 之外，这个租户里还有几个「活着的管理员」。
+     *
+     * <p>只数 ACTIVE 用户：把唯一的管理员停用掉，效果和删掉它的 ADMIN 角色一样 —— 谁都进不了管理页。
+     */
+    public int countOtherAdmins(long tenantId, long userId) {
+        Integer n = jdbc.queryForObject("""
+                SELECT count(DISTINCT u.id)
+                  FROM app_user u
+                  JOIN user_role ur ON ur.user_id = u.id
+                  JOIN role r ON r.id = ur.role_id
+                 WHERE u.tenant_id = ? AND u.status = 'ACTIVE'
+                   AND r.tenant_id = ? AND r.code = 'ADMIN'
+                   AND u.id <> ?
+                """, Integer.class, tenantId, tenantId, userId);
+        return n == null ? 0 : n;
+    }
+
     /** 一次性查出这些 code 里哪些在库里不存在 —— 用来把「拼错的角色」变成 400 而不是静默少授权。 */
     public List<String> unknownRoles(long tenantId, List<String> roleCodes) {
         if (roleCodes == null || roleCodes.isEmpty()) {
@@ -161,39 +156,30 @@ public class AdminRepository {
     /**
      * 某个用户能读的文档，带"为什么能读"。
      *
-     * <p>reason 四档：{@code ADMIN} 管理员全可见、{@code OWNER} 本人私有、
+     * <p>reason 四档：{@code ADMIN} 管理员全可见、{@code OWNER} 本人上传的、
      * {@code USER} 直接授给本人、{@code ROLE} 经角色授给他。
      */
     public Paged<DocumentAccess> documentsOfUser(long tenantId, long userId, int page, int size) {
         boolean admin = isAdmin(tenantId, userId);
-        List<Object> args = new ArrayList<>();
-        args.add(admin);
-        args.add(userId);
-        args.add(userId);
-        args.add(tenantId);
-        args.add(userId);
-        args.add(userId);
-        args.add(userId);
-        args.add(userId);
+        // 用户 id 直接用字面量拼进 SQL：它是 long（来自会话/路径变量，不是可写字符串），没有注入面；
+        // 换来的是同一条判定里要引用三四次时不会出现参数错位 —— 这里历史上就错过一次。
+        String uid = Long.toString(userId);
+        String visible = DocumentAccessSql.visibleTo(uid);
         long total = count("""
                 SELECT count(*) FROM document d
                  WHERE d.tenant_id = ?
                    AND %s
-                """.formatted(VISIBLE_TO_USER.formatted("?")), List.of(tenantId, userId, userId, userId, userId));
+                """.formatted(visible), List.of(tenantId));
 
-        List<Object> pageArgs = new ArrayList<>(args);
-        pageArgs.add(size);
-        pageArgs.add(offset(page, size));
         List<DocumentAccess> items = jdbc.query("""
-                SELECT d.id, d.title, d.doc_year, d.visibility,
+                SELECT d.id, d.title, d.doc_year,
                        CASE WHEN ? THEN 'ADMIN'
-                            WHEN d.visibility = 'PRIVATE' AND d.owner_user_id = ? THEN 'OWNER'
+                            WHEN d.owner_user_id = %s THEN 'OWNER'
                             WHEN EXISTS (
                                  SELECT 1 FROM resource_grant g
                                   WHERE g.tenant_id = d.tenant_id
-                                    AND g.subject_type = 'USER' AND g.subject_id = ?
-                                    AND g.resource_type = CASE d.visibility WHEN 'TENANT' THEN 'COMPANY' ELSE 'DOCUMENT' END
-                                    AND g.resource_id = CASE d.visibility WHEN 'TENANT' THEN d.company_id ELSE d.id END
+                                    AND g.subject_type = 'USER' AND g.subject_id = %s
+                                    AND g.resource_type = 'DOCUMENT' AND g.resource_id = d.id
                                     AND g.permission IN ('READ', 'READ_WRITE')
                                     AND (g.expires_at IS NULL OR g.expires_at > now())
                             ) THEN 'USER'
@@ -203,13 +189,12 @@ public class AdminRepository {
                    AND %s
                  ORDER BY d.doc_year DESC NULLS LAST, d.id DESC
                  LIMIT ? OFFSET ?
-                """.formatted(VISIBLE_TO_USER.formatted("?")), (rs, i) -> new DocumentAccess(
+                """.formatted(uid, uid, visible), (rs, i) -> new DocumentAccess(
                 rs.getLong("id"),
                 rs.getString("title"),
                 (Integer) rs.getObject("doc_year"),
-                rs.getString("visibility"),
                 rs.getString("reason")),
-                pageArgs.toArray());
+                admin, tenantId, size, offset(page, size));
         return new Paged<>(items, total, page, size);
     }
 
@@ -230,18 +215,11 @@ public class AdminRepository {
                        (SELECT count(*) FROM user_role ur WHERE ur.role_id = r.id) AS user_count,
                        (SELECT count(DISTINCT d.id) FROM document d
                          WHERE d.tenant_id = r.tenant_id
-                           AND (r.code = 'ADMIN' OR EXISTS (
-                                SELECT 1 FROM resource_grant g
-                                 WHERE g.tenant_id = d.tenant_id
-                                   AND g.subject_type = 'ROLE' AND g.subject_id = r.id
-                                   AND g.resource_type = CASE d.visibility WHEN 'TENANT' THEN 'COMPANY' ELSE 'DOCUMENT' END
-                                   AND g.resource_id = CASE d.visibility WHEN 'TENANT' THEN d.company_id ELSE d.id END
-                                   AND g.permission IN ('READ', 'READ_WRITE')
-                                   AND (g.expires_at IS NULL OR g.expires_at > now())))) AS doc_count
+                           AND (r.code = 'ADMIN' OR %s)) AS doc_count
                   FROM role r
                  WHERE r.tenant_id = ?
                  ORDER BY r.is_system DESC, r.code
-                """, (rs, i) -> new RoleRow(
+                """.formatted(DocumentAccessSql.readableByRole("r.id")), (rs, i) -> new RoleRow(
                 rs.getLong("id"),
                 rs.getString("code"),
                 rs.getString("name"),
@@ -338,7 +316,8 @@ public class AdminRepository {
      * 角色能读的文档。
      *
      * <p>ADMIN 角色没有授权记录也有全部文档 → 走另一条 SQL，并把 grant_id 置空、resource_type 记 ALL；
-     * 其它角色按授权展开：COMPANY 授权 → 该公司全部文档，DOCUMENT 授权 → 那一份。
+     * 其它角色按授权展开：一条文档级授权 → 那一份文档（阶段 21 起不再有公司级授权行，
+     * 「整家公司」在授权时已展开成逐份文档）。
      * 展开而不是只列授权记录，是因为管理员真正关心的是"能读到哪些"。
      */
     public Paged<RoleDoc> documentsOfRole(long tenantId, long roleId, int page, int size) {
@@ -361,19 +340,17 @@ public class AdminRepository {
             total = count("""
                     SELECT count(DISTINCT d.id)
                       FROM resource_grant g
-                      JOIN document d ON d.tenant_id = g.tenant_id
-                       AND ((g.resource_type = 'COMPANY' AND d.company_id = g.resource_id)
-                         OR (g.resource_type = 'DOCUMENT' AND d.id = g.resource_id))
-                     WHERE g.tenant_id = ? AND g.subject_type = 'ROLE' AND g.subject_id = ?
+                      JOIN document d ON d.tenant_id = g.tenant_id AND d.id = g.resource_id
+                     WHERE g.tenant_id = ? AND g.resource_type = 'DOCUMENT'
+                      AND g.subject_type = 'ROLE' AND g.subject_id = ?
                     """, List.of(tenantId, roleId));
             items = jdbc.query("""
                     SELECT g.id AS grant_id, d.id, d.title, d.doc_year,
                            g.resource_type, g.permission, g.created_at
                       FROM resource_grant g
-                      JOIN document d ON d.tenant_id = g.tenant_id
-                       AND ((g.resource_type = 'COMPANY' AND d.company_id = g.resource_id)
-                         OR (g.resource_type = 'DOCUMENT' AND d.id = g.resource_id))
-                     WHERE g.tenant_id = ? AND g.subject_type = 'ROLE' AND g.subject_id = ?
+                      JOIN document d ON d.tenant_id = g.tenant_id AND d.id = g.resource_id
+                     WHERE g.tenant_id = ? AND g.resource_type = 'DOCUMENT'
+                      AND g.subject_type = 'ROLE' AND g.subject_id = ?
                      ORDER BY d.doc_year DESC NULLS LAST, d.id DESC
                      LIMIT ? OFFSET ?
                     """, ROLE_DOC_MAPPER, tenantId, roleId, size, offset(page, size));
@@ -433,22 +410,42 @@ public class AdminRepository {
         return new Paged<>(items, total, page, size);
     }
 
-    public long createGrant(long tenantId, String subjectType, long subjectId, String resourceType,
-                            long resourceId, long grantedBy) {
-        return jdbc.queryForObject("""
-                INSERT INTO resource_grant (tenant_id, subject_type, subject_id, resource_type, resource_id,
-                                            permission, granted_by)
-                VALUES (?, ?, ?, ?, ?, 'READ', ?)
-                RETURNING id
-                """, Long.class, tenantId, subjectType, subjectId, resourceType, resourceId, grantedBy);
+    /**
+     * 批量建「文档级」授权，返回真正新建的条数（已存在的不算）。
+     *
+     * <p>{@code ON CONFLICT DO NOTHING} 依赖 V19 的唯一索引 {@code uq_grant_subject_resource}：
+     * 同一主体对同一份文档重复授权不会报错、也不会写第二行 —— 前端「保存」按钮可以放心按。
+     *
+     * <p>为什么循环 insert 而不是一条 {@code INSERT ... SELECT unnest(?)}：一份授权最多几百行，
+     * 循环版 SQL 好读、出错时能指出是哪一份；真要上量再换批量版也不迟。
+     */
+    @Transactional
+    public int createDocumentGrants(long tenantId, String subjectType, long subjectId,
+                                    List<Long> documentIds, long grantedBy) {
+        int created = 0;
+        for (Long documentId : documentIds) {
+            created += jdbc.update("""
+                    INSERT INTO resource_grant (tenant_id, subject_type, subject_id, resource_type, resource_id,
+                                                permission, granted_by)
+                    VALUES (?, ?, ?, 'DOCUMENT', ?, 'READ', ?)
+                    ON CONFLICT (tenant_id, subject_type, subject_id, resource_type, resource_id) DO NOTHING
+                    """, tenantId, subjectType, subjectId, documentId, grantedBy);
+        }
+        return created;
     }
 
-    /** 文档可见性：授权前要判断「单份授权是否真的生效」。 */
-    public String documentVisibility(long tenantId, long documentId) {
-        List<String> rows = jdbc.queryForList(
-                "SELECT visibility FROM document WHERE tenant_id = ? AND id = ?",
-                String.class, tenantId, documentId);
-        return rows.isEmpty() ? null : rows.get(0);
+    /**
+     * 某家上市公司在本租户下的全部文档 id —— 「整家公司授权」在落库前要展开成这些行。
+     *
+     * <p>快照语义：展开发生在授权那一刻，之后这家公司新上传的文档 <b>不会</b> 自动可读。
+     * 这是有意的：授权要有明确的边界与一次可审计的动作，而不是一条看不见的规则。
+     */
+    public List<Long> documentIdsOfCompany(long tenantId, long companyId) {
+        return jdbc.queryForList("""
+                SELECT id FROM document
+                 WHERE tenant_id = ? AND company_id = ?
+                 ORDER BY id
+                """, Long.class, tenantId, companyId);
     }
 
     public int deleteGrant(long tenantId, long grantId) {
@@ -469,7 +466,7 @@ public class AdminRepository {
                 """;
         long total = count("SELECT count(*) " + where, args);
         List<DocumentOption> items = jdbc.query("""
-                SELECT d.id, d.title, d.doc_year, d.visibility, d.company_id, c.name AS company_name
+                SELECT d.id, d.title, d.doc_year, d.company_id, c.name AS company_name
                 %s
                  ORDER BY d.doc_year DESC NULLS LAST, d.id DESC
                  LIMIT ? OFFSET ?
@@ -477,7 +474,6 @@ public class AdminRepository {
                 rs.getLong("id"),
                 rs.getString("title"),
                 (Integer) rs.getObject("doc_year"),
-                rs.getString("visibility"),
                 (Long) rs.getObject("company_id"),
                 rs.getString("company_name")),
                 tenantId, term, like, like, size, offset(page, size));
@@ -550,15 +546,14 @@ public class AdminRepository {
                            String permission, OffsetDateTime createdAt) {
     }
 
-    public record DocumentAccess(long documentId, String title, Integer docYear, String visibility, String reason) {
+    public record DocumentAccess(long documentId, String title, Integer docYear, String reason) {
     }
 
     public record RoleDoc(Long grantId, long documentId, String title, Integer docYear,
                           String resourceType, String permission, OffsetDateTime createdAt) {
     }
 
-    public record DocumentOption(long id, String title, Integer docYear, String visibility,
-                                Long companyId, String companyName) {
+    public record DocumentOption(long id, String title, Integer docYear, Long companyId, String companyName) {
     }
 
     public record Overview(long users, long roles, long documents, long grants) {

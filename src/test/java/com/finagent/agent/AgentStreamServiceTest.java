@@ -43,9 +43,6 @@ class AgentStreamServiceTest {
     private com.finagent.chat.ChatTraceWriter traceWriter;
 
     @Mock
-    private AmbiguityDetector ambiguity;
-
-    @Mock
     private com.finagent.memory.ConversationContextService conversationContexts;
 
     private AnswerStreamBridge bridge;
@@ -55,12 +52,8 @@ class AgentStreamServiceTest {
     @BeforeEach
     void setUp() {
         bridge = new AnswerStreamBridge();
-        // resume 用例不经过歧义判定 → 用 lenient，免得被 StrictStubs 判成多余桩
-        org.mockito.Mockito.lenient()
-                .when(ambiguity.detect(any(), anyString()))
-                .thenReturn(AmbiguityDetector.Decision.confident());
         service = new AgentStreamService(runs, bridge, conversations, memoryAssembler, turnRecorder,
-                traceWriter, ambiguity, conversationContexts);
+                traceWriter, conversationContexts);
     }
 
     private static AnalysisState state(Map<String, Object> extra) {
@@ -74,14 +67,14 @@ class AgentStreamServiceTest {
         return new AgentRunService.RunView(runId, status, "approve", "复杂问题",
                 List.of("理解问题", "拆成 2 个子问题"), null, null, null,
                 answer, List.of(), List.of(Map.of("chunkId", 101, "documentId", 7, "page", 61)),
-                List.of());
+                List.of(), Map.of("reasons", List.of("year_not_specified")));
     }
 
 
     private static AgentRunService.RunView rejectedView(UUID runId, List<String> warnings) {
         return new AgentRunService.RunView(runId, AgentRun.STATUS_REJECTED, "respond_insufficient", "复杂问题",
                 List.of("理解问题"), null, null, null,
-                "无法回答：知识库中没有当前账号可检索的文档。", warnings, List.of(), List.of());
+                "无法回答：知识库中没有当前账号可检索的文档。", warnings, List.of(), List.of(), Map.of());
     }
 
     @Test
@@ -134,9 +127,10 @@ class AgentStreamServiceTest {
     @DisplayName("恢复：answer → cite_check 两个 stage，delta 被转发，最后一条是 final")
     void resumeForwardsDeltasThenFinal() {
         UUID runId = UUID.randomUUID();
-        when(runs.resume(eq(runId), eq("APPROVE"), any(), any(AgentProgress.class)))
+        when(runs.resume(eq(runId), eq("APPROVE"), any(),
+                any(AgentRunService.ApprovalChoice.class), any(AgentProgress.class)))
                 .thenAnswer(inv -> {
-                    AgentProgress progress = inv.getArgument(3);
+                    AgentProgress progress = inv.getArgument(4);
                     bridge.delta(runId.toString(), "东方财富");
                     progress.onNode("answer", state(Map.of(AnalysisState.ANSWER, "东方财富")));
                     progress.onNode("cite_check", state(Map.of(AnalysisState.CITATION_COUNT, 4)));
@@ -146,7 +140,7 @@ class AgentStreamServiceTest {
                 });
         when(runs.view(runId)).thenReturn(view(runId, AgentRun.STATUS_DONE, "东方财富 答案"));
 
-        service.resumeStream(runId, "APPROVE", null, events::add);
+        service.resumeStream(runId, "APPROVE", null, AgentRunService.ApprovalChoice.none(), events::add);
 
         assertThat(events).extracting(ChatStreamEvent::event)
                 .containsExactly("delta", "stage", "stage", "delta", "final");

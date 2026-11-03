@@ -5,6 +5,7 @@ import com.finagent.security.TenantContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 
@@ -12,8 +13,11 @@ import java.util.List;
  * 真实的 ACL：判断「当前调用方能不能读这几份文档」。
  *
  * <p>为什么要有这一层（而 RLS 不够）：RLS 只按 <b>租户</b> 隔离，同一个租户内所有文档对所有同事都可见；
- * 而产品需要「公司级授权」（分析师只负责 300059）和「私有文档」（只有 owner 能看）。
- * 两层各管一件事：RLS 管跨租户，这里管租户内的可见性。
+ * 而产品需要「文档默认属于上传者，别人要读必须被显式授权」。两层各管一件事：
+ * RLS 管跨租户，这里管租户内的归属与授权。
+ *
+ * <p>判定口径集中在 {@link DocumentAccessSql}（管理端也用它，避免两套实现漂移）：
+ * <b>属主 OR 文档级授权（直接给用户 / 经角色）</b>，管理员在租户内显式全可见。
  *
  * <p>为什么查询里还要显式写 {@code d.tenant_id = ?}：CLI 与测试用表 owner 连接时 RLS 被绕过，
  * 只有显式条件才能让「owner 连接」和「运行时角色连接」得到同一个答案。
@@ -51,59 +55,25 @@ public class AclScopeAuthorizer implements ScopeAuthorizer {
             return jdbc.query(sql, (rs, i) -> rs.getLong(1), args.toArray());
         }
 
-        // 非管理员两条通路，缺一条就会出安全漏洞：
-        //   1) PRIVATE 文档只看 owner —— 公司级授权**不能**穿透到私有文档
-        //   2) 其余文档看授权：TENANT 文档查 COMPANY 授权，PRIVATE 之外的其它可见性查 DOCUMENT 授权
-        StringBuilder sql = new StringBuilder("""
+        // 非管理员：一条谓词解决属主 / USER 授权 / ROLE 授权三条路径（见 DocumentAccessSql）。
+        //
+        // 外面套 EXISTS(SELECT 1 FROM app_user u WHERE u.id = ?) 不是为了"验证用户存在"，
+        // 而是为了让当前用户 id 只占 **一个** 占位符：谓词里要引用它三次，
+        // 直接传 "?" 就得绑定三次同一个值，参数错位是这种拼接最常见的 bug。
+        String sql = """
                 SELECT d.id FROM document d
                  WHERE d.tenant_id = ?
                    AND d.id IN (%s)
-                   AND (
-                        (d.visibility = 'PRIVATE' AND d.owner_user_id = ?)
-                     OR EXISTS (
-                          SELECT 1 FROM resource_grant g
-                           WHERE g.tenant_id = d.tenant_id
-                             AND g.resource_type = CASE d.visibility
-                                                     WHEN 'TENANT' THEN 'COMPANY'
-                                                     ELSE 'DOCUMENT'
-                                                   END
-                             AND g.resource_id = CASE d.visibility
-                                                   WHEN 'TENANT' THEN d.company_id
-                                                   ELSE d.id
-                                                 END
-                             AND g.permission IN ('READ', 'READ_WRITE')
-                             AND (g.expires_at IS NULL OR g.expires_at > now())
-                             AND (
-                                  (g.subject_type = 'USER' AND g.subject_id = ?)
-                """.formatted(placeholders(ids.size())));
+                   AND EXISTS (SELECT 1 FROM app_user u WHERE u.id = ? AND %s)
+                """.formatted(placeholders(ids.size()), DocumentAccessSql.readableBy("u.id"));
         List<Object> args = new ArrayList<>();
         args.add(user.tenantId());
         args.addAll(ids);
-        args.add(user.userId());   // PRIVATE owner
-        args.add(user.userId());   // 直接授给这个用户
-
-        // 角色授权：CurrentUser 里是角色 code（ADMIN/ANALYST/VIEWER），而 resource_grant 存的是 role.id，
-        // 所以要用 user_role 把 code 换成 id —— 顺手也验证了「这个用户真的有这个角色」。
-        List<String> roleCodes = user.roles() == null ? List.of() : List.copyOf(user.roles());
-        if (!roleCodes.isEmpty()) {
-            sql.append("""
-                                  OR (g.subject_type = 'ROLE' AND EXISTS (
-                                       SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
-                                        WHERE ur.user_id = ? AND r.tenant_id = d.tenant_id
-                                          AND r.id = g.subject_id AND r.code IN (%s)))
-                    """.formatted(placeholders(roleCodes.size())));
-            args.add(user.userId());
-            args.addAll(roleCodes);
-        }
-        sql.append("""
-                             )
-                       )
-                   )
-                """);
-        return jdbc.query(sql.toString(), (rs, i) -> rs.getLong(1), args.toArray());
+        args.add(user.userId());
+        return jdbc.query(sql, (rs, i) -> rs.getLong(1), args.toArray());
     }
 
     private static String placeholders(int n) {
-        return String.join(", ", java.util.Collections.nCopies(n, "?"));
+        return String.join(", ", Collections.nCopies(n, "?"));
     }
 }

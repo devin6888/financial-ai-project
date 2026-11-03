@@ -24,6 +24,7 @@ Thumbs.db
 
 # Python 虚拟环境与缓存
 document-parser-service/.venv/
+mcp-market-server/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -34,3 +35,6 @@ src/main/resources/static/
 
 # 临时产物
 _tmp_*
+
+# 工具误把 %SystemDrive% 当路径拼出来时会建这个目录（2026-11-03 事故）
+%SystemDrive%/

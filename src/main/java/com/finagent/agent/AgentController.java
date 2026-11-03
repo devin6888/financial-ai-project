@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -50,9 +51,14 @@ public class AgentController {
     public SseEmitter resume(@PathVariable UUID id, @RequestBody(required = false) ResumeRequest request) {
         String decision = request == null ? null : request.decision();
         String note = request == null ? null : request.note();
+        AgentRunService.ApprovalChoice choice = request == null
+                ? AgentRunService.ApprovalChoice.none()
+                : new AgentRunService.ApprovalChoice(request.yearFrom(), request.yearTo(),
+                        request.companyCodes() == null ? List.of() : request.companyCodes());
         return sse.start(emitter -> {
             try {
-                streams.resumeStream(id, decision, note, event -> SseStreamTemplate.send(emitter, event));
+                streams.resumeStream(id, decision, note, choice,
+                        event -> SseStreamTemplate.send(emitter, event));
             } catch (AgentRunNotFoundException e) {
                 // 开流之前已经确认过认证，这里只剩「run 不存在 / 不是你的」：按 C11 一律 404 语义
                 SseStreamTemplate.send(emitter, ChatStreamEvent.error("AGENT_RUN_NOT_FOUND", "运行不存在"));
@@ -91,7 +97,16 @@ public class AgentController {
         return body;
     }
 
-    /** 审批请求体。 */
-    public record ResumeRequest(String decision, String note) {
+    /**
+     * 审批请求体。
+     *
+     * @param decision     APPROVE / EDIT / REJECT
+     * @param note         EDIT 的补充文本（会拼进检索式）、REJECT 的理由
+     * @param yearFrom     审批卡上点了某一年时带回来；null = 不改检索条件
+     * @param yearTo       区间右端（「只看某一年」时与 yearFrom 相同）
+     * @param companyCodes 点了某家公司时带回来；空 = 不改
+     */
+    public record ResumeRequest(String decision, String note, Integer yearFrom, Integer yearTo,
+                                List<String> companyCodes) {
     }
 }

@@ -2,6 +2,7 @@ package com.finagent.document;
 
 import com.finagent.ingest.IngestFlow;
 import com.finagent.ingest.IngestTracker;
+import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
 import com.finagent.storage.ObjectStorage;
 import com.finagent.task.DocumentTaskProducer;
@@ -87,10 +88,12 @@ public class DocumentUploadService {
         storage.put(sourceKey, pdf, "application/pdf");
 
         // 上传是 HTTP 请求：租户只有一个可信来源（Bearer token → 上下文）
-        long tenantId = TenantContext.require().tenantId();
+        CurrentUser me = TenantContext.require();
+        long tenantId = me.tenantId();
         long companyId = documents.upsertCompany(companyCode, companyName, market, tenantId);
+        // 属主 = 上传的人（阶段 21）：文档默认只有他自己 + 被授权的人能读
         long documentId = documents.upsertDocument(companyId, docType, docYear, title,
-                sourceKey, contentHash);
+                sourceKey, contentHash, me.userId());
         log.info("文档已登记 document_id={} hash={} sourceKey={}，投递 document.parse",
                 documentId, contentHash, sourceKey);
         // 入队即给 2%：用户上传后立刻看到「排队中」，而不是盯着 0% 猜有没有收到

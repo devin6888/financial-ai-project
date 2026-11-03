@@ -130,11 +130,12 @@ public class ConversationService {
         String traceId = response == null || response.trace() == null ? null : response.trace().traceId();
         String answer = response == null || response.answer() == null ? "" : response.answer();
 
+        // 用户消息没有「用时」；助手消息存服务端总耗时，历史回放才显示得出来
         repository.appendMessage(user.tenantId(), conversation.id(), ConversationMessage.ROLE_USER,
-                question, null, snapshot, traceId, TokenEstimator.estimate(question));
+                question, null, snapshot, traceId, TokenEstimator.estimate(question), null);
         long assistantId = repository.appendMessage(user.tenantId(), conversation.id(),
                 ConversationMessage.ROLE_ASSISTANT, answer, citations, snapshot, traceId,
-                TokenEstimator.estimate(answer));
+                TokenEstimator.estimate(answer), elapsedMs(response));
         repository.touch(conversation.id());
 
         if (DEFAULT_TITLE.equals(conversation.title())) {
@@ -143,6 +144,15 @@ public class ConversationService {
         log.info("会话 {} 记录一轮：问答 {} 字 / 答案 {} 字，trace={}",
                 conversation.id(), question.length(), answer.length(), traceId);
         return assistantId;
+    }
+
+    /** 服务端总耗时（毫秒）；没有 trace 时返回 null（前端按「没有就不显示」处理）。 */
+    static Integer elapsedMs(ChatResponse response) {
+        if (response == null || response.trace() == null) {
+            return null;
+        }
+        long ms = response.trace().totalMs();
+        return ms <= 0 ? null : (int) Math.min(Integer.MAX_VALUE, ms);
     }
 
     static String titleFrom(String question) {

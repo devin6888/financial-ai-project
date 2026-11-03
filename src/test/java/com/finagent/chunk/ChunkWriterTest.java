@@ -85,8 +85,9 @@ class ChunkWriterTest {
         String hash = "test-" + UUID.randomUUID();
         // tenant_id 是 NOT NULL（V9）：测试 profile 连 owner，不走 RLS，但约束照样生效
         jdbc.update("""
-                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status)
-                VALUES (1, 'ANNUAL', '切块测试文档', 'test/x.pdf', ?, 'DONE')
+                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status,
+                                      owner_user_id)
+                VALUES (1, 'ANNUAL', '切块测试文档', 'test/x.pdf', ?, 'DONE', (SELECT id FROM app_user WHERE username = 'demo'))
                 """, hash);
         documentId = jdbc.queryForObject(
                 "SELECT id FROM document WHERE tenant_id = 1 AND content_hash = ?", Long.class, hash);

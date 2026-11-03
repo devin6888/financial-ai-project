@@ -1,10 +1,10 @@
 spring:
   ai:
     openai:
-      # 假 Key：仅为让自动装配通过；测试中不做真实调用
-      # 若设置了环境变量 SPRING_AI_OPENAI_API_KEY，它会覆盖此值（环境变量优先级高于 yml），
-      # 此时 VectorStoreSmokeTest 中需要真实 API 的用例会自动启用
-      api-key: test-key-not-used
+      # 假 Key：仅为让自动装配通过；大部分测试不做真实调用。
+      # 写成占位符而不是字面量：有 .env / 环境变量时就用真的（那几条「真模型」用例才跑得起来），
+      # 没有时回落到这个明显是假的字符串，需要真 Key 的用例自己 assume 跳过。
+      api-key: ${SPRING_AI_OPENAI_API_KEY:test-key-not-used}
     vectorstore:
       pgvector:
         initialize-schema: true

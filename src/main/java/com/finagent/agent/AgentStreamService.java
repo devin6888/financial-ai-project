@@ -57,13 +57,11 @@ public class AgentStreamService {
     private final MemoryAssembler memoryAssembler;
     private final TurnRecorder turnRecorder;
     private final ChatTraceWriter traceWriter;
-    private final AmbiguityDetector ambiguity;
     private final ConversationContextService conversationContexts;
 
     public AgentStreamService(AgentRunService runs, AnswerStreamBridge bridge,
                               ConversationService conversations, MemoryAssembler memoryAssembler,
                               TurnRecorder turnRecorder, ChatTraceWriter traceWriter,
-                              AmbiguityDetector ambiguity,
                               ConversationContextService conversationContexts) {
         this.runs = runs;
         this.bridge = bridge;
@@ -71,7 +69,6 @@ public class AgentStreamService {
         this.memoryAssembler = memoryAssembler;
         this.turnRecorder = turnRecorder;
         this.traceWriter = traceWriter;
-        this.ambiguity = ambiguity;
         this.conversationContexts = conversationContexts;
     }
 
@@ -88,11 +85,6 @@ public class AgentStreamService {
         ChatScope scope = conversations.effectiveScope(request.scope(), conversation);
         MemoryContext memory = conversation == null ? MemoryContext.EMPTY : memoryAssembler.assembleMemory(conversation);
 
-        // 只有「不明确」才开人批图（ST14 P3）：interruptsBefore 是编译期配置，必须开跑前定
-        AmbiguityDetector.Decision decision = ambiguity.detect(scope, question);
-        if (decision.ambiguous()) {
-            log.info("本轮需要人工确认：{}（问题：{}）", decision.reasons(), question);
-        }
         UUID runId = runs.create(question, scope, conversation == null ? null : conversation.id());
         bridge.memory(runId.toString(), memory);
         bridge.turnContext(runId.toString(), turnContext(conversation, memory));
@@ -102,7 +94,8 @@ public class AgentStreamService {
                         scope,
                         conversation == null ? null : conversation.id(),
                         memory.text() == null ? "" : memory.text(),
-                        decision.ambiguous(),
+                        // 流式端点允许人批；到底停不停由 understand 判出的 approvalReasons 决定（阶段 22）
+                        true,
                         progress(sink)),
                 sink,
                 conversation,
@@ -151,11 +144,12 @@ public class AgentStreamService {
     /**
      * 审批后继续；runId 已存在，delta 直接绑。
      */
-    public void resumeStream(UUID runId, String decision, String note, ChatStreamSink sink) {
+    public void resumeStream(UUID runId, String decision, String note,
+                             AgentRunService.ApprovalChoice choice, ChatStreamSink sink) {
         Long conversationId = runs.conversationIdOf(runId);
         Conversation conversation = conversationId == null ? null : conversations.requireOwned(conversationId);
         String question = runs.questionOf(runId);
-        runWithDelta(runId, () -> runs.resume(runId, decision, note, progress(sink)),
+        runWithDelta(runId, () -> runs.resume(runId, decision, note, choice, progress(sink)),
                 sink, conversation, question);
     }
 
@@ -413,6 +407,8 @@ public class AgentStreamService {
         data.put("plan", view.plan());
         data.put("evidence", view.evidence());
         data.put("steps", view.steps());
+        // 阶段 22：审批卡要知道「为什么停 / 能点什么 / 系统理解成什么」
+        data.put("ambiguity", view.ambiguity() == null ? Map.of() : view.ambiguity());
         return data;
     }
 

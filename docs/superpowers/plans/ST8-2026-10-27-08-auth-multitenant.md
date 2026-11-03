@@ -98,6 +98,12 @@
 
 ### 2.5 文档可见性
 
+> **已废弃（阶段 21，2026-11-02）。** 本节描述的 `document.visibility` 两值模型已被删除：
+> 现在「能读 = 我是上传者，或者有人把这份文档授权给了我（直接给我 / 给我的某个角色）」，
+> `visibility` 列、公司级动态授权、两种授权互斥的规则全部不再存在。
+> 现行口径见 `docs/关键契约.md` 的 **C38** 与迁移 `V19__document_ownership_and_grants.sql`。
+> 下面这张表只作为历史记录保留。
+
 | `document.visibility` | 谁能读 |
 |---|---|
 | `TENANT`（默认） | 本租户内，对 `document.company_id` 或该文档本身有 `READ` 授权的用户；ADMIN 全部 |
@@ -1249,7 +1255,7 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=TenantIsolationE2ET
 | 2 | 设计 §15.4 写 `FORCE ROW LEVEL SECURITY` | 不 FORCE，改用「owner 迁移 + `finagent_app` 运行时」双角色 | FORCE 会连 Flyway 的数据迁移语句一起拦（迁移时没有租户上下文） |
 | 3 | 计划初稿打算「无上下文一律 0 行」 | 增加 `finagent.tenant.fallback-tenant-id`（默认 1，仅开发） | Kafka worker / CLI 没有 HTTP 上下文；没有兜底值，重切与任务消费会全部写不进去。生产必须关掉，C11 里标注 |
 | 4 | 设计 §15.4 的 4 类越权含「缓存穿透」「COS 直链」 | 改为「枚举最小化」+「响应无对象键」 | 项目无缓存、引用不带 URL，原用例在本项目没有攻击面；换成等价且可执行的断言 |
-| 5 | — | 待执行时补 | — |
+| 5 | §2.5 规定 `visibility` 两值，且「公司级授权」与「文档级授权」**互斥**（TENANT 文档不认单份授权） | 阶段 21 整段推翻：删除 `visibility` 列（V19），`resource_grant` 只存 DOCUMENT/SECTION，`COMPANY` 授权在写入前展开成逐份文档授权，判定收敛到 `DocumentAccessSql` 一处 | 互斥规则的直接后果是「想放开一份文档，只能放开整家公司」，且 `AdminController` 只能提前 400 拒绝单份授权——那条路径成了死代码。详见 `docs/关键契约.md` C38 |
 
 ---
 

@@ -51,14 +51,25 @@ public class DocumentRepository {
      * <p>注意会把 parse_status 重置为 PENDING 并清掉上一次的作业号 ——
      * 重解析是"替换"语义，不是"共存"（详见计划「追加变更 B」）。
      *
+     * <p>属主（阶段 21）：只有<b>新插入</b>时才写 owner，冲突分支一个字都不动。
+     * 理由是同 content_hash = 同一份文件，属主应当保留「第一个把它传进来的人」；
+     * 别人再传一次不该悄悄把文档从原作者那里拿走。此时仍然会重置解析状态 ——
+     * 也就是说任何人都能触发重解析，但不能因此获得读取权。
+     *
+     * <p>{@code ownerUserId} 允许为 null（CLI、解析服务、历史回灌调用没有登录用户）：
+     * 落库时回落到本租户最早的 ACTIVE 账号，保证 NOT NULL 成立且不出现"无主文档"。
+     *
+     * @param ownerUserId 上传者；null 表示调用方没有用户上下文
      * @return document id
      */
     public long upsertDocument(long companyId, String docType, Integer docYear, String title,
-                               String objectKey, String contentHash) {
+                               String objectKey, String contentHash, Long ownerUserId) {
         Long id = jdbc.queryForObject("""
                 INSERT INTO document (company_id, tenant_id, doc_type, doc_year, title, object_key,
-                                      content_hash, parse_status)
-                SELECT c.id, c.tenant_id, ?, ?, ?, ?, ?, 'PENDING'
+                                      content_hash, parse_status, owner_user_id)
+                SELECT c.id, c.tenant_id, ?, ?, ?, ?, ?, 'PENDING',
+                       COALESCE(?, (SELECT min(u.id) FROM app_user u
+                                     WHERE u.tenant_id = c.tenant_id AND u.status = 'ACTIVE'))
                   FROM company c
                  WHERE c.id = ?
                 ON CONFLICT (tenant_id, content_hash) DO UPDATE
@@ -68,7 +79,7 @@ public class DocumentRepository {
                         parse_job_id = NULL,
                         parse_error  = NULL
                 RETURNING id
-                """, Long.class, docType, docYear, title, objectKey, contentHash, companyId);
+                """, Long.class, docType, docYear, title, objectKey, contentHash, ownerUserId, companyId);
         return id == null ? -1L : id;
     }
 

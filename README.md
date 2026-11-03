@@ -7,9 +7,10 @@
 - 环境搭建手册：`docs/阶段1-环境搭建手册.md`
 - **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
 - 文档写作规范：`docs/文档写作规范.md`
+- **每轮问答请求了几次模型（含完整流程图）**：`docs/每轮问答的模型调用与流程图.md` —— LLM 只有 3 个调用点、每轮 1~2 次，另有向量化与精排按「车道」计
 - **主流程导读（代码看不懂就从这份开始）**：`docs/主流程导读.md` —— 一次提问从 HTTP 到答案的完整调用链、9 个节点、状态里每个键谁写谁读、LangGraph4j 到底只做了哪四件事
 
-**当前进度：阶段 20（技术债清理：检索 #1 #2 + 旧版本保留策略）、阶段 19（入库执行记录）、阶段 18（演示前的体验打磨）、阶段 17（答案版式：自适应章节 + 阅读层级）、阶段 16（答案质量：骨架 / 事实层 / 派生指标 / 结构化输出 / 复制为 Markdown）、阶段 15（多路检索的证据覆盖）、阶段 14（统一图引擎）、阶段 12（前端体验补强）已完成。** 全部计划的阶段（1~20）均已完成，没有「计划写好但没动手」的项。各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`、阶段 12 `docs/阶段12-体验补强报告.md`、阶段 13 `docs/阶段13-首屏时延报告.md`、阶段 11 `docs/阶段11-Agent工作流报告.md`、阶段 14 `docs/阶段14-统一图引擎报告.md`、阶段 15 `docs/阶段15-多路检索证据覆盖报告.md`、阶段 16 `docs/阶段16-答案质量报告.md`、阶段 17 `docs/阶段17-答案版式报告.md`。
+**当前进度：阶段 21（文档归属与授权：默认私有 + 文档级批量授权）、阶段 20（技术债清理：检索 #1 #2 + 旧版本保留策略）、阶段 19（入库执行记录）、阶段 18（演示前的体验打磨）、阶段 17（答案版式：自适应章节 + 阅读层级）、阶段 16（答案质量：骨架 / 事实层 / 派生指标 / 结构化输出 / 复制为 Markdown）、阶段 15（多路检索的证据覆盖）、阶段 14（统一图引擎）、阶段 12（前端体验补强）已完成。** 全部计划的阶段（1~20）均已完成，没有「计划写好但没动手」的项。各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`、阶段 12 `docs/阶段12-体验补强报告.md`、阶段 13 `docs/阶段13-首屏时延报告.md`、阶段 11 `docs/阶段11-Agent工作流报告.md`、阶段 14 `docs/阶段14-统一图引擎报告.md`、阶段 15 `docs/阶段15-多路检索证据覆盖报告.md`、阶段 16 `docs/阶段16-答案质量报告.md`、阶段 17 `docs/阶段17-答案版式报告.md`。
 
 ---
 
@@ -27,6 +28,16 @@ bash scripts/verify-db.sh     # 断言验证：6 项检查，全 PASS 才算通�
 mvn test                     # 集成测试
 ```
 
+### 时区（看库里时间对不上时先看这里）
+
+业务时间列**全部**是 `timestamp with time zone`（timestamptz），存的是「瞬间」，不是「墙上时间」。
+所以 `2026-11-02 13:44:15+00` 与 `2026-11-02 21:44:15+08` **是同一条记录**，只是会话时区不同。
+
+- 数据库默认会话时区已设为 `Asia/Shanghai`：`ALTER DATABASE finagent SET timezone = 'Asia/Shanghai';`（随数据卷持久化，不需要重建容器）。
+- `docker-compose.yml` 里也给 postgres 加了 `TZ` / `PGTZ`，让容器日志与 `initdb` 默认时区一致。
+- **已有的长连接不会自己变**：DBeaver 要断开重连，后端要重启（Hikari 池里的连接是启动时建的），否则看到的仍是 `+00`。
+- 前端不受影响：接口给的是带偏移量的 ISO 串（`…Z` 或 `…+08:00`），列表里的时间是 `new Date(...)` 按**浏览器**时区渲染的。
+
 Windows 下执行脚本用 Git Bash：
 
 ```powershell
@@ -35,7 +46,7 @@ Windows 下执行脚本用 Git Bash：
 
 ## 环境变量（凭据）
 
-凭据一律通过环境变量注入，**不写入仓库**。
+凭据通过环境变量注入（也可放在项目根目录的 `.env`，启动时自动读取，见下），**不写入仓库**。
 
 | 变量 | 必需 | 说明 |
 |---|---|---|
@@ -65,6 +76,31 @@ FINAGENT_COS_BUCKET=mybucket-1251234567
 FINAGENT_COS_KEY_PREFIX=dev/
 FINAGENT_RERANK_API_KEY=sk-xxxxxxxx
 ```
+
+### 在 IDEA 里直接点「运行」也能拿到 `.env`（阶段 20）
+
+`load-env.ps1` 只在 PowerShell 会话里生效；在 IDEA 里对 `FinAgentApplication` 点运行，不经过任何脚本，于是
+`spring.ai.openai.api-key` 为空，Spring AI 2.0 的 `OpenAiEmbeddingModel` 在装配阶段就会抛：
+
+```
+Failed to instantiate [org.springframework.ai.openai.OpenAiEmbeddingModel]:
+Factory method 'openAiEmbeddingModel' threw exception with message:
+At least one credential source must be specified: credential (apiKey), workloadIdentity, or adminApiKey
+```
+
+为了让「命令行能跑」和「IDE 能跑」一致，应用启动时会自己读项目根目录的 `.env`：
+`DotenvEnvironmentPostProcessor`（注册在 `src/main/resources/META-INF/spring.factories`）把它作为一个
+**优先级最低**的属性源加进 `Environment`。
+
+| 行为 | 说明 |
+|---|---|
+| 变量名写法 | `.env` 里写环境变量名（`SPRING_AI_OPENAI_API_KEY`），代码里照常读 `spring.ai.openai.api-key`，由 `SystemEnvironmentPropertySource` 做宽松转换 |
+| 优先级 | 真实环境变量 > `application.yml` / 命令行参数 > `.env`。CI 与容器注入的凭据不会被本地文件覆盖 |
+| 文件位置 | 先看 `-Dfinagent.dotenv.path=...`，再看工作目录，再退到上一级（IDE 有时以模块目录为工作目录） |
+| 没有文件 | 静默跳过，不影响生产部署 |
+| 启动日志 | 命中时打印「已从 `<绝对路径>` 加载 N 个变量（优先级最低…）」；若 `spring.ai.openai.api-key` 仍为空，额外 WARN 提示该去 `.env` 写哪个键。日志用 `DeferredLogFactory`，因为 EPP 跑在日志系统初始化之前，普通 `Logger` 打的内容会被丢弃 |
+
+安全提醒：`.env` 已在 `.gitignore` 中，不要把真实 Key 写进 `application.yml` 或提交到仓库。
 
 **缺少凭据时的行为**：应用仍可正常启动，相关测试**自动跳过**（不会失败）。
 
@@ -249,7 +285,7 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=DocumentTaskE2ETest
 |---|---|---|---|
 | ① 认证 | 有没有身份、token 是否有效 | 谁都能读 | **401** `AUTH_REQUIRED` / `AUTH_INVALID` |
 | ② 租户（数据库 RLS） | 跨租户读写（硬边界） | 跨客户数据泄漏 | 查不到任何行（不是报错，是空） |
-| ③ ACL（应用层） | 同租户内的公司级授权 / 私有文档 | 同事之间互相看到不该看的 | **409** `SCOPE_EMPTY`，或列表里少几份 |
+| ③ ACL（应用层） | 同租户内的「文档归属 + 文档级授权」（见「阶段 21」） | 同事之间互相看到不该看的 | **409** `SCOPE_EMPTY`，或列表里少几份 |
 
 ### 本地体验用的三个 token（V8 种子数据）
 
@@ -258,6 +294,10 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=DocumentTaskE2ETest
 | `dev-admin-token` | admin | ADMIN | 租户 1 的全部文档 |
 | `dev-analyst-token` | analyst | ANALYST | 只有 300059（东方财富）的两份年报 |
 | `dev-outsider-token` | outsider | VIEWER | 什么都没有（无任何授权）→ 409 |
+
+> 阶段 21 起**文档默认只有上传者自己能看**，「公司级可见」这个概念已经取消。
+> 上面 analyst 能看到两份年报，是因为 V19 把历史上那条「ANALYST → 公司 300059」的授权
+> 展开成了两行「ANALYST → 文档 7 / 38」。想再放开一份，就在管理页给它加一条文档级授权。
 
 ```powershell
 # 有权限：正常回答，带引用
@@ -395,9 +435,10 @@ mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ETest
 
 登录页默认填好这个账号，点「进入工作台」即可（密码由 V11 迁移用 PostgreSQL `pgcrypto` 的 bcrypt 存哈希，登录成功才签发会话 token）：
 
-| 账号 | 密码 | 角色 | 能看到 |
-| --- | --- | --- | --- |
-| `demo` | `demo123456` | ADMIN + ANALYST | 本租户全部文档（两份东方财富年报）、记忆、会话 |
+| 账号      | 密码 | 角色 | 能看到 |
+|---------| --- | --- | --- |
+| `admin` | `demo123456` | ADMIN | 本租户全部文档（两份东方财富年报）、记忆、会话 |
+| `demo`  | `demo123456` | ADMIN + ANALYST | 本租户全部文档（两份东方财富年报）、记忆、会话 |
 
 改密码 = 改库：`UPDATE app_user SET password_hash = crypt('新密码', gen_salt('bf', 10)) WHERE username = 'demo';`。
 登录接口与撤销机制见 `docs/关键契约.md`（C14）；想对比权限差异时，登录页切到「API token」仍可用三个 `dev-*` 种子 token。
@@ -574,7 +615,7 @@ node target\ui-agent-check.js 'C:/Program Files/Google/Chrome/Application/chrome
 
 - 深度分析轮次**不落** `conversation_message`（只在 `agent_run` / `agent_run_step` 留痕），刷新页面气泡就没了（数据仍在库里）。
 - agent 的证据不带 bbox，所以「原文」页签在这些轮次不可用。
-- 打开开关即人批（不区分问题类型），因为 `interruptsBefore` 是编译期配置。
+- 打开开关即人批（不区分问题类型），因为 `interruptsBefore` 是编译期配置。（阶段 22 已改成按状态决定，见文末「阶段 22」）
 
 ---
 
@@ -780,7 +821,8 @@ stage(understand) → stage(plan) → stage(retrieve) → stage(verify) → meta
 
 ### 14.4 什么时候还会弹「确认理解」
 
-只有**歧义**才弹，判定在图外、开跑前（`interruptsBefore` 是编译期配置）：
+只有**歧义**才弹。判定仍在开跑前做（纯规则、便宜），但结论不再用来「选图」，而是写进状态里的 `approvalAllowed`，
+由图在 `approve` 前自己决定停不停（阶段 22）：
 
 | 信号 | 例子 |
 | --- | --- |
@@ -980,7 +1022,12 @@ Task 3 把「一次查询」换成「一组车道（lane）」：每条车道是
 | --- | --- | --- |
 | 小标题 | 允许 `### 分行业`（最多 6 个），四段标签不变 | `AnswerText.vue` 渲染成 `h3` |
 | 表格 | 3 个以上并列数字**必须**用管道表格（≤6 列 × 12 行） | 渲染成 `<table>`，窄屏横向滚动，单元格里的 `[E1]` 仍可点 |
-| 复制 | — | `CopyAnswerButton.vue`：正文 + 文末「### 引用」附录 |
+| 复制 | — | `CopyAnswerButton.vue`：正文 + 「### 数值」表（来自 `response.facts`）+ 文末「### 引用」附录 |
+
+> **数值表不在答案正文里**。答案下方那张「数值」表是前端用 `response.facts` 单独渲染的
+> （后端抽出、逐条与原文核对过的事实，含 Java 算出的派生指标），所以早期「复制为 Markdown」只带走正文与引用、
+> 表就丢了。2026-11-03 修：`buildCopyText` 现在把去重后的数值表也渲染成 markdown（去重规则与页面共用 `utils/facts.ts`，
+> 页面几行、复制就几行），排在正文与引用附录之间。
 
 渲染器仍是**自写**、零新增依赖（计划 4.2 有七维对照）：`answer.ts` 只产出数据结构，Vue 渲染成文本节点，
 结构上不可能 XSS；`v-html` 会让 chip 的点击失效，还得再套一层 DOMPurify。什么时候该换成 `markdown-it`，
@@ -1163,7 +1210,7 @@ Docling 单次转换 190.5 秒，切块 + 嵌入 8 秒。
 **为什么能共享**：`CompiledGraph` 的五个字段全 `final`（`stateGraph` / `nodes` / `edges` / `processedData` / `compileConfig`），
 `javap -c` 全文扫这五个字段的 `putfield` 只出现 5 次、全在构造器里；每次运行的变量走 `RunnableConfig(threadId)` + 检查点 saver。
 
-**改法**：`AnalysisGraph` 加两个 `volatile` 字段 + 双检锁，`fastGraph()` / `hitlGraph()` 各只编一次；
+**改法**：`AnalysisGraph` 加两个 `volatile` 字段 + 双检锁，`fastGraph()` / `hitlGraph()` 各只编一次（阶段 22 又合并成**一张**，见文末）；
 `AgentGraphConfig` 建 bean 时调 `warmUp()` —— 图定义写错（少边、节点名错、条件边指向不存在的节点）会在**启动期**抛错，而不是每个请求 500。
 缓存**必须实例级不能 static**：测试用 `FakeAnalysisNodes` + `MemorySaver` 另建实例，静态缓存会把假节点带进生产。
 
@@ -1171,3 +1218,125 @@ Docling 单次转换 190.5 秒，切块 + 嵌入 8 秒。
 全绿；真链路 1 次问答 + 3 次状态轮询，编译日志**始终 = 2 条**（改前这四个动作会编 4~6 张）。
 
 > 四条「该改但不是为了更快」的理由写在计划 §8.5：失去启动期 fail-fast、四处构建点会漂移、读一次状态也要编译整张图、将来加埋点无处落脚。
+
+---
+
+## 阶段 21：文档归属与授权（默认私有 / 多主体批量授权）
+
+起因是一句很朴素的质疑：**「为什么文档默认全公司都能看？」** 旧模型里 `document.visibility` 只有两个值，
+`TENANT`（公司级可见）或 `PRIVATE`（仅属主），而且两种授权**互斥** —— TENANT 文档只认「公司级授权」，
+单份文档授权对它完全无效，接口只能提前拒掉这类请求。结果就是：想放开一份文档，必须放开整家公司。
+
+### 21.1 新口径（一句话 + 一段 SQL）
+
+> **能读 = 我是这份文档的上传者，或者有人把这份文档授权给了我（直接给我，或给我的某个角色）。**
+
+判定只写在 `scope/DocumentAccessSql.java` 一处，三个调用点共用（检索期 `AclScopeAuthorizer`、
+管理页「某人能读哪些」、角色卡片的可见文档数）。旧代码把这段谓词抄了四份，任何一份漂移都会出现
+「列表看不到、但引用读得到」。
+
+### 21.2 改了什么
+
+| 层 | 改动 | 关键点 |
+| --- | --- | --- |
+| 数据库 | `V19__document_ownership_and_grants.sql` | 回填属主 + `owner_user_id` 设 NOT NULL；把 `COMPANY` 授权**展开**成逐份 `DOCUMENT` 行；去重后建唯一索引 `uq_grant_subject_resource`；`DROP COLUMN visibility` |
+| 上传 | `DocumentRepository.upsertDocument(..., ownerUserId)` | 属主 = 当前登录用户；CLI / 解析服务传 `null` 时回落到本租户最早的 ACTIVE 账号；同一份 PDF 被第二个人重传**不改属主** |
+| 授权接口 | `POST /api/admin/grants` 支持批量 | `subjects ≤ 50`、请求资源 `≤ 200`、展开后文档 `≤ 500`；`resourceType=COMPANY` 只作请求侧写法；返回 `{created, skipped, subjects, documents}`；重复授权幂等 |
+| 前端 | 授权弹窗改多选 | 勾多份文档 + 可选「整家公司」+ 可同时授给多个角色；不再有「可见性」列 |
+
+### 21.3 快照语义：这是设计，不是缺陷
+
+「按整家公司授权」在落库前就展开成当时那 N 份文档的授权行。**之后这家公司新上传的文档不会自动可读。**
+代价是「新文档要再授一次」，收益是每一条可读性都能对应到一行可删的授权记录 —— 审计时能回答
+「谁在什么时候被授过这份文档」，而不是反推「按当时的公司归属他应该能看」。
+
+### 21.4 验收
+
+- 迁移后库内实测：`resource_grant` 由 3 行变 4 行（原有 ADMIN→文档 7 去重保留，新增 ADMIN→38、ANALYST→7、ANALYST→38），`visibility` 列已不存在，`owner_user_id` NOT NULL；
+- `AclScopeAuthorizerTest` 12 例（含「同公司新文档不会因旧授权自动可读」这条反例）、`ScopeResolverAclTest` 5 例、`AdminAccessDbTest` 9 例、`AdminControllerTest` 28 例、`DocumentUploadServiceTest` 5 例全绿；
+- analyst 仍能读 7 / 38（历史上那条公司级授权展开后语义不变），outsider 仍 409；
+- 契约写在 `docs/关键契约.md` 的 **C38**（含「为什么不做动态生效」的三条理由）；完整实测、四个坑与未决问题见 `docs/阶段21-文档归属与授权报告.md`。
+
+---
+
+## 阶段 22：一张图 + 运行时审批闸门（2026-11-03）
+
+起因是用户的一句质问：**「我就问了个『【数值】表格是不是程序拼的』，和检索无关，为什么弹审批卡？而且我看不懂要我确认什么。」**
+
+查下来两个问题叠在一起：
+
+1. 审批触发条件只看作用域：**作用域里有两份年报（2024、2025）+ 问题里没写 4 位年份** → 一律弹（`AmbiguityDetector`）。
+   它不判断「这是不是文档问题」。
+2. 卡片文案写死了「确认后才会检索并生成」，但审批点在 `approve`，位于 `retrieve → verify` **之后** ——
+   检索早跑完了。也就是说，点「通过」根本不会改变检索，这句承诺是假的。
+
+第 2 条是结构问题：要让「确认理解」名副其实，断点必须前移到检索之前。而当时用的是 `interruptsBefore`，
+它是**编译期**配置，只能编两份图（`fastGraph` / `hitlGraph`）按请求选 —— 想按状态动态停，只能换机制。
+
+### 22.1 机制：`InterruptibleAction`（库自带，不是自己造的）
+
+LangGraph4j 1.9.7 里，节点动作若同时实现 `AsyncNodeActionWithConfig` 与 `InterruptibleAction`，
+库会在调用 `apply` **之前**先问 `interrupt(nodeId, state, config)`：返回非空就静停（`apply` 一次都不执行），
+返回空就照常执行。库自己的 `AgentEx\$ApprovalNodeAction` 就是这套写法。
+
+实测（最小图 `a → approve → b`，`MemorySaver`，2026-11-03）：
+
+| 场景 | 结果 | 计数 |
+| --- | --- | --- |
+| 需要审批 | 停在 `nextNodeId=approve` | `interruptCalls=1, applyCalls=0` |
+| 恢复 | 重新进入该节点 → `interrupt()` 返回空 → `apply` → `b` → `END` | `interruptCalls=2, applyCalls=1` |
+| 不需要审批 | 一次跑通 | `interruptCalls=3`（累计） |
+
+### 22.2 这次只做了「合并成一张图」，审批卡没动
+
+| 改动 | 之前 | 现在 |
+| --- | --- | --- |
+| 图 | `fastGraph()` / `hitlGraph()` 两份编译产物 | 唯一 `graph()`，实例内只编一次 |
+| 停不停 | 编译期 `interruptsBefore("approve")` | 运行时读状态：`approvalAllowed && decision 为空` |
+| `approve` 节点 | `node(state -> Map.of())` 透传 | `ApprovalGate`（同时实现两个接口） |
+| 调用方 | `execute(..., hitl)` 选图 | 同一个参数改名 `approvalAllowed`，只写进状态 |
+
+### 22.3 必须记住的坑：恢复时会**重新进入**同一个节点
+
+上表第二行：`interruptCalls` 从 1 变 2。也就是说，用户点「通过」后，图会再进一次 `approve`、再问一次
+`interrupt()`。所以判断里必须带「已经决定过就不停」（`!state.decision().isBlank()`）——
+漏掉这半句，点「通过」后会再停一次，永远出不来。
+
+### 22.4 验收
+
+- 非 db 全量 **879 通过 / 0 失败 / 4 跳过**；db 组 **194 通过 / 0 失败 / 3 跳过**；`ChatStreamE2ETest` 1/1（45.4 s，含一次真实人批往返）；
+- 新增 `ApprovalGateTest` 4 例（不停 / 停 + 原因 / 批过不再停 / apply 透传）；
+- `AnalysisGraphTest` 14 例全绿（原来 `fastGraph`/`hitlGraph` 全部改走 `graph()`，人批用例改成种 `approvalAllowed`）；
+- 契约：C17 §17.2 与 C36 已改写；`docs/主流程导读.md` 与 `docs/技术资料/LangGraph4j-工作机制.md` §7.5 已同步。
+
+### 22.5 B 部分：审批卡变成「真的能纠正」（2026-11-03 下午）
+
+A 部分只把两张图合成一张，卡片还是老的：**没告诉人「为什么停」，也没有任何可点的东西**，
+「按意见修改」只是把一句话塞进 `decisionNote`，检索条件一个字都没变。
+
+这一批把三件事一起做完：
+
+| 问题 | 现在的做法 |
+| --- | --- |
+| 为什么停 | `understand` 用 `AmbiguityDetector.reasons` 判「作用域里多个年份/公司而问题没点名」，写进 `APPROVAL_REASONS`；闸门读同一份，没歧义就不停 |
+| 要我确认什么 | 卡片显示 `understood`：检索范围、年份、公司、识别到的指标；说不清的维度用中文 chip 标出来（「没说看哪一年」） |
+| 我能改成什么 | 年份/公司候选可点（「2024 年报（1 份）」「两份都看」），点完再点「按这个继续」 |
+| 用户想补一句话 | 文本框非空时按钮变「按补充继续」→ EDIT：文本拼进检索式并抽出年份 |
+| 问题根本不是问年报 | `OffTopicDetector` 三条同时成立才判：无指标/公司/年份 + 无文档词 + 有对话/界面用词 → 直接答能力边界，不检索不弹卡 |
+
+**关键的结构调整**：审批点从「verify 之后」前移到「plan 之后」。这是让候选真正生效的前提 ——
+选了「只看 2024 年」，恢复后接着跑的就是检索，新条件立刻生效；如果闸门还在检索之后，
+选什么都不可能改变已经查回来的证据。
+
+**为什么 EDIT 不重跑 QU**：QU 是一次 3~4 秒的模型调用，而补充文本（"只看 2024 年的总营收"）
+里的年份用一条正则就能拿到，指标词本来就在检索式里。代价是「补充文本里换了指标」不会改写
+`metrics` 状态，只影响向量/全文检索的文本 —— 这一点写进了 C17 §17.5，不装作它是完整重理解。
+
+**验收**（2026-11-03）：
+- 后端：`ApprovalGateTest` 5 例（含「没歧义不停」）、`OffTopicDetectorTest` 5 例、`ApprovalPatchTest` 4 例、
+  `AnalysisGraphTest` 14 例改按新顺序断言、`AgentHitlDbTest` / `AgentStreamE2ETest` 的步骤与时序同步；
+- 前端：`ApprovalCard.spec.ts` 6 例（候选点击 → `yearFrom/yearTo`、补一句话 → EDIT、两份都看 → 空条件、驳回必填、busy 禁用、无 ambiguity 不崩）；
+- 契约：C17 §17.2 的图与时序、§17.5 的载荷与三种纠正。
+
+**仍未做**：计划列表折叠（现在最多 5 行，先不折）、枚举换中文（`queryType` 仍是 `FACT_LOOKUP` 这种码，
+卡片上只展示用户关心的四项）。

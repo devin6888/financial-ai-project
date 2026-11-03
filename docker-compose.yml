@@ -7,6 +7,10 @@ services:
       POSTGRES_DB: finagent
       POSTGRES_USER: finagent
       POSTGRES_PASSWORD: finagent
+      # 容器与数据库会话统一用本地时区：timestamptz 存的是「瞬间」，显示时按会话时区换算。
+      # 不设的话镜像默认 Etc/UTC，psql / DBeaver 里看到的永远是 UTC 时间（比本地早 8 小时）。
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     ports:
       - "5432:5432"
     volumes:

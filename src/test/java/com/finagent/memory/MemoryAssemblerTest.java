@@ -56,9 +56,9 @@ class MemoryAssemblerTest {
         ShortTermMemory shortTerm = mock(ShortTermMemory.class);
         when(shortTerm.load(7L, 0L)).thenReturn(new ShortTermMemory.Window(List.of(
                 new ConversationMessage(1L, 7L, ConversationMessage.ROLE_USER, "第一个问题",
-                        null, "{}", "t", 5, OffsetDateTime.now()),
+                        null, "{}", "t", 5, null, OffsetDateTime.now()),
                 new ConversationMessage(2L, 7L, ConversationMessage.ROLE_ASSISTANT, "第一个回答",
-                        null, "{}", "t", 6, OffsetDateTime.now())), 11, 2));
+                        null, "{}", "t", 6, null, OffsetDateTime.now())), 11, 2));
         MemoryAssembler assembler = new MemoryAssembler(shortTerm, contextRepository, summaryRepository, renderer, props(true));
 
         MemoryContext memory = assembler.assembleMemory(conversation(7L));

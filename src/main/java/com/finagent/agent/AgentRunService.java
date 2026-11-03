@@ -1,6 +1,7 @@
 package com.finagent.agent;
 
 import com.finagent.scope.ChatScope;
+import com.finagent.scope.ScopeKind;
 import com.finagent.security.CurrentUser;
 import com.finagent.security.TenantContext;
 import org.bsc.langgraph4j.CompiledGraph;
@@ -22,7 +23,7 @@ import java.util.UUID;
  * Agent 运行的编排：落库 → 跑图 → 每步留痕 → 终态 → （可选）停下等人批 → 恢复。
  *
  * <p>本类不含业务判断：路线由 plan 节点的条件边决定，证据够不够由 verify 决定，
- * 要不要人批由调用方传进来的 hitl 决定（= queryType 是 COMPLEX_ANALYSIS 且 props.hitl()）。
+ * 要不要人批由调用方种进状态的 {@link AnalysisState#APPROVAL_ALLOWED} 决定（阶段 22 起不再是「换一张图」）。
  * 它只做四件事：发 runId、把每个 NodeOutput 记成一步、把终态写回 agent_run、把结果交出去。
  *
  * <p>中断不抛异常（spike 断言 7 被推翻的那条）：流自然结束，靠 getState(cfg).nextNodeId()
@@ -44,7 +45,7 @@ public class AgentRunService {
         this.props = props;
     }
 
-    /** 不需要人批的运行（等价于 hitl = false）。 */
+    /** 不需要人批的运行（approvalAllowed = false）。 */
     public Result run(String question, ChatScope scope, Long conversationId, String memoryText) {
         return run(question, scope, conversationId, memoryText, false);
     }
@@ -52,12 +53,13 @@ public class AgentRunService {
     /**
      * 跑一次 Agent。
      *
-     * @param hitl       是否在 answer 前停下等人批（用 hitlGraph()）
-     * @param memoryText 已渲染的记忆段（可空）；由调用方（ChatService）先装配好，节点不查记忆表
+     * @param approvalAllowed 是否允许在 {@code approve} 前停下等人批（写进状态，由 {@code ApprovalGate} 读）
+     * @param memoryText      已渲染的记忆段（可空）；由调用方先装配好，节点不查记忆表
      */
-    public Result run(String question, ChatScope scope, Long conversationId, String memoryText, boolean hitl) {
+    public Result run(String question, ChatScope scope, Long conversationId, String memoryText,
+                      boolean approvalAllowed) {
         return execute(create(question, scope, conversationId), question, scope, conversationId,
-                memoryText, hitl, AgentProgress.NONE);
+                memoryText, approvalAllowed, AgentProgress.NONE);
     }
 
     /**
@@ -74,10 +76,10 @@ public class AgentRunService {
     }
 
     /** 跑一次已经建好的 run；{@code progress} 在每节点完成后回调（给 SSE 的 stage）。
-     * @param hitl 是否需要等真人审批
+     * @param approvalAllowed 是否允许在 {@code approve} 前停下等人批（写进状态）
      */
     public Result execute(UUID runId, String question, ChatScope scope, Long conversationId,
-                          String memoryText, boolean hitl, AgentProgress progress) {
+                          String memoryText, boolean approvalAllowed, AgentProgress progress) {
         requireOwned(runId);
         CurrentUser user = TenantContext.require();
 
@@ -92,12 +94,14 @@ public class AgentRunService {
         init.put(AnalysisState.USER_ID, actor.userId());
         init.put(AnalysisState.USERNAME, actor.username() == null ? "" : actor.username());
         init.put(AnalysisState.ROLES, new java.util.ArrayList<>(actor.roles() == null ? java.util.Set.of() : actor.roles()));
+        // 人批不是一个布尔参数，而是这次运行的状态：图是同一张，停不停由 ApprovalGate 在 approve 前读它
+        init.put(AnalysisState.APPROVAL_ALLOWED, approvalAllowed);
 
-        //🗝️主流程： 构建 langGraph图
-        CompletedGraph picked = hitl ? hitl() : fast();
+        //🗝️主流程： 取图（唯一一张，实例内编译一次）
+        CompiledGraph<AnalysisState> picked = graph.graph();
 
         //🗝️主流程：开始执行LLM
-        Execution execution = executeStream(picked.compiled(), GraphInput.args(init), config(runId),
+        Execution execution = executeStream(picked, GraphInput.args(init), config(runId),
                 user, runId, 1, progress);
         return settle(execution, user, runId);
     }
@@ -114,6 +118,20 @@ public class AgentRunService {
 
     /** 同 {@link #resume(UUID, String, String)}，额外回调节点进度（恢复时也会推 stage）。 */
     public Result resume(UUID runId, String decision, String note, AgentProgress progress) {
+        return resume(runId, decision, note, ApprovalChoice.none(), progress);
+    }
+
+    /**
+     * 带「人工选项」的恢复（阶段 22）：审批卡上点了「2024 年报」或选了公司，就把它当作检索条件写进状态。
+     *
+     * <p>之所以能直接生效：{@code approve} 现在位于 {@code retrieve} <b>之前</b>，恢复后接着跑的就是检索，
+     * 改过的年份/公司会立刻体现在车道与过滤条件里（{@code ScopeMapper.toQuery} / {@code RetrievalLanes} 都读状态）。
+     *
+     * <p>EDIT 的补充文本**不重新跑 QU**（那要再来一次 4 秒的模型调用）：它被拼进 {@code rewrittenQuery}，
+     * 并顺手用正则把里面的年份抽出来。指标词的抽取留给检索本身（全文都在检索式里）。
+     */
+    public Result resume(UUID runId, String decision, String note, ApprovalChoice choice,
+                         AgentProgress progress) {
         // P4 起没有「未启用」这条路径：图是唯一引擎，resume 也必须在默认配置下可用
         // （否则聊天流弹的确认卡点「通过」会直接 500）
         CurrentUser user = TenantContext.require();
@@ -150,12 +168,79 @@ public class AgentRunService {
         runs.appendStep(runId, user.tenantId(), seq++, NODE_APPROVAL, AgentRunStep.STATUS_OK,
                 (trimmed.isEmpty() ? label : label + shorten(trimmed, 40)), 0);
 
-        Map<String, Object> patch = new LinkedHashMap<>();
-        patch.put(AnalysisState.DECISION, normalized);
-        patch.put(AnalysisState.DECISION_NOTE, trimmed);
-        Execution execution = executeStream(hitl().compiled(), GraphInput.resume(patch), config(runId),
+        Map<String, Object> patch = approvalPatch(stateOf(runId), normalized, trimmed, choice);
+        Execution execution = executeStream(graph.graph(), GraphInput.resume(patch), config(runId),
                 user, runId, seq, progress);
         return settle(execution, user, runId);
+    }
+
+    /**
+     * 审批卡上可点的选项（阶段 22）。
+     *
+     * @param yearFrom     选中的年份；null = 不改
+     * @param yearTo       区间右端（「只看某一年」时与 yearFrom 相同）
+     * @param companyCodes 选中的公司代码；空 = 不改
+     */
+    public record ApprovalChoice(Integer yearFrom, Integer yearTo, List<String> companyCodes) {
+
+        public static ApprovalChoice none() {
+            return new ApprovalChoice(null, null, List.of());
+        }
+    }
+
+    private static final java.util.regex.Pattern YEAR_IN_NOTE =
+            java.util.regex.Pattern.compile("(?:19|20)\\d{2}");
+
+    /**
+     * 把「人工决定 + 人工选项」变成状态补丁。
+     *
+     * <p>选项直接写 `YEAR_FROM/YEAR_TO` 或把作用域收窄到 `FILTER(companyCodes)`：
+     * 恢复后接着跑的是 `retrieve`，它通过 `ScopeMapper.toQuery` 与 `ScopeMapper.toScope` 读这些键，
+     * 所以「换成 2024 年」「只看某家公司」不需要重跑 QU，也不需要重新装配整张图。
+     */
+    static Map<String, Object> approvalPatch(AnalysisState before, String decision, String note,
+                                             ApprovalChoice choice) {
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put(AnalysisState.DECISION, decision);
+        patch.put(AnalysisState.DECISION_NOTE, note == null ? "" : note);
+        List<String> picked = new ArrayList<>();     // 计划里留一行：人看得到「按什么改的」
+        ApprovalChoice pick = choice == null ? ApprovalChoice.none() : choice;
+        if (pick.yearFrom() != null) {
+            int from = pick.yearFrom();
+            int to = pick.yearTo() == null ? from : pick.yearTo();
+            patch.put(AnalysisState.YEAR_FROM, from);
+            patch.put(AnalysisState.YEAR_TO, to);
+            picked.add(from == to ? from + " 年" : from + "–" + to + " 年");
+        }
+        if (pick.companyCodes() != null && !pick.companyCodes().isEmpty()) {
+            patch.put(AnalysisState.SCOPE_KIND, ScopeKind.FILTER.name());
+            patch.put(AnalysisState.SCOPE_COMPANY_CODES, pick.companyCodes());
+            patch.put(AnalysisState.SCOPE_YEARS, before == null ? List.of() : before.scopeYears());
+            patch.put(AnalysisState.SCOPE_DOC_TYPES, before == null ? List.of() : before.scopeDocTypes());
+            picked.add("公司 " + String.join("、", pick.companyCodes()));
+        }
+        // EDIT：补充文本拼进检索式，不重跑 QU（那要再来一次 4 秒的模型调用）
+        if (AgentRun.DECISION_EDIT.equals(decision) && note != null && !note.isBlank()) {
+            String base = before == null ? ""
+                    : (before.rewrittenQuery().isBlank() ? before.question() : before.rewrittenQuery());
+            patch.put(AnalysisState.REWRITTEN_QUERY, (base + " " + note.strip()).strip());
+            picked.add("补充：" + shorten(note.strip(), 40));
+            if (pick.yearFrom() == null) {
+                java.util.regex.Matcher m = YEAR_IN_NOTE.matcher(note);
+                if (m.find()) {
+                    int year = Integer.parseInt(m.group());
+                    patch.put(AnalysisState.YEAR_FROM, year);
+                    patch.put(AnalysisState.YEAR_TO, year);
+                    picked.add("识别出 " + year + " 年");
+                }
+            }
+        }
+        if (!picked.isEmpty()) {
+            patch.put(AnalysisState.PLAN, List.of("人工指定：" + String.join("；", picked)));
+            // 已经确认过：即使前端重复 resume，也不能再弹一次
+            patch.put(AnalysisState.APPROVAL_REASONS, List.of());
+        }
+        return patch;
     }
 
     public AgentRun requireOwned(UUID runId) {
@@ -181,17 +266,6 @@ public class AgentRunService {
     }
 
     // ------------------------------------------------------------------ 内部
-
-    private record CompletedGraph(CompiledGraph<AnalysisState> compiled) {
-    }
-
-    private CompletedGraph fast() {
-        return new CompletedGraph(graph.fastGraph());
-    }
-
-    private CompletedGraph hitl() {
-        return new CompletedGraph(graph.hitlGraph());
-    }
 
     private static RunnableConfig config(UUID runId) {
         return RunnableConfig.builder().threadId(runId.toString()).build();
@@ -343,7 +417,7 @@ public class AgentRunService {
 
     private AnalysisState stateOf(UUID runId) {
         try {
-            StateSnapshot<AnalysisState> snapshot = graph.hitlGraph().getState(config(runId));
+            StateSnapshot<AnalysisState> snapshot = graph.graph().getState(config(runId));
             return snapshot == null ? null : snapshot.state();
         } catch (RuntimeException e) {
             return null;
@@ -361,7 +435,33 @@ public class AgentRunService {
                 state == null ? "" : state.answer(),
                 state == null ? List.of() : state.warnings(),
                 state == null ? List.of() : evidence(state),
-                runs.steps(runId, user.tenantId()));
+                runs.steps(runId, user.tenantId()),
+                ambiguity(state));
+    }
+
+    /**
+     * 审批卡要的三块信息（阶段 22）：为什么停（reasons）、能点什么（candidates）、系统当前理解成什么（understood）。
+     *
+     * <p>为什么要进视图而不是让前端自己拼：候选来自作用域里真实的文档年份/公司，前端只有标题算不出来；
+     * 「理解成什么」是 QU 的结果，只存在于图状态里。
+     */
+    private static Map<String, Object> ambiguity(AnalysisState state) {
+        if (state == null) {
+            return Map.of();
+        }
+        Map<String, Object> understood = new LinkedHashMap<>();
+        understood.put("queryType", state.queryType());
+        understood.put("companyCodes", state.companyCodes());
+        understood.put("metrics", state.metrics());
+        understood.put("yearFrom", state.yearFrom() == null ? 0 : state.yearFrom());
+        understood.put("yearTo", state.yearTo() == null ? 0 : state.yearTo());
+        understood.put("scopeYears", state.scopeYears());
+        understood.put("answerShapes", state.answerShapes());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reasons", state.approvalReasons());
+        out.put("candidates", state.approvalCandidates());
+        out.put("understood", understood);
+        return out;
     }
 
     /** 已经拿到的证据（给审批卡看「它依据什么」）；最多 8 条，避免 plan_json 那么大的响应。 */
@@ -433,6 +533,7 @@ public class AgentRunService {
     public record RunView(UUID runId, String status, String currentNode, String question,
                           List<String> plan, String decision, String decisionNote, String error,
                           String answer, List<String> warnings,
-                          List<Map<String, Object>> evidence, List<AgentRunStep> steps) {
+                          List<Map<String, Object>> evidence, List<AgentRunStep> steps,
+                          Map<String, Object> ambiguity) {
     }
 }

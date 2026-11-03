@@ -44,6 +44,30 @@ public class AnalysisState extends AgentState {
     public static final String CITE_ATTEMPTS = "citeAttempts";
     public static final String DECISION = "decision";
     public static final String DECISION_NOTE = "decisionNote";
+    /**
+     * 本次运行<b>允许</b>在 {@code approve} 前停下来等人批（阶段 22）。
+     *
+     * <p>由调用方在开跑前种进状态：流式端点按歧义判定给 true/false，同步 {@code /api/chat} 恒 false
+     * （它没有通道把审批交出去，停下来就永远收不了尾）。
+     *
+     * <p>为什么是状态而不是编译期配置：{@code interruptsBefore} 只能按图开关，两档就得多编一张图；
+     * {@code ApprovalGate} 实现 {@code InterruptibleAction}，在运行时按状态决定停不停，一张图就够。
+     */
+    public static final String APPROVAL_ALLOWED = "approvalAllowed";
+
+    /**
+     * understand 判出的「问题没说清什么」原因码（@{code year_not_specified} / {@code company_not_specified}），
+     * 空表示不需要人批。{@link ApprovalGate} 只在它非空时才停（阶段 22）。
+     */
+    public static final String APPROVAL_REASONS = "approvalReasons";
+
+    /**
+     * 审批卡上可点的候选（{@code List<Map>}：kind=YEAR/COMPANY/ALL_YEARS、value、label）。
+     *
+     * <p>为什么候选要进状态而不是前端自己算：候选来自作用域里真实存在的文档年份/公司，
+     * 前端只有一堆 title，算不出「2024 年报 / 2025 年报」这种带口径的选项。
+     */
+    public static final String APPROVAL_CANDIDATES = "approvalCandidates";
     public static final String STATUS = "status";
     public static final String SCOPE_KIND = "scopeKind";
     public static final String SCOPE_DOCUMENT_IDS = "scopeDocumentIds";
@@ -125,6 +149,9 @@ public class AnalysisState extends AgentState {
             Map.entry(CITE_ATTEMPTS, Channels.base((Integer oldV, Integer newV) -> oldV + newV, () -> 0)),
             Map.entry(DECISION, Channels.base(() -> "")),
             Map.entry(DECISION_NOTE, Channels.base(() -> "")),
+            Map.entry(APPROVAL_ALLOWED, Channels.base(() -> Boolean.FALSE)),
+            Map.entry(APPROVAL_REASONS, Channels.<List<String>>base(() -> List.of())),
+            Map.entry(APPROVAL_CANDIDATES, Channels.<List<Map<String, Object>>>base(() -> List.of())),
             Map.entry(STATUS, Channels.base(() -> "RUNNING")),
             Map.entry(SCOPE_KIND, Channels.base(() -> "CORPUS")),
             Map.entry(SCOPE_DOCUMENT_IDS, Channels.<List<Long>>base(() -> List.of())),
@@ -243,6 +270,21 @@ public class AnalysisState extends AgentState {
 
     public String decision() {
         return this.value(DECISION, "");
+    }
+
+    /** 这次运行是否允许停等人批；没种过就是 false（老测试、同步接口都走这条路）。 */
+    public boolean approvalAllowed() {
+        return this.value(APPROVAL_ALLOWED, Boolean.FALSE);
+    }
+
+    /** understand 判出的歧义原因码；空 = 不需要人批。 */
+    public List<String> approvalReasons() {
+        return this.value(APPROVAL_REASONS, List.of());
+    }
+
+    /** 审批卡上的候选（年份 / 公司 / 全选）。 */
+    public List<Map<String, Object>> approvalCandidates() {
+        return this.value(APPROVAL_CANDIDATES, List.of());
     }
 
     public String decisionNote() {

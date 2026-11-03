@@ -3,10 +3,13 @@ package com.finagent.embedding;
 import com.finagent.chunk.model.Chunk;
 import com.finagent.chunk.model.ChunkLevel;
 import com.finagent.chunk.model.ChunkType;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -36,6 +39,21 @@ class EmbeddingTextRoundTripTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private EmbeddingService embeddingService;
+    @Value("${spring.ai.openai.api-key:}")
+    private String apiKey;
+
+    /**
+     * 这条用例必须打真实嵌入接口（要重新算一次向量）。
+     *
+     * <p>没有真 Key 时（clean clone、CI、没配 .env）跳过而不是失败 —— 跳过是「环境不具备」，
+     * 失败会让人以为代码坏了。注意不能用 @EnabledIfEnvironmentVariable：.env 是应用内加载的，
+     * JVM 的系统环境变量里并不存在那个名字。
+     */
+    @BeforeEach
+    void requireRealKey() {
+        Assumptions.assumeTrue(apiKey != null && apiKey.startsWith("sk-"),
+                "未配置真实嵌入 Key（spring.ai.openai.api-key），跳过真模型用例");
+    }
 
     @Test
     void storedVectorEqualsEmbeddingOfReconstructedText() {

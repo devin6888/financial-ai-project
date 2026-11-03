@@ -160,7 +160,8 @@ public class ConversationController {
     }
 
     private MessageView messageView(ConversationMessage m) {
-        return new MessageView(m.id(), m.role(), m.content(), citations(m.citationsJson()), m.createdAt());
+        return new MessageView(m.id(), m.role(), m.content(), citations(m.citationsJson()),
+                m.elapsedMs(), m.createdAt());
     }
 
     private JsonNode citations(String json) {
@@ -178,8 +179,9 @@ public class ConversationController {
     public record ConversationView(long conversationId, String title, String status, ChatScope scope,
                                    OffsetDateTime createdAt, OffsetDateTime updatedAt) { }
 
+    /** elapsedMs 只有助手消息可能有；老会话是 null（阶段 23 之前没有这一列）。 */
     public record MessageView(long messageId, String role, String content, JsonNode citations,
-                              OffsetDateTime createdAt) { }
+                              Integer elapsedMs, OffsetDateTime createdAt) { }
 
     public record MessagesPage(long conversationId, List<MessageView> messages, Long nextBeforeId) { }
 

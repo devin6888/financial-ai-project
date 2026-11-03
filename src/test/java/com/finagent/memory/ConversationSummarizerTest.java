@@ -135,7 +135,7 @@ class ConversationSummarizerTest {
         return java.util.stream.LongStream.range(from, from + count)
                 .mapToObj(i -> new ConversationMessage(i, 1L,
                         i % 2 == 0 ? ConversationMessage.ROLE_ASSISTANT : ConversationMessage.ROLE_USER,
-                        "消息" + i, null, "{}", "t", 10, OffsetDateTime.now()))
+                        "消息" + i, null, "{}", "t", 10, null, OffsetDateTime.now()))
                 .toList();
     }
 

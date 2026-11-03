@@ -32,7 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  * 两条道的差值就是「QU 值不值得多花一次 LLM 调用」的直接证据（Task 7 的输入）。
  *
- * <p>不在这里断言门槛：门槛统一放 {@link EvalGateTest}，避免「跑一次评测改一处阈值」。
+ * <p>不在这里断言门槛：门槛统一放 {@link ZzEvalGateTest}（类名 Zz 是为了排在评测之后，见该类注释），
+ * 避免「跑一次评测改一处阈值」。
  */
 @SpringBootTest
 @ActiveProfiles("test")

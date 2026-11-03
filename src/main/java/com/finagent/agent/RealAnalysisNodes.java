@@ -181,6 +181,7 @@ public class RealAnalysisNodes implements AnalysisNodes {
         List<String> plan = new ArrayList<>();
         plan.add("理解问题：" + shorten(state.question(), 40));
 
+        // 走ACL校验用户的文档访问权限
         ResolvedScope scope;
         try {
             scope = scopes.resolve(ScopeMapper.toScope(state));
@@ -195,6 +196,25 @@ public class RealAnalysisNodes implements AnalysisNodes {
         }
         plan.add("检索范围：" + scope.size() + " 份文档");
         bridge.scope(runId, scope);
+
+        // 不是问年报的问题（问系统、问界面、寒暄）：直接说明能力边界，不进检索、也不弹审批（阶段 22）
+        if (OffTopicDetector.isOffTopic(state.question(), qu.metrics(), qu.companyMentions(), qu.yearRange())) {
+            plan.add("不是年报问题 → 说明能力边界");
+            patch.put(AnalysisState.REFUSE_REASON, OffTopicDetector.reason());
+            patch.put(AnalysisState.WARNINGS, List.of("off_topic"));
+            patch.put(AnalysisState.PLAN, plan);
+            return patch;
+        }
+
+        // 人批要问什么：作用域里有多个年份/公司，而问题没点名（纯规则，不调模型）。
+        // 这里算而不是开跑前算，因为「几家公司/几年」要解析作用域，而 understand 已经解析好了
+        List<String> approvalReasons = AmbiguityDetector.reasons(scope.documents(), state.question());
+        if (!approvalReasons.isEmpty()) {
+            patch.put(AnalysisState.APPROVAL_REASONS, approvalReasons);
+            patch.put(AnalysisState.APPROVAL_CANDIDATES,
+                    AmbiguityDetector.candidates(scope.documents()));
+            plan.add("问题没说清（" + String.join(" / ", approvalReasons) + "）→ 先请人确认");
+        }
 
         CompanyResolver.Resolution company = CompanyResolver.resolve(qu.companyCodes(), qu.companyMentions(), scope);
         if (company.hasMatch()) {
@@ -277,6 +297,7 @@ public class RealAnalysisNodes implements AnalysisNodes {
 
     /** 规则拆解（不调模型，见 ST11 §13.3）：复杂问题才拆，按连接词切句。 */
     private List<String> decompose(AnalysisState state) {
+        // 这里的queryType 是由上一步 QU 中LLM 分析出来的结果
         if (!QueryType.COMPLEX_ANALYSIS.name().equals(state.queryType())) {
             return List.of();
         }
@@ -341,9 +362,9 @@ public class RealAnalysisNodes implements AnalysisNodes {
             // 跨年问题每年单独一路，归因/结构问题再加一路「第三节」
             List<RetrievalLane> lanes = new ArrayList<>(RetrievalLanes.plan(
                     state.question(), qu.normalizedQuery(), state.subQuestions(), shapesOf(state),
-                    new int[]{state.yearFrom() == null ? 0 : state.yearFrom(),
-                            state.yearTo() == null ? 0 : state.yearTo()},
-                    new LinkedHashSet<>(scope.docYears()), warnings));
+                    new int[]{state.yearFrom() == null ? 0 : state.yearFrom(), state.yearTo() == null ? 0 : state.yearTo()},
+                    new LinkedHashSet<>(scope.docYears()), warnings)
+            );
 
             List<Map<String, Object>> hits = new ArrayList<>();
             Map<Long, Integer> posById = new LinkedHashMap<>();
@@ -704,11 +725,16 @@ public class RealAnalysisNodes implements AnalysisNodes {
 
     @Override
     public Map<String, Object> respondInsufficient(AnalysisState state) {
-        String answer = state.refuseReason().isBlank()
-                ? "证据不足：检索到的内容里没有能支撑这个问题的信息。"
-                : "无法回答：" + state.refuseReason() + "。";
+        boolean offTopic = state.refuseReason().startsWith(OffTopicDetector.REASON_PREFIX);
+        String answer = offTopic
+                ? state.refuseReason()
+                : state.refuseReason().isBlank()
+                        ? "证据不足：检索到的内容里没有能支撑这个问题的信息。"
+                        : "无法回答：" + state.refuseReason() + "。";
         String warning;
-        if (state.warnings().contains("scope_empty")) {
+        if (offTopic) {
+            warning = "off_topic";
+        } else if (state.warnings().contains("scope_empty")) {
             warning = "scope_empty";
         } else if (!state.refuseReason().isBlank() && state.refuseReason().contains("公司")) {
             // 主体越界与「证据不够」是两回事：前者永远重试不出结果，后者换检索式还有机会

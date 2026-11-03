@@ -1,6 +1,6 @@
 {
-  "version": "2026-10-22",
-  "builtBy": "SQL: document_chunk content LIKE '%value%' AND status='ACTIVE' AND chunk_level='CHILD'（2026-10-26 重映射：848→5712、1146→6010，因 TableRenderer 修好表格表头后这两块内容变了；评测时按 embedding_text_hash 解析到当前 ACTIVE 版本，见 EvidenceResolver）",
+  "version": "2026-11-03",
+  "builtBy": "SQL: document_chunk content LIKE '%value%' AND status='ACTIVE' AND chunk_level='CHILD'（2026-10-26 重映射：848→5712、1146→6010；2026-11-03 重定基线：文档 7 的旧版本被重索引+保留策略清理后原 id 已不存在，按期望数值在 v14 ACTIVE 块里重新定位，Q15/Q16 按『关键审计事项』章节定位）",
   "items": [
     {
       "id": "Q01",
@@ -168,11 +168,11 @@
         "16,067,741,039.51"
       ],
       "evidenceChunkIds": [
-        818,
-        5712,
-        1109,
-        1133,
-        1516
+        28225,
+        28255,
+        28516,
+        28540,
+        28923
       ],
       "expectRefusal": false,
       "note": "2025年报「主要会计数据」表"
@@ -194,11 +194,11 @@
         "12,084,594,947.22"
       ],
       "evidenceChunkIds": [
-        818,
-        1134,
-        6010,
-        1374,
-        1405
+        28225,
+        28541,
+        28553,
+        28781,
+        28812
       ],
       "expectRefusal": false,
       "note": "同上"
@@ -220,9 +220,9 @@
         "0.7650"
       ],
       "evidenceChunkIds": [
-        818,
-        1136,
-        1551
+        28225,
+        28543,
+        28958
       ],
       "expectRefusal": false,
       "note": "同上"
@@ -244,9 +244,9 @@
         "392,933,744,976.20"
       ],
       "evidenceChunkIds": [
-        818,
-        1126,
-        1128
+        28225,
+        28533,
+        28535
       ],
       "expectRefusal": false,
       "note": "同上"
@@ -268,8 +268,8 @@
         "14.03%"
       ],
       "evidenceChunkIds": [
-        818,
-        1551
+        28225,
+        28958
       ],
       "expectRefusal": false,
       "note": "同上"
@@ -291,10 +291,10 @@
         "-10,222,245,645.14"
       ],
       "evidenceChunkIds": [
-        818,
-        863,
-        1140,
-        1406
+        28225,
+        28270,
+        28547,
+        28813
       ],
       "expectRefusal": false,
       "note": "同上"
@@ -316,7 +316,8 @@
         "1,973"
       ],
       "evidenceChunkIds": [
-        860
+        28267,
+        28327
       ],
       "expectRefusal": false,
       "note": "2025年报 研发人员情况表（1,973 人）"
@@ -338,7 +339,8 @@
         "922,605,814.85"
       ],
       "evidenceChunkIds": [
-        852
+        28259,
+        28260
       ],
       "expectRefusal": false,
       "note": "2025年报 前五名客户表"
@@ -358,8 +360,8 @@
       ],
       "expectedValues": [],
       "evidenceChunkIds": [
-        1107,
-        1112
+        28514,
+        28515
       ],
       "expectRefusal": false,
       "note": "2025年报 审计报告 关键审计事项"
@@ -379,7 +381,8 @@
       ],
       "expectedValues": [],
       "evidenceChunkIds": [
-        1108
+        28514,
+        28517
       ],
       "expectRefusal": false,
       "note": "2025年报 商誉减值 关键审计事项"
@@ -444,16 +447,16 @@
         "16,067,741,039.51"
       ],
       "evidenceChunkIds": [
-        818,
-        5712,
-        1109,
-        1133,
-        1516,
         1627,
         1657,
         1919,
         1946,
-        2298
+        2298,
+        28225,
+        28255,
+        28540,
+        28516,
+        28923
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"
@@ -478,16 +481,16 @@
         "12,084,594,947.22"
       ],
       "evidenceChunkIds": [
-        818,
-        1134,
-        6010,
-        1374,
-        1405,
         1627,
         1947,
         1958,
         2159,
-        2187
+        2187,
+        28225,
+        28541,
+        28556,
+        28781,
+        28812
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"
@@ -512,14 +515,14 @@
         "-10,222,245,645.14"
       ],
       "evidenceChunkIds": [
-        818,
-        863,
-        1140,
-        1406,
         1627,
         1670,
         1953,
-        2188
+        2188,
+        28225,
+        28270,
+        28547,
+        28813
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"
@@ -544,12 +547,12 @@
         "0.7650"
       ],
       "evidenceChunkIds": [
-        818,
-        1136,
-        1551,
         1627,
         1949,
-        2336
+        2336,
+        28225,
+        28543,
+        28958
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"
@@ -574,12 +577,12 @@
         "392,933,744,976.20"
       ],
       "evidenceChunkIds": [
-        818,
-        1126,
-        1128,
         1627,
         1940,
-        1942
+        1942,
+        28225,
+        28533,
+        28535
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"
@@ -604,11 +607,11 @@
         "14.03%"
       ],
       "evidenceChunkIds": [
-        818,
-        1551,
         1627,
         2264,
-        2336
+        2336,
+        28225,
+        28958
       ],
       "expectRefusal": false,
       "note": "两份报告都要被引用"

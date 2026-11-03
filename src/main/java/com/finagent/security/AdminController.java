@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +51,10 @@ public class AdminController {
     private static final Set<String> STATUSES = Set.of("ACTIVE", "DISABLED");
     private static final Set<String> SUBJECT_TYPES = Set.of("ROLE", "USER");
     private static final Set<String> RESOURCE_TYPES = Set.of("DOCUMENT", "COMPANY");
+    /** 批量授权的三道闸：主体数、请求里的资源数、展开成文档后的总数。 */
+    private static final int MAX_SUBJECTS = 50;
+    private static final int MAX_RESOURCES = 200;
+    private static final int MAX_EXPANDED = 500;
 
     private final AdminRepository admin;
 
@@ -138,6 +143,16 @@ public class AdminController {
             List<String> unknown = admin.unknownRoles(me.tenantId(), body.roles());
             if (!unknown.isEmpty()) {
                 return bad("角色不存在：" + String.join(", ", unknown));
+            }
+        }
+        // 角色是「整体替换」语义（先 DELETE 再 INSERT），所以少勾一个就等于移除。
+        // 管理员把自己从 ADMIN 里勾掉 → 下一次请求立刻 403，连改回来的入口都没有。
+        if (body.roles() != null && !body.roles().contains("ADMIN") && admin.isAdmin(me.tenantId(), id)) {
+            if (id == me.userId()) {
+                return bad("不能移除自己的 ADMIN 角色：保存后你会立刻失去管理页权限");
+            }
+            if (admin.countOtherAdmins(me.tenantId(), id) < 1) {
+                return bad("这个租户至少要保留一个管理员，否则没人能再进管理页");
             }
         }
         admin.updateProfile(me.tenantId(), id, trimToNull(body.displayName()), body.status());
@@ -271,43 +286,119 @@ public class AdminController {
         return ResponseEntity.ok(admin.searchDocuments(me.tenantId(), q, pageOf(page), sizeOf(size)));
     }
 
-    record CreateGrant(String subjectType, Long subjectId, String resourceType, Long resourceId) {
+    /**
+     * 批量授权请求。
+     *
+     * <p>同时接受「列表」和「单值」两种写法：{@code subjectIds} 优先，为空时回落到 {@code subjectId}。
+     * 单值写法不删 —— README 里的 curl 示例、运维脚本、老前端都还在用，删了就是一次无声的破坏。
+     *
+     * <p>{@code resourceType=COMPANY} 只是「整家公司」的便捷写法，落库前会展开成该公司当前的全部文档
+     * （见 {@code documentIdsOfCompany}）；请求里给的 id 在企业维度上是公司 id，在文档维度上是文档 id。
+     */
+    record CreateGrant(String subjectType, Long subjectId, String resourceType, Long resourceId,
+                       List<Long> subjectIds, List<Long> resourceIds) {
     }
 
+    /**
+     * 建授权：一次可写「多个主体 × 多份文档」。
+     *
+     * <p>为什么要把 COMPANY 展开成文档行（阶段 21 的口径）：判定只有一句「属主或文档级授权」，
+     * 没有任何「因为它是这家公司的文档所以你看得见」的隐藏规则。代价是快照语义 ——
+     * 授权之后这家公司新上传的文档不会自动可读，想放开就再授一次。
+     */
     @PostMapping("/grants")
     public ResponseEntity<?> createGrant(@RequestBody(required = false) CreateGrant body) {
         CurrentUser me = requireAdmin();
-        if (body == null || body.subjectId() == null || body.resourceId() == null) {
-            return bad("subjectId 与 resourceId 必填");
+        if (body == null) {
+            return bad("请求体必填");
         }
         String subjectType = body.subjectType() == null ? "ROLE" : body.subjectType();
-        String resourceType = body.resourceType() == null ? "DOCUMENT" : body.resourceType();
         if (!SUBJECT_TYPES.contains(subjectType)) {
             return bad("subjectType 只能是 ROLE 或 USER");
         }
+        String resourceType = body.resourceType() == null ? "DOCUMENT" : body.resourceType();
         if (!RESOURCE_TYPES.contains(resourceType)) {
             return bad("resourceType 只能是 DOCUMENT 或 COMPANY");
         }
-        boolean subjectOk = "ROLE".equals(subjectType)
-                ? admin.roleExists(me.tenantId(), body.subjectId())
-                : admin.userExists(me.tenantId(), body.subjectId());
-        if (!subjectOk) {
-            return bad("授权对象不存在：" + subjectType + " " + body.subjectId());
+        List<Long> subjects = idsOf(body.subjectIds(), body.subjectId());
+        if (subjects.isEmpty()) {
+            return bad("subjectIds 必填");
         }
-        boolean resourceOk = "DOCUMENT".equals(resourceType)
-                ? admin.documentExists(me.tenantId(), body.resourceId())
-                : admin.companyExists(me.tenantId(), body.resourceId());
-        if (!resourceOk) {
-            return bad("授权资源不存在：" + resourceType + " " + body.resourceId());
+        if (subjects.size() > MAX_SUBJECTS) {
+            return bad("一次最多给 " + MAX_SUBJECTS + " 个主体授权，当前 " + subjects.size() + " 个");
         }
-        // 全租户可见（TENANT）的文档只认「整家公司」授权：AclScopeAuthorizer 对 TENANT 文档
-        // 只查 resource_type='COMPANY'，给出 DOCUMENT 授权不会让它变得可读，属于静默无效，必须拒掉。
-        if ("DOCUMENT".equals(resourceType) && "TENANT".equals(admin.documentVisibility(me.tenantId(), body.resourceId()))) {
-            return bad("该文档是全租户可见，单份授权不会生效；请改为对所属公司授权（resourceType=COMPANY）");
+        List<Long> requested = idsOf(body.resourceIds(), body.resourceId());
+        if (requested.isEmpty()) {
+            return bad("resourceIds 必填");
         }
-        long id = admin.createGrant(me.tenantId(), subjectType, body.subjectId(), resourceType,
-                body.resourceId(), me.userId());
-        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("id", id));
+        if (requested.size() > MAX_RESOURCES) {
+            return bad("一次最多选择 " + MAX_RESOURCES + " 份资源，当前 " + requested.size() + " 份");
+        }
+        for (Long subjectId : subjects) {
+            boolean subjectOk = "ROLE".equals(subjectType)
+                    ? admin.roleExists(me.tenantId(), subjectId)
+                    : admin.userExists(me.tenantId(), subjectId);
+            if (!subjectOk) {
+                return bad("授权对象不存在：" + subjectType + " " + subjectId);
+            }
+        }
+
+        List<Long> documentIds = new ArrayList<>();
+        if ("COMPANY".equals(resourceType)) {
+            for (Long companyId : requested) {
+                if (!admin.companyExists(me.tenantId(), companyId)) {
+                    return bad("授权资源不存在：COMPANY " + companyId);
+                }
+                documentIds.addAll(admin.documentIdsOfCompany(me.tenantId(), companyId));
+            }
+            documentIds = documentIds.stream().distinct().toList();
+        } else {
+            for (Long documentId : requested) {
+                if (!admin.documentExists(me.tenantId(), documentId)) {
+                    return bad("授权资源不存在：DOCUMENT " + documentId);
+                }
+                documentIds.add(documentId);
+            }
+        }
+        if (documentIds.isEmpty()) {
+            // 公司存在但一份文档都没上传过：给个能看懂的答复，而不是 201 + 0 条
+            return bad("选中的公司下还没有任何文档，没有可授权的对象");
+        }
+        if (documentIds.size() > MAX_EXPANDED) {
+            return bad("展开后共 " + documentIds.size() + " 份文档，超过单次上限 " + MAX_EXPANDED
+                    + "；请分批授权或改按公司维度授权");
+        }
+
+        int created = 0;
+        for (Long subjectId : subjects) {
+            created += admin.createDocumentGrants(me.tenantId(), subjectType, subjectId, documentIds, me.userId());
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("created", created);
+        resp.put("skipped", subjects.size() * documentIds.size() - created);
+        resp.put("subjects", subjects.size());
+        resp.put("documents", documentIds.size());
+        return ResponseEntity.status(HttpStatus.CREATED).body(resp);
+    }
+
+    /**
+     * 列表优先、单值兜底，去掉 null 与重复（保持顺序）。
+     *
+     * <p>去重不是洁癖：前端多选里同一个 id 出现两次时，不去重会让「已存在跳过」的统计多算一倍。
+     */
+    private static List<Long> idsOf(List<Long> many, Long one) {
+        List<Long> merged = new ArrayList<>();
+        if (many != null) {
+            for (Long id : many) {
+                if (id != null && !merged.contains(id)) {
+                    merged.add(id);
+                }
+            }
+        }
+        if (merged.isEmpty() && one != null) {
+            merged.add(one);
+        }
+        return merged;
     }
 
     @DeleteMapping("/grants/{id}")

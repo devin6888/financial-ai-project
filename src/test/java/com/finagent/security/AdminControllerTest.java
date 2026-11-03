@@ -114,7 +114,7 @@ class AdminControllerTest {
     void userDocumentsCarryReason() throws Exception {
         when(admin.userExists(1L, 42L)).thenReturn(true);
         when(admin.documentsOfUser(1L, 42L, 1, 10)).thenReturn(new AdminRepository.Paged<>(
-                List.of(new AdminRepository.DocumentAccess(7L, "东方财富2025年年度报告", 2025, "TENANT", "ROLE")),
+                List.of(new AdminRepository.DocumentAccess(7L, "东方财富2025年年度报告", 2025, "ROLE")),
                 1L, 1, 10));
 
         mvc.perform(get("/api/admin/users/42/documents"))
@@ -138,13 +138,13 @@ class AdminControllerTest {
         when(admin.roleExists(1L, 2L)).thenReturn(true);
         when(admin.membersOfRole(1L, 2L, 1, 10)).thenReturn(new AdminRepository.Paged<>(List.of(), 0L, 1, 10));
         when(admin.documentsOfRole(1L, 2L, 1, 10)).thenReturn(new AdminRepository.Paged<>(
-                List.of(new AdminRepository.RoleDoc(5L, 7L, "东方财富2025年年度报告", 2025, "COMPANY", "READ", null)),
+                List.of(new AdminRepository.RoleDoc(5L, 7L, "东方财富2025年年度报告", 2025, "DOCUMENT", "READ", null)),
                 1L, 1, 10));
 
         mvc.perform(get("/api/admin/roles/2/members")).andExpect(status().isOk());
         mvc.perform(get("/api/admin/roles/2/documents"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].resourceType").value("COMPANY"));
+                .andExpect(jsonPath("$.items[0].resourceType").value("DOCUMENT"));
     }
 
     @Test
@@ -242,6 +242,49 @@ class AdminControllerTest {
     }
 
     @Test
+    @DisplayName("改自己的角色时把 ADMIN 勾掉 → 400，且一次 replaceRoles 都不调")
+    void cannotDemoteSelf() throws Exception {
+        when(admin.userExists(1L, 1L)).thenReturn(true);
+        when(admin.isAdmin(1L, 1L)).thenReturn(true);
+
+        mvc.perform(put("/api/admin/users/1").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roles\":[\"ANALYST\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("不能移除自己的 ADMIN")));
+
+        verify(admin, never()).replaceRoles(anyLong(), anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("移除本租户最后一个管理员（改别人）→ 400")
+    void cannotRemoveLastAdmin() throws Exception {
+        when(admin.userExists(1L, 42L)).thenReturn(true);
+        when(admin.isAdmin(1L, 42L)).thenReturn(true);
+        when(admin.countOtherAdmins(1L, 42L)).thenReturn(0);
+
+        mvc.perform(put("/api/admin/users/42").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roles\":[\"VIEWER\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("至少要保留一个管理员")));
+
+        verify(admin, never()).replaceRoles(anyLong(), anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("还有其他管理员时，可以撤掉别人的 ADMIN")
+    void canRemoveAdminWhenAnotherRemains() throws Exception {
+        when(admin.userExists(1L, 42L)).thenReturn(true);
+        when(admin.isAdmin(1L, 42L)).thenReturn(true);
+        when(admin.countOtherAdmins(1L, 42L)).thenReturn(2);
+
+        mvc.perform(put("/api/admin/users/42").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roles\":[\"VIEWER\"]}"))
+                .andExpect(status().isOk());
+
+        verify(admin).replaceRoles(1L, 42L, List.of("VIEWER"));
+    }
+
+    @Test
     @DisplayName("改不存在的用户 → 404")
     void updateMissingUserIs404() throws Exception {
         when(admin.userExists(1L, 999L)).thenReturn(false);
@@ -260,16 +303,34 @@ class AdminControllerTest {
     }
 
     @Test
-    @DisplayName("授权：公司级（COMPANY）合法，且会校验公司存在")
-    void companyGrantIsAccepted() throws Exception {
+    @DisplayName("授权：按公司授权 → 落库前展开成该公司的每一份文档")
+    void companyGrantExpandsToDocuments() throws Exception {
         when(admin.roleExists(1L, 2L)).thenReturn(true);
         when(admin.companyExists(1L, 7L)).thenReturn(true);
-        when(admin.createGrant(1L, "ROLE", 2L, "COMPANY", 7L, 1L)).thenReturn(9L);
+        when(admin.documentIdsOfCompany(1L, 7L)).thenReturn(List.of(7L, 38L));
+        when(admin.createDocumentGrants(1L, "ROLE", 2L, List.of(7L, 38L), 1L)).thenReturn(2);
 
         mvc.perform(post("/api/admin/grants").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"subjectType\":\"ROLE\",\"subjectId\":2,\"resourceType\":\"COMPANY\",\"resourceId\":7}"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(9));
+                .andExpect(jsonPath("$.created").value(2))
+                .andExpect(jsonPath("$.documents").value(2))
+                .andExpect(jsonPath("$.subjects").value(1));
+    }
+
+    @Test
+    @DisplayName("授权：公司下一份文档都没有 → 400，而不是 201 + 0 条")
+    void companyGrantWithoutDocumentsIs400() throws Exception {
+        when(admin.roleExists(1L, 2L)).thenReturn(true);
+        when(admin.companyExists(1L, 7L)).thenReturn(true);
+        when(admin.documentIdsOfCompany(1L, 7L)).thenReturn(List.of());
+
+        mvc.perform(post("/api/admin/grants").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subjectType\":\"ROLE\",\"subjectId\":2,\"resourceType\":\"COMPANY\",\"resourceId\":7}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("还没有任何文档")));
+
+        verify(admin, never()).createDocumentGrants(anyLong(), any(), anyLong(), any(), anyLong());
     }
 
     @Test
@@ -282,36 +343,42 @@ class AdminControllerTest {
                         .content("{\"subjectType\":\"ROLE\",\"subjectId\":2,\"resourceType\":\"DOCUMENT\",\"resourceId\":999}"))
                 .andExpect(status().isBadRequest());
 
-        verify(admin, never()).createGrant(anyLong(), any(), anyLong(), any(), anyLong(), anyLong());
+        verify(admin, never()).createDocumentGrants(anyLong(), any(), anyLong(), any(), anyLong());
     }
 
     @Test
-    @DisplayName("授权：对全租户可见（TENANT）文档授单份 → 400，因为它对检索不生效")
-    void singleDocumentGrantOnTenantDocumentIs400() throws Exception {
+    @DisplayName("批量授权：多主体 × 多文档，返回新建 / 跳过条数")
+    void batchGrantCreatesCartesianRows() throws Exception {
         when(admin.roleExists(1L, 2L)).thenReturn(true);
+        when(admin.roleExists(1L, 3L)).thenReturn(true);
         when(admin.documentExists(1L, 7L)).thenReturn(true);
-        when(admin.documentVisibility(1L, 7L)).thenReturn("TENANT");
+        when(admin.documentExists(1L, 38L)).thenReturn(true);
+        when(admin.createDocumentGrants(1L, "ROLE", 2L, List.of(7L, 38L), 1L)).thenReturn(2);
+        // 第二个主体已经有其中一条 → 只新建 1 条
+        when(admin.createDocumentGrants(1L, "ROLE", 3L, List.of(7L, 38L), 1L)).thenReturn(1);
 
         mvc.perform(post("/api/admin/grants").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"subjectType\":\"ROLE\",\"subjectId\":2,\"resourceType\":\"DOCUMENT\",\"resourceId\":7}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(containsString("不会生效")));
-
-        verify(admin, never()).createGrant(anyLong(), any(), anyLong(), any(), anyLong(), anyLong());
+                        .content("{\"subjectType\":\"ROLE\",\"subjectIds\":[2,3],\"resourceIds\":[7,38]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.created").value(3))
+                .andExpect(jsonPath("$.skipped").value(1))
+                .andExpect(jsonPath("$.subjects").value(2))
+                .andExpect(jsonPath("$.documents").value(2));
     }
 
     @Test
-    @DisplayName("授权：私有（PRIVATE）文档可以按单份授权")
-    void singleDocumentGrantOnPrivateDocumentIsAccepted() throws Exception {
-        when(admin.roleExists(1L, 2L)).thenReturn(true);
-        when(admin.documentExists(1L, 9L)).thenReturn(true);
-        when(admin.documentVisibility(1L, 9L)).thenReturn("PRIVATE");
-        when(admin.createGrant(1L, "ROLE", 2L, "DOCUMENT", 9L, 1L)).thenReturn(11L);
-
+    @DisplayName("批量授权：主体数超过 50 → 400，不会先写一半")
+    void tooManySubjectsIs400() throws Exception {
+        StringBuilder ids = new StringBuilder();
+        for (int i = 1; i <= 51; i++) {
+            ids.append(i == 1 ? "" : ",").append(i);
+        }
         mvc.perform(post("/api/admin/grants").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"subjectType\":\"ROLE\",\"subjectId\":2,\"resourceType\":\"DOCUMENT\",\"resourceId\":9}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(11));
+                        .content("{\"subjectType\":\"ROLE\",\"subjectIds\":[" + ids + "],\"resourceIds\":[7]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("50")));
+
+        verify(admin, never()).createDocumentGrants(anyLong(), any(), anyLong(), any(), anyLong());
     }
 
     @Test
@@ -382,7 +449,7 @@ class AdminControllerTest {
     void grantsAndDocumentPickerArePaged() throws Exception {
         when(admin.listGrants(1L, "ali", 3, 20)).thenReturn(new AdminRepository.Paged<>(List.of(), 0L, 3, 20));
         when(admin.searchDocuments(1L, "东方", 1, 10)).thenReturn(new AdminRepository.Paged<>(
-                List.of(new AdminRepository.DocumentOption(7L, "东方财富2025年年度报告", 2025, "TENANT", 7L, "东方财富")),
+                List.of(new AdminRepository.DocumentOption(7L, "东方财富2025年年度报告", 2025, 7L, "东方财富")),
                 1L, 1, 10));
 
         mvc.perform(get("/api/admin/grants").param("q", "ali").param("page", "3"))

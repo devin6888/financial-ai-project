@@ -89,9 +89,10 @@ class AgentStreamE2ETest {
         UUID runId = UUID.fromString(approvalRunId(first));
         created.add(runId);
 
+        // 阶段 22：审批点在检索之前，所以停在「理解 + 计划」之后
         assertThat(first).extracting(Frame::event)
-                .containsSubsequence("stage", "stage", "stage", "stage", "approval");
-        assertThat(phases(first)).containsExactly("understand", "plan", "retrieve", "verify");
+                .containsSubsequence("stage", "stage", "approval");
+        assertThat(phases(first)).containsExactly("understand", "plan");
         assertThat(first.get(first.size() - 1).data()).contains(quoted("plan")).contains(quoted("evidence"));
 
         HttpResponse<String> view = get("/api/agent/runs/" + runId, ANALYST);
@@ -100,7 +101,8 @@ class AgentStreamE2ETest {
 
         List<Frame> resumed = sse("POST", "/api/agent/runs/" + runId + "/resume", ANALYST,
                 "{\"decision\":\"APPROVE\"}");
-        assertThat(phases(resumed)).containsExactly("compute", "answer", "cite_check");
+        // approve 是纯透传节点，不发 stage（它只在需要时停一下）
+        assertThat(phases(resumed)).containsExactly("retrieve", "verify", "compute", "answer", "cite_check");
         Frame last = resumed.get(resumed.size() - 1);
         assertThat(last.event()).isEqualTo("final");
         assertThat(last.data()).contains("DONE").contains("fake-answer");

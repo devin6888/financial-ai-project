@@ -59,7 +59,8 @@ class DocumentUploadServiceTest {
         byte[] pdf = "%PDF-1.7 fake".getBytes(StandardCharsets.US_ASCII);
         when(documents.findCompletedIdByContentHash(anyString())).thenReturn(Optional.empty());
         when(documents.upsertCompany("300059", "东方财富", "SZ", 1L)).thenReturn(1L);
-        when(documents.upsertDocument(anyLong(), anyString(), any(), anyString(), anyString(), anyString()))
+        when(documents.upsertDocument(anyLong(), anyString(), any(), anyString(), anyString(), anyString(),
+                anyLong()))
                 .thenReturn(42L);
 
         DocumentUploadService.UploadResult r = service.upload(
@@ -70,8 +71,9 @@ class DocumentUploadServiceTest {
 
         verify(storage).put("samples/300059-2025-annual.pdf", pdf, "application/pdf");
         verify(documents).upsertCompany("300059", "东方财富", "SZ", 1L);
+        // 属主 = 当前登录用户 2L（analyst）：文档默认只有本人可见，别人要看必须授权
         verify(documents).upsertDocument(eq(1L), eq("ANNUAL"), eq(2025),
-                eq("东方财富2025年年度报告"), eq("samples/300059-2025-annual.pdf"), anyString());
+                eq("东方财富2025年年度报告"), eq("samples/300059-2025-annual.pdf"), anyString(), eq(2L));
         verify(producer).sendParse(42L);
     }
 
@@ -89,7 +91,8 @@ class DocumentUploadServiceTest {
 
         verify(storage, never()).put(anyString(), any(), anyString());
         verify(documents, never()).upsertCompany(anyString(), anyString(), anyString(), anyLong());
-        verify(documents, never()).upsertDocument(anyLong(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(documents, never()).upsertDocument(anyLong(), anyString(), any(), anyString(), anyString(),
+                anyString(), any());
         verify(producer, never()).sendParse(anyLong());
     }
 

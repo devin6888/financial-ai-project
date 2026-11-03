@@ -71,8 +71,9 @@ public class DocumentParseService {
                               String pdfObjectKey, byte[] pdf) {
         String contentHash = sha256(pdf);
         // 先落库拿 document_id —— 进程在此之后崩了，也留得下「这个文档待解析」的痕迹
+        // CLI / 测试链路没有登录用户：owner 传 null，落库时回落到本租户最早的 ACTIVE 账号
         long documentId = documents.upsertDocument(companyId, docType, docYear, title,
-                pdfObjectKey, contentHash);
+                pdfObjectKey, contentHash, null);
         log.info("文档已登记 document_id={} hash={}", documentId, contentHash);
         // 同步链路（CLI/测试）也留执行记录：库里能查到「这份 PDF 走的是哪条链路、用了多久」
         tracker.start(documentId, IngestFlow.PARSE);

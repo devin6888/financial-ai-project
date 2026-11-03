@@ -17,10 +17,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>为什么读文件而不是自己再跑一遍：评测一次要四五分钟且花钱，
  * 每跑一次回答都不同；门槛必须落在「同一份结果」上，不能取两次运行的混合值。
- * 顺序由文件名保证（AnswerEvalTest 先于 EvalGateTest），Maven 也按类名排序执行。
+ *
+ * <p><b>类名为什么以 Zz 开头</b>：Surefire 按类名排序跑，而答案/检索两个评测分别叫
+ * {@code AnswerEvalTest}、{@code RetrievalEvalTest}（A &lt; R）。原名 {@code EvalGateTest} 排在
+ * {@code RetrievalEvalTest} <b>之前</b>，读的是上一次运行留下的 json —— 表现是「评测明明 1.000，门槛却按 0.593 报红」。
+ * 改名到字母表末尾（Zz &gt; R）才能保证「先跑评测、再判门槛」。这是排序约定，不是审美。
  */
 @Tag("e2e")
-class EvalGateTest {
+class ZzEvalGateTest {
 
     private static final Path ANSWER_SUMMARY = Path.of("target/eval-answers.json");
     private static final Path RETRIEVAL_SUMMARY = Path.of("target/eval-retrieval.json");

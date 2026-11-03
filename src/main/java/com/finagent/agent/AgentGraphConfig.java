@@ -51,7 +51,7 @@ public class AgentGraphConfig {
     }
 
     /**
-     * 图在这里建一次、并立刻预热两张（{@code fast} / {@code hitl}）。
+     * 图在这里建一次、并立刻预热（阶段 22 起只有一张：人批由 {@code ApprovalGate} 运行时决定）。
      *
      * <p>预热的意义是<b>启动期校验</b>：图定义写错（少一条边、节点名拼错、条件边目标不存在）会在建 bean 时抛
      * {@code IllegalStateException}，而不是等第一个用户提问才 500。编译一次约 0.1 ms，见图内注释。

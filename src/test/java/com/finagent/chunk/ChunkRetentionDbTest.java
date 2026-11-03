@@ -124,8 +124,8 @@ class ChunkRetentionDbTest {
         String hash = "retention-hash-" + System.nanoTime();
         Long docId = jdbc.queryForObject("""
                 INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash,
-                                      parse_status, active_chunk_version)
-                VALUES (1, 'ANNUAL', '清理测试文档', ?, ?, 'DONE', ?)
+                                      parse_status, active_chunk_version, owner_user_id)
+                VALUES (1, 'ANNUAL', '清理测试文档', ?, ?, 'DONE', ?, (SELECT id FROM app_user WHERE username = 'demo'))
                 RETURNING id
                 """, Long.class, "test/" + hash + ".pdf", hash, versions);
 

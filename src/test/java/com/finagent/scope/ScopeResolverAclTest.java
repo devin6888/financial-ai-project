@@ -147,8 +147,9 @@ class ScopeResolverAclTest {
         String hash = "scope-acl-test-" + UUID.randomUUID();
         Long id = jdbc.queryForObject("""
                 INSERT INTO document (tenant_id, company_id, doc_type, doc_year, title, object_key,
-                                      content_hash, parse_status, version, active_chunk_version, visibility)
-                VALUES (1, ?, 'ANNUAL', ?, '作用域 ACL 测试文档', 'test/scope-acl.pdf', ?, 'DONE', 1, 1, 'TENANT')
+                                      content_hash, parse_status, version, active_chunk_version, owner_user_id)
+                VALUES (1, ?, 'ANNUAL', ?, '作用域 ACL 测试文档', 'test/scope-acl.pdf', ?, 'DONE', 1, 1,
+                        (SELECT id FROM app_user WHERE username = 'admin'))
                 RETURNING id
                 """, Long.class, companyId, docYear, hash);
         createdDocuments.add(id);

@@ -159,7 +159,7 @@ class ShortTermMemoryTest {
     }
 
     private static ConversationMessage message(long id, String role, String content, int tokens) {
-        return new ConversationMessage(id, 1L, role, content, null, "{}", "trace", tokens,
+        return new ConversationMessage(id, 1L, role, content, null, "{}", "trace", tokens, null,
                 OffsetDateTime.parse("2026-10-27T12:00:00+08:00"));
     }
 }

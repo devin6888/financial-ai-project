@@ -85,23 +85,28 @@ class ConversationRepositoryTest {
     @DisplayName("消息倒序 + beforeId 翻页不重不漏")
     void messagesAreNewestFirstAndPageByBeforeId() {
         long id = create("paging", ChatScope.corpus());
-        long first = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q1", null, "{}", "t", 1);
-        long second = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_ASSISTANT, "a1", "[]", "{}", "t", 1);
-        long third = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q2", null, "{}", "t", 1);
-        long fourth = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_ASSISTANT, "a2", "[]", "{}", "t", 1);
+        long first = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q1", null, "{}", "t", 1, null);
+        long second = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_ASSISTANT, "a1", "[]", "{}", "t", 1, 11800);
+        long third = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q2", null, "{}", "t", 1, null);
+        long fourth = repository.appendMessage(TENANT, id, ConversationMessage.ROLE_ASSISTANT, "a2", "[]", "{}", "t", 1, null);
 
         List<Long> page1 = repository.messages(id, null, 2).stream().map(ConversationMessage::id).toList();
         assertThat(page1).containsExactly(fourth, third);
 
         List<Long> page2 = repository.messages(id, third, 2).stream().map(ConversationMessage::id).toList();
         assertThat(page2).containsExactly(second, first);
+
+        // 用时落库再读出来（历史消息的「用时」就靠这一列，别再只活在前端内存里）
+        ConversationMessage withElapsed = repository.messages(id, third, 2).get(0);
+        assertThat(withElapsed.elapsedMs()).isEqualTo(11800);
+        assertThat(repository.messages(id, null, 2).get(0).elapsedMs()).isNull();
     }
 
     @Test
     @DisplayName("逻辑删除后查不到，但消息还在（审计要留）")
     void deletedConversationIsInvisibleButKeepsMessages() {
         long id = create("deleted", ChatScope.corpus());
-        repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q", null, "{}", null, 1);
+        repository.appendMessage(TENANT, id, ConversationMessage.ROLE_USER, "q", null, "{}", null, 1, null);
 
         repository.markDeleted(id);
 

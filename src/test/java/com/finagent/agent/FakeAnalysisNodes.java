@@ -27,13 +27,25 @@ final class FakeAnalysisNodes implements AnalysisNodes {
         return new FakeAnalysisNodes(true, true, 0);
     }
 
+    private static final java.util.regex.Pattern YEAR = java.util.regex.Pattern.compile("(?:19|20)\\d{2}");
+
     @Override
     public Map<String, Object> understand(AnalysisState state) {
         boolean complex = state.question().contains("复杂");
-        return Map.of(
-                AnalysisState.QUERY_TYPE, complex ? "COMPLEX_ANALYSIS" : "EXACT_FACT",
-                AnalysisState.COMPANY_CODES, List.of("300059"),
-                AnalysisState.YEAR_FROM, 2025);
+        // 与真实现同样的规则：问题里没点年份就当成「没说清」（阶段 22 的审批闸门靠它）
+        boolean ambiguous = !YEAR.matcher(state.question()).find();
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put(AnalysisState.QUERY_TYPE, complex ? "COMPLEX_ANALYSIS" : "EXACT_FACT");
+        patch.put(AnalysisState.COMPANY_CODES, List.of("300059"));
+        patch.put(AnalysisState.YEAR_FROM, 2025);
+        if (ambiguous) {
+            patch.put(AnalysisState.APPROVAL_REASONS, List.of("year_not_specified"));
+            patch.put(AnalysisState.APPROVAL_CANDIDATES, List.of(
+                    Map.of("kind", "YEAR", "value", 2024, "label", "2024 年报（1 份）"),
+                    Map.of("kind", "YEAR", "value", 2025, "label", "2025 年报（1 份）"),
+                    Map.of("kind", "ALL_YEARS", "value", "", "label", "两份都看（2024 + 2025）")));
+        }
+        return patch;
     }
 
     @Override

@@ -49,10 +49,13 @@ class VectorStoreSmokeTest {
                 "DELETE FROM document_chunk WHERE document_id IN "
                         + "(SELECT id FROM document WHERE tenant_id=1 AND content_hash='hash-smoke')");
         jdbcTemplate.update(
-                "INSERT INTO document(tenant_id, company_id, doc_type, doc_year, title, object_key, content_hash) "
+                // owner_user_id 从 V19 起 NOT NULL：没有「无主文档」这种状态
+                "INSERT INTO document(tenant_id, company_id, doc_type, doc_year, title, object_key, content_hash, "
+                        + "owner_user_id) "
                         // 年份故意用 1999：V6 的 uq_document_identity 会拦住与已有文档
                         // （公司 600519 + 2025 + ANNUAL + v1）重复的身份，用真实年份会撞库
-                        + "VALUES (1, ?, 'ANNUAL', 1999, '冒烟测试', 'test/smoke.pdf', 'hash-smoke') "
+                        + "VALUES (1, ?, 'ANNUAL', 1999, '冒烟测试', 'test/smoke.pdf', 'hash-smoke', "
+                        + "(SELECT id FROM app_user WHERE username='demo' AND tenant_id=1)) "
                         + "ON CONFLICT (tenant_id, content_hash) DO NOTHING",
                 companyId);
         Long docId = jdbcTemplate.queryForObject(

@@ -50,8 +50,9 @@ class IngestRunDbTest {
             return documentId;
         }
         documentId = jdbc.queryForObject("""
-                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status)
-                VALUES (1, 'ANNUAL', ?, 'test/ingest.pdf', ?, 'PENDING')
+                INSERT INTO document (tenant_id, doc_type, title, object_key, content_hash, parse_status,
+                                      owner_user_id)
+                VALUES (1, 'ANNUAL', ?, 'test/ingest.pdf', ?, 'PENDING', (SELECT id FROM app_user WHERE username = 'demo'))
                 RETURNING id
                 """, Long.class, TITLE, "test-ingest-" + System.nanoTime());
         return documentId;

@@ -1,8 +1,10 @@
 package com.finagent.retrieval;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -22,6 +24,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DenseRetrieverTest {
 
     @Autowired private DenseRetriever dense;
+
+    @Value("${spring.ai.openai.api-key:}")
+    private String apiKey;
+
+    /** 真向量用例要调嵌入接口：没有真 Key 就跳过（与 EmbeddingTextRoundTripTest 同一判据）。 */
+    private void requireRealKey() {
+        Assumptions.assumeTrue(apiKey != null && apiKey.startsWith("sk-"),
+                "未配置真实嵌入 Key（spring.ai.openai.api-key），跳过真模型用例");
+    }
 
     // ---------- appendFilters：纯逻辑，不碰库 ----------
 
@@ -66,6 +77,7 @@ class DenseRetrieverTest {
 
     @Test
     void retrievesActiveChildrenOrderedBySimilarity() {
+        requireRealKey();
         var hits = dense.retrieve("净利润", RetrievalFilters.ofDocument(7L), 30);
 
         assertThat(hits).hasSize(30);
@@ -83,6 +95,7 @@ class DenseRetrieverTest {
 
     @Test
     void respectsSectionPathPrefix() {
+        requireRealKey();
         var hits = dense.retrieve("营业收入", 
                 new RetrievalFilters(List.of(7L), null, null, null, "第八节", null), 10);
 
@@ -93,6 +106,7 @@ class DenseRetrieverTest {
 
     @Test
     void unknownDocumentYieldsNoHits() {
+        requireRealKey();
         assertThat(dense.retrieve("净利润", RetrievalFilters.ofDocument(999_999L), 10)).isEmpty();
     }
 }

@@ -90,9 +90,10 @@ class AgentHitlDbTest {
 
         assertThat(result.waitingForApproval()).isTrue();
         assertThat(result.currentNode()).isEqualTo(AnalysisGraph.NODE_APPROVE);
+        // 阶段 22：审批点在检索之前，所以时间线停在「理解 + 计划」之后
         assertThat(result.steps()).extracting(AgentRunStep::node)
-                .containsExactly("understand", "plan", "retrieve", "verify", "approval");
-        assertThat(result.steps().get(4).status()).isEqualTo(AgentRunStep.STATUS_SKIPPED);
+                .containsExactly("understand", "plan", "approval");
+        assertThat(result.steps().get(2).status()).isEqualTo(AgentRunStep.STATUS_SKIPPED);
         assertThat(result.answer()).isEmpty();
 
         AgentRun run = runs.find(result.runId(), TENANT).orElseThrow();
@@ -123,9 +124,10 @@ class AgentHitlDbTest {
 
         assertThat(done.status()).isEqualTo(AgentRun.STATUS_DONE);
         assertThat(done.answer()).startsWith("fake-answer:").contains("[E1]");
+        // 停下那一步记「understand, plan, approval(SKIPPED)」，resume 再记一行 approval(OK)，然后才是检索
         assertThat(done.steps()).extracting(AgentRunStep::node)
-                .containsExactly("understand", "plan", "retrieve", "verify", "approval",
-                        "approval", "compute", "answer", "cite_check");
+                .containsExactly("understand", "plan", "approval", "approval",
+                        "retrieve", "verify", "compute", "answer", "cite_check");
 
         AgentRun run = runs.find(waiting.runId(), TENANT).orElseThrow();
         assertThat(run.decision()).isEqualTo(AgentRun.DECISION_APPROVE);

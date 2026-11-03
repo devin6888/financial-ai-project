@@ -114,9 +114,9 @@ class ConversationSummarizerDbTest {
         int already = countMessages(conversation);
         for (int i = 1; i <= rounds; i++) {
             conversations.appendMessage(TENANT, conversation.id(), ConversationMessage.ROLE_USER,
-                    "第" + (already + i) + "个问题", null, "{}", "t", 10);
+                    "第" + (already + i) + "个问题", null, "{}", "t", 10, null);
             conversations.appendMessage(TENANT, conversation.id(), ConversationMessage.ROLE_ASSISTANT,
-                    "第" + (already + i) + "个回答", null, "{}", "t", 10);
+                    "第" + (already + i) + "个回答", null, "{}", "t", 10, null);
         }
     }
 

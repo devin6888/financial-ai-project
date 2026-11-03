@@ -1,0 +1,6 @@
+# Registers an EnvironmentPostProcessor (see com.finagent.config.DotenvEnvironmentPostProcessor).
+# Keep this file pure ASCII: Boot loads it as a properties file (ISO-8859-1), so non-ASCII
+# comments would only show as mojibake in editors that default to GBK.
+# Boot 4 auto-configuration does NOT live here (it uses META-INF/spring/...AutoConfiguration.imports).
+org.springframework.boot.EnvironmentPostProcessor=\
+com.finagent.config.DotenvEnvironmentPostProcessor

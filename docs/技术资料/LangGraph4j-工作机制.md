@@ -309,6 +309,46 @@ for (NodeOutput<AnalysisState> out : app.stream(GraphInput.resume(Map.of("decisi
 3. **超时不自动通过**：审批是人的责任，自动通过等于没有审批。超时只能「作废」。
 4. **一个 threadId 同时只允许一个未决中断**：两个未决中断会让 `resume` 的目标不确定。
 
+### 7.5 动态中断：节点自己决定这次停不停（阶段 22 用它替掉了两张图）
+
+`interruptsBefore` 只能**按图**开关：编进图里就每次都停，不编就永远不停。要「同一次运行里按状态决定」，
+得用另一套 API —— `InterruptibleAction`：
+
+```java
+public interface InterruptibleAction<State extends AgentState> {
+    Optional<InterruptionMetadata<State>> interrupt(String nodeId, State state);
+    Optional<InterruptionMetadata<State>> interrupt(String nodeId, State state, RunnableConfig cfg);
+}
+```
+
+用法：节点动作**同时**实现 `AsyncNodeActionWithConfig<State>` 与 `InterruptibleAction<State>`，
+用 `addNode(name, action)` 挂上去即可（`ApprovalGate` 就是这么写的）。
+
+时序（字节码实证，`NodeHooks.applyActionWithHooksHandlingInterruption`）：
+先 `instanceof InterruptibleAction` → 调 `interrupt(nodeId, state, cfg)` → **返回非空就不执行 `apply`、直接静停**；
+返回空才照常跑 `apply`。库自带的 `AgentEx.ApprovalNodeAction` 也是这个写法（构造时给一个
+`BiFunction<String, State, InterruptionMetadata<State>>`）。
+
+2026-11-03 用最小图（`a → approve → b`，`MemorySaver`）实测：
+
+| 场景 | 结果 | 计数 |
+| --- | --- | --- |
+| 需要审批 | 停在 `nextNodeId=approve`，`apply` 一次都没跑 | `interruptCalls=1, applyCalls=0` |
+| 恢复（`GraphInput.resume(Map.of("decision","APPROVE"))`） | 重新进入该节点 → 这次 `interrupt()` 返回空 → `apply` → `b` → `END` | `interruptCalls=2, applyCalls=1` |
+| 不需要审批 | 一次跑通，`interrupt()` 只被问一次 | `interruptCalls=3`（累计）, `applyCalls=2` |
+
+**必须记住的一条**：恢复时会**重新进入同一个节点、再问一次** `interrupt()`。所以判断里必须包含
+「已经决定过就不停」（我们写成 `state.decision().isBlank()`）。漏掉这半句，用户点「通过」后会再停一次，永远出不来。
+
+与 `interruptsBefore` 的差别：
+
+| | `interruptsBefore` | `InterruptibleAction` |
+| --- | --- | --- |
+| 生效时机 | 编译期（按图） | 运行时（每次进节点前问一次） |
+| 要不要编多张图 | 要（停/不停各一张） | 不要（一张图，判断看状态） |
+| 判断依据 | 节点名 | 任意状态 |
+| 停下后怎么判断 | `getState(cfg).nextNodeId()` | 同样是 `nextNodeId()` |
+
 ## 8. 序列化：这个库最容易踩的坑
 
 | 序列化器 | 依赖 | 状态里能放什么 |

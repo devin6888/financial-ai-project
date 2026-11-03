@@ -29,7 +29,7 @@ public class ConversationRepository {
             + "status, created_at, updated_at";
 
     private static final String MESSAGE_COLUMNS = "id, conversation_id, role, content, citations_json, "
-            + "scope_snapshot, trace_id, token_count, created_at";
+            + "scope_snapshot, trace_id, token_count, elapsed_ms, created_at";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -110,13 +110,14 @@ public class ConversationRepository {
     }
 
     public long appendMessage(long tenantId, long conversationId, String role, String content,
-                              String citationsJson, String scopeSnapshot, String traceId, int tokenCount) {
+                              String citationsJson, String scopeSnapshot, String traceId, int tokenCount,
+                              Integer elapsedMs) {
         Long id = jdbc.queryForObject(
                 "INSERT INTO conversation_message (tenant_id, conversation_id, role, content, "
-                        + "citations_json, scope_snapshot, trace_id, token_count) "
-                        + "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?) RETURNING id",
+                        + "citations_json, scope_snapshot, trace_id, token_count, elapsed_ms) "
+                        + "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?) RETURNING id",
                 Long.class, tenantId, conversationId, role, content, citationsJson,
-                scopeSnapshot, traceId, tokenCount);
+                scopeSnapshot, traceId, tokenCount, elapsedMs);
         return id == null ? -1L : id;
     }
 
@@ -155,6 +156,7 @@ public class ConversationRepository {
                 rs.getLong("id"), rs.getLong("conversation_id"), rs.getString("role"),
                 rs.getString("content"), rs.getString("citations_json"), rs.getString("scope_snapshot"),
                 rs.getString("trace_id"), rs.getInt("token_count"),
+                rs.getObject("elapsed_ms", Integer.class),
                 rs.getObject("created_at", OffsetDateTime.class));
     }
 }

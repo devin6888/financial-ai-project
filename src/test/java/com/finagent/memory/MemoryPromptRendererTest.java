@@ -63,7 +63,7 @@ class MemoryPromptRendererTest {
     }
 
     private static ConversationMessage message(String role, String content) {
-        return new ConversationMessage(1L, 1L, role, content, null, "{}", "trace", 5,
+        return new ConversationMessage(1L, 1L, role, content, null, "{}", "trace", 5, null,
                 OffsetDateTime.parse("2026-10-27T12:00:00+08:00"));
     }
 }

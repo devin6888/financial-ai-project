@@ -1,6 +1,7 @@
 package com.finagent.security;
 
 import com.finagent.scope.AclScopeAuthorizer;
+import com.finagent.scope.DocumentAccessSql;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -85,7 +86,7 @@ class AdminAccessDbTest {
     }
 
     @Test
-    @DisplayName("角色文档：ADMIN 角色天然全可见（resourceType=ALL），ANALYST 走公司级授权")
+    @DisplayName("角色文档：ADMIN 角色天然全可见（resourceType=ALL），ANALYST 走文档级授权")
     void roleDocumentsExpandGrants() {
         long adminRole = roleId("ADMIN");
         long analystRole = roleId("ANALYST");
@@ -97,12 +98,14 @@ class AdminAccessDbTest {
 
         long analystDocs = count("""
                 SELECT count(DISTINCT d.id) FROM document d
-                 WHERE d.tenant_id = ? AND d.company_id = 7
-                """, TENANT);
+                  JOIN resource_grant g ON g.tenant_id = d.tenant_id
+                       AND g.resource_type = 'DOCUMENT' AND g.resource_id = d.id
+                 WHERE d.tenant_id = ? AND g.subject_type = 'ROLE' AND g.subject_id = ?
+                """, TENANT, analystRole);
         AdminRepository.Paged<AdminRepository.RoleDoc> page = admin.documentsOfRole(TENANT, analystRole, 1, 100);
         assertThat(analystDocs).isPositive();
         assertThat(page.total()).isEqualTo(analystDocs);
-        assertThat(page.items()).extracting(AdminRepository.RoleDoc::resourceType).containsOnly("COMPANY");
+        assertThat(page.items()).extracting(AdminRepository.RoleDoc::resourceType).containsOnly("DOCUMENT");
         assertThat(page.items()).allSatisfy(doc -> assertThat(doc.grantId()).isNotNull());
     }
 
@@ -116,16 +119,12 @@ class AdminAccessDbTest {
         AdminRepository.Paged<AdminRepository.UserRow> one = admin.searchUsers(TENANT, "analyst", "ACTIVE", 1, 20);
         assertThat(one.total()).isEqualTo(1);
 
+        // 与 AdminRepository 共用同一段判定：属主 OR 文档级授权（用户 / 角色）
+        long uid = userId("analyst");
         long analystDocs = count("""
-                SELECT count(DISTINCT d.id) FROM document d
-                 WHERE d.tenant_id = ? AND (
-                       (d.visibility = 'PRIVATE' AND d.owner_user_id = ?)
-                    OR EXISTS (SELECT 1 FROM resource_grant g
-                                WHERE g.tenant_id = d.tenant_id
-                                  AND g.subject_type = 'ROLE' AND g.subject_id = ?
-                                  AND g.resource_type = CASE d.visibility WHEN 'TENANT' THEN 'COMPANY' ELSE 'DOCUMENT' END
-                                  AND g.resource_id = CASE d.visibility WHEN 'TENANT' THEN d.company_id ELSE d.id END))
-                """, TENANT, userId("analyst"), roleId("ANALYST"));
+                SELECT count(*) FROM document d
+                 WHERE d.tenant_id = ? AND %s
+                """.formatted(DocumentAccessSql.visibleTo(Long.toString(uid))), TENANT);
         assertThat(one.items().getFirst().docCount()).isEqualTo(analystDocs);
     }
 
@@ -190,6 +189,28 @@ class AdminAccessDbTest {
         long roleId = roleId("VIEWER");
         assertThat(admin.deleteRoleWithGrants(TENANT, roleId)).isZero();
         assertThat(admin.roleExists(TENANT, roleId)).isTrue();
+    }
+
+    @Test
+    @DisplayName("countOtherAdmins：只数 ACTIVE 的其他管理员，不把自己算进去")
+    void countOtherAdminsIgnoresSelfAndInactive() {
+        long adminId = userId("admin");
+        long demoId = userId("demo");
+
+        // 种子数据里本租户有 admin 与 demo 两个管理员
+        assertThat(countIsAdmin(adminId)).isTrue();
+        assertThat(countIsAdmin(demoId)).isTrue();
+        assertThat(admin.countOtherAdmins(TENANT, adminId)).isEqualTo(1);
+        assertThat(admin.countOtherAdmins(TENANT, demoId)).isEqualTo(1);
+
+        // 一个只有 7 号租户管理员的人，在本租户里不能算「其他管理员」
+        long intruder = jdbc.queryForObject("SELECT id FROM app_user WHERE username = 'intruder'", Long.class);
+        assertThat(admin.countOtherAdmins(TENANT, intruder)).isEqualTo(2);
+    }
+
+    private boolean countIsAdmin(long userId) {
+        return count("SELECT count(*) FROM user_role ur JOIN role r ON r.id = ur.role_id "
+                + "WHERE ur.user_id = ? AND r.code = 'ADMIN'", userId) > 0;
     }
 
     // ---------- 助手 ----------

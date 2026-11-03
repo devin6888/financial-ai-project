@@ -43,21 +43,17 @@ class AclScopeAuthorizerTest {
     @Autowired private JdbcTemplate jdbc;
 
     private final List<Long> createdDocuments = new ArrayList<>();
-    private final List<Long> createdCompanies = new ArrayList<>();
 
     @AfterEach
     void cleanup() {
         TenantContext.clear();   // 必须最先：先清上下文，借到的连接才是 owner 角色，才有写权限
         List<Long> resourceIds = new ArrayList<>(createdDocuments);
-        resourceIds.addAll(createdCompanies);
         if (!resourceIds.isEmpty()) {
             jdbc.update("DELETE FROM resource_grant WHERE resource_id IN (" + placeholders(resourceIds.size()) + ")",
                     resourceIds.toArray());
         }
         deleteByIds("document", createdDocuments);
-        deleteByIds("company", createdCompanies);
         createdDocuments.clear();
-        createdCompanies.clear();
     }
 
     @Test
@@ -74,8 +70,10 @@ class AclScopeAuthorizerTest {
     }
 
     @Test
-    @DisplayName("分析师拿的是 ROLE 级公司授权：300059 的两份文档都可见")
-    void analystSeesCompanyGrantedDocuments() {
+    @DisplayName("分析师经 ROLE 级文档授权看到 300059 的两份年报")
+    void analystSeesDocumentsGrantedByRole() {
+        // V19 迁移把原来的「ANALYST → COMPANY 7」展开成了「ANALYST → document 7 / 38」两行；
+        // 这一段就是在验证展开的结果真的能读，而不是只写进了表。
         asUser("analyst");
         assertThat(readable(7L, 38L)).containsExactlyInAnyOrder(7L, 38L);
     }
@@ -88,37 +86,64 @@ class AclScopeAuthorizerTest {
     }
 
     @Test
-    @DisplayName("PRIVATE 文档对公司级授权不可见（同事不能看别人的私有笔记）")
-    void privateDocumentIsInvisibleWithoutExplicitGrant() {
-        long privateDoc = insertDocument("PRIVATE", userId("analyst"), companyId("300059"));
-        asUser("outsider");
-        assertThat(readable(privateDoc)).isEmpty();
-    }
-
-    @Test
-    @DisplayName("PRIVATE 文档的 owner 自己可见")
-    void privateDocumentOwnerStillSeesIt() {
-        long privateDoc = insertDocument("PRIVATE", userId("analyst"), companyId("300059"));
+    @DisplayName("属主看得到自己上传的文档（没有授权行也行）")
+    void ownerSeesOwnDocument() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
         asUser("analyst");
-        assertThat(readable(privateDoc)).containsExactly(privateDoc);
+        assertThat(readable(doc)).containsExactly(doc);
     }
 
     @Test
-    @DisplayName("过期的授权等于没有授权")
-    void expiredGrantIsIgnored() {
-        long company = insertCompany("ACLEXP");
-        long doc = insertDocument("TENANT", null, company);
-        insertCompanyGrant("USER", userId("outsider"), company, "now() - interval '1 day'");
+    @DisplayName("别人的文档，没有授权就看不见")
+    void nonOwnerWithoutGrantSeesNothing() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
         asUser("outsider");
         assertThat(readable(doc)).isEmpty();
     }
 
     @Test
-    @DisplayName("未过期的 USER 级公司授权可用（对照组：证明上一条的失败确实来自过期）")
-    void validUserGrantIsHonored() {
-        long company = insertCompany("ACLOK");
-        long doc = insertDocument("TENANT", null, company);
-        insertCompanyGrant("USER", userId("outsider"), company, "now() + interval '1 day'");
+    @DisplayName("给本人的文档级授权生效")
+    void userGrantOnDocumentIsHonored() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
+        insertDocumentGrant("USER", userId("outsider"), doc, "now() + interval '1 day'");
+        asUser("outsider");
+        assertThat(readable(doc)).containsExactly(doc);
+    }
+
+    @Test
+    @DisplayName("给角色的文档级授权生效（同事被授予同一份）")
+    void roleGrantOnDocumentIsHonored() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
+        insertDocumentGrant("ROLE", roleId("VIEWER"), doc, "now() + interval '1 day'");
+        asUser("outsider");   // outsider 只有 VIEWER 角色
+        assertThat(readable(doc)).containsExactly(doc);
+    }
+
+    @Test
+    @DisplayName("公司里新上传的文档不会因为「以前授过这家公司」就自动可读（快照语义）")
+    void newDocumentOfCompanyIsNotInherited() {
+        // 分析师已经有 300059 的 7/38 两份授权；这里再造一份同公司的新文档，
+        // 属主是 analyst 本人 —— 所以要看 outsider：他没有任何针对这份新文档的授权，
+        // 若实现里还残留「COMPANY 授权展开成公司全部文档」的旧规则，这条就会红。
+        long fresh = insertDocument(userId("analyst"), companyId("300059"));
+        asUser("outsider");
+        assertThat(readable(fresh)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("过期的授权等于没有授权")
+    void expiredGrantIsIgnored() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
+        insertDocumentGrant("USER", userId("outsider"), doc, "now() - interval '1 day'");
+        asUser("outsider");
+        assertThat(readable(doc)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("未过期的授权可用（对照组：证明上一条的失败确实来自过期）")
+    void validGrantIsHonored() {
+        long doc = insertDocument(userId("analyst"), companyId("300059"));
+        insertDocumentGrant("USER", userId("outsider"), doc, "now() + interval '1 day'");
         asUser("outsider");
         assertThat(readable(doc)).containsExactly(doc);
     }
@@ -159,39 +184,38 @@ class AclScopeAuthorizerTest {
         return jdbc.queryForObject("SELECT id FROM company WHERE tenant_id = 1 AND code = ?", Long.class, code);
     }
 
-    private long insertCompany(String code) {
-        Long id = jdbc.queryForObject("""
-                INSERT INTO company (tenant_id, code, name) VALUES (1, ?, ?) RETURNING id
-                """, Long.class, code, "ACL 测试公司 " + code);
-        createdCompanies.add(id);
-        return id;
-    }
-
     /**
      * 造一份测试文档。
      *
      * <p>{@code doc_year} 故意用 1999：V9 的 {@code uq_document_identity}
      * 是 {@code (tenant_id, company_id, doc_year, doc_type, version)} 的唯一索引，
      * 用 2025 + ANNUAL + 300059 会撞上库里真实存在的 document 7。
+     *
+     * <p>阶段 21 起 {@code document.owner_user_id} 是 NOT NULL：没有「无主文档」这种状态，
+     * 每份文档都能答出「谁传的」。
      */
-    private long insertDocument(String visibility, Long ownerUserId, Long companyId) {
+    private long insertDocument(Long ownerUserId, Long companyId) {
         String hash = "acl-test-" + UUID.randomUUID();
         Long id = jdbc.queryForObject("""
                 INSERT INTO document (tenant_id, company_id, doc_type, doc_year, title, object_key,
-                                      content_hash, parse_status, version, visibility, owner_user_id)
-                VALUES (1, ?, 'ANNUAL', 1999, 'ACL 测试文档', 'test/acl.pdf', ?, 'DONE', 1, ?, ?)
+                                      content_hash, parse_status, version, owner_user_id)
+                VALUES (1, ?, 'ANNUAL', 1999, 'ACL 测试文档', 'test/acl.pdf', ?, 'DONE', 1, ?)
                 RETURNING id
-                """, Long.class, companyId, hash, visibility, ownerUserId);
+                """, Long.class, companyId, hash, ownerUserId);
         createdDocuments.add(id);
         return id;
     }
 
-    private void insertCompanyGrant(String subjectType, long subjectId, long companyId, String expiresExpr) {
+    private void insertDocumentGrant(String subjectType, long subjectId, long documentId, String expiresExpr) {
         jdbc.update("""
                 INSERT INTO resource_grant
                     (tenant_id, subject_type, subject_id, resource_type, resource_id, permission, expires_at)
-                VALUES (1, ?, ?, 'COMPANY', ?, 'READ', %s)
-                """.formatted(expiresExpr), subjectType, subjectId, companyId);
+                VALUES (1, ?, ?, 'DOCUMENT', ?, 'READ', %s)
+                """.formatted(expiresExpr), subjectType, subjectId, documentId);
+    }
+
+    private Long roleId(String code) {
+        return jdbc.queryForObject("SELECT id FROM role WHERE tenant_id = 1 AND code = ?", Long.class, code);
     }
 
     private void deleteByIds(String table, List<Long> ids) {

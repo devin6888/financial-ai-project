@@ -76,16 +76,19 @@ class ConversationControllerTest {
     void messagesAreNewestFirst() throws Exception {
         when(conversations.messages(11L, null, 50)).thenReturn(List.of(
                 new ConversationMessage(102L, 11L, "ASSISTANT", "答案 [E1]", "[{\"childChunkId\":7}]",
-                        "{}", "trace-1", 12, OffsetDateTime.parse("2026-10-27T12:00:02+08:00")),
+                        "{}", "trace-1", 12, 11800, OffsetDateTime.parse("2026-10-27T12:00:02+08:00")),
                 new ConversationMessage(101L, 11L, "USER", "问题", null,
-                        "{}", "trace-1", 5, OffsetDateTime.parse("2026-10-27T12:00:01+08:00"))));
+                        "{}", "trace-1", 5, null, OffsetDateTime.parse("2026-10-27T12:00:01+08:00"))));
 
         mvc.perform(get("/api/conversations/11/messages"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.conversationId").value(11))
                 .andExpect(jsonPath("$.messages[0].role").value("ASSISTANT"))
                 .andExpect(jsonPath("$.messages[0].citations[0].childChunkId").value(7))
+                // 历史消息也要能显示「用时」（2026-11-03：原来只有前端内存里有）
+                .andExpect(jsonPath("$.messages[0].elapsedMs").value(11800))
                 .andExpect(jsonPath("$.messages[1].role").value("USER"))
+                .andExpect(jsonPath("$.messages[1].elapsedMs").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.nextBeforeId").value(101));
     }
 

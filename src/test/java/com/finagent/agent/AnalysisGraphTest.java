@@ -18,16 +18,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Task 3 的图骨架测试：用假节点验证拓扑、条件边与中断，不碰模型与数据库。
  *
  * <p>四个「必须有」的分支：直答路径、复杂路径（拆子问题）、证据不足改写后重试、引用校验不过回写；
- * 外加 HITL 停在 answer 前、空问题直接拒答、Mermaid 图与 ST11 §2.2 对齐。
+ * 外加人批停在 approve 前（阶段 22 起靠 state 里的 {@code approvalAllowed}，不再换图）、
+ * 空问题直接拒答、Mermaid 图与 ST11 §2.2 对齐。
  */
 class AnalysisGraphTest {
 
     private static final RunnableConfig CFG = RunnableConfig.builder().threadId("test-run").build();
 
     private static List<String> run(CompiledGraph<AnalysisState> graph, String question) {
+        return run(graph, question, false);
+    }
+
+    /**
+     * @param approval 是否种「允许人批 + 有歧义」；true 时图会停在 approve 前（阶段 22：两者都要）
+     */
+    private static List<String> run(CompiledGraph<AnalysisState> graph, String question, boolean approval) {
+        Map<String, Object> init = new java.util.LinkedHashMap<>();
+        init.put(AnalysisState.QUESTION, question);
+        init.put(AnalysisState.APPROVAL_ALLOWED, approval);
+        init.put(AnalysisState.APPROVAL_REASONS, approval ? List.of("year_not_specified") : List.of());
         List<String> nodes = new ArrayList<>();
-        for (NodeOutput<AnalysisState> out : graph.stream(
-                GraphInput.args(Map.of(AnalysisState.QUESTION, question)), CFG)) {
+        for (NodeOutput<AnalysisState> out : graph.stream(GraphInput.args(init), CFG)) {
             if (!out.isSTART() && !out.isEND()) {
                 nodes.add(out.node());
             }
@@ -106,7 +117,7 @@ class AnalysisGraphTest {
                 AnalysisState.USERNAME, "analyst",
                 AnalysisState.ROLES, List.of("ANALYST"));
 
-        for (NodeOutput<AnalysisState> out : graph.fastGraph().stream(GraphInput.args(init), CFG)) {
+        for (NodeOutput<AnalysisState> out : graph.graph().stream(GraphInput.args(init), CFG)) {
             if (out.isSTART() || out.isEND()) {
                 continue;
             }
@@ -130,7 +141,7 @@ class AnalysisGraphTest {
                         AnalysisState.REFUSE_REASON, "问题里的公司不在当前可检索范围内：五粮液");
             }
         };
-        CompiledGraph<AnalysisState> app = new AnalysisGraph(nodes, new MemorySaver(), 25).fastGraph();
+        CompiledGraph<AnalysisState> app = new AnalysisGraph(nodes, new MemorySaver(), 25).graph();
 
         List<String> nodesRun = run(app, "五粮液2025年净利润是多少");
 
@@ -154,11 +165,11 @@ class AnalysisGraphTest {
                         AnalysisState.REFUSE_REASON, "知识库中没有当前账号可检索的文档");
             }
         };
-        CompiledGraph<AnalysisState> app = new AnalysisGraph(nodes, new MemorySaver(), 25).fastGraph();
+        CompiledGraph<AnalysisState> app = new AnalysisGraph(nodes, new MemorySaver(), 25).graph();
 
         List<String> nodesRun = run(app, "东方财富2025年营业总收入是多少");
 
-        assertThat(nodesRun).containsExactly("understand", "plan", "retrieve", "respond_insufficient");
+        assertThat(nodesRun).containsExactly("understand", "plan", "approve", "retrieve", "respond_insufficient");
         assertThat(finalState(app).status()).isEqualTo(AgentRun.STATUS_REJECTED);
     }
 
@@ -219,12 +230,12 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("直答路径：understand → plan → retrieve → verify → approve → compute → answer → cite_check → END")
     void directPathRunsToEnd() {
-        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
 
         List<String> nodes = run(app, "东方财富2025年营业总收入是多少");
 
-        assertThat(nodes).containsExactly("understand", "plan", "retrieve", "verify",
-                "approve", "compute", "answer", "cite_check");
+        assertThat(nodes).containsExactly("understand", "plan", "approve", "retrieve", "verify",
+                "compute", "answer", "cite_check");
         AnalysisState state = finalState(app);
         assertThat(state.status()).isEqualTo(AgentRun.STATUS_DONE);
         assertThat(state.answer()).startsWith("fake-answer:").contains("[E1]");
@@ -238,7 +249,7 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("复杂路径：plan 拆出 2 个子问题，retrieve 节点内顺序检索两次（命中 6 条）")
     void complexPathDecomposes() {
-        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
 
         run(app, "复杂：对比东方财富2024与2025年的营业总收入");
 
@@ -253,12 +264,12 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("证据不足：rewrite 一次后回 retrieve，第二次拿到证据 → 继续出答案")
     void insufficientRewritesOnceThenRecovers() {
-        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(false, true, 0)).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(false, true, 0)).graph();
 
         List<String> nodes = run(app, "东方财富2025年营业总收入是多少");
 
-        assertThat(nodes).containsExactly("understand", "plan", "retrieve", "verify",
-                "rewrite", "retrieve", "verify", "approve", "compute", "answer", "cite_check");
+        assertThat(nodes).containsExactly("understand", "plan", "approve", "retrieve", "verify",
+                "rewrite", "retrieve", "verify", "compute", "answer", "cite_check");
         AnalysisState state = finalState(app);
         assertThat(state.retryCount()).isEqualTo(1);
         assertThat(state.rewrittenQuery()).endsWith("（改写）");
@@ -269,11 +280,11 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("改写后仍然没有证据：respond_insufficient 终态，答案是可读文案（C6 第 5 条）")
     void stillInsufficientAfterRewriteRefuses() {
-        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(false, false, 0)).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(false, false, 0)).graph();
 
         List<String> nodes = run(app, "东方财富2050年营业总收入是多少");
 
-        assertThat(nodes).containsExactly("understand", "plan", "retrieve", "verify",
+        assertThat(nodes).containsExactly("understand", "plan", "approve", "retrieve", "verify",
                 "rewrite", "retrieve", "verify", "respond_insufficient");
         AnalysisState state = finalState(app);
         assertThat(state.status()).isEqualTo(AgentRun.STATUS_REJECTED);
@@ -284,12 +295,12 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("引用校验不过：回 answer 重写一次，第二次通过后结束")
     void citeCheckLoopsBackOnce() {
-        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 1)).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 1)).graph();
 
         List<String> nodes = run(app, "东方财富2025年营业总收入是多少");
 
-        assertThat(nodes).containsExactly("understand", "plan", "retrieve", "verify",
-                "approve", "compute", "answer", "cite_check", "answer", "cite_check");
+        assertThat(nodes).containsExactly("understand", "plan", "approve", "retrieve", "verify",
+                "compute", "answer", "cite_check", "answer", "cite_check");
         AnalysisState state = finalState(app);
         assertThat(state.citationIssues()).isEmpty();
         assertThat(state.citeAttempts()).isEqualTo(2);
@@ -298,19 +309,19 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("引用校验连续两次不过：不再回写，直接放弃（不无限循环）")
     void citeCheckGivesUpAfterOneRetry() {
-        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 5)).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 5)).graph();
 
         List<String> nodes = run(app, "东方财富2025年营业总收入是多少");
 
-        assertThat(nodes).containsExactly("understand", "plan", "retrieve", "verify",
-                "approve", "compute", "answer", "cite_check", "answer", "cite_check");
+        assertThat(nodes).containsExactly("understand", "plan", "approve", "retrieve", "verify",
+                "compute", "answer", "cite_check", "answer", "cite_check");
         assertThat(finalState(app).citationIssues()).isNotEmpty();
     }
 
     @Test
     @DisplayName("空问题：plan 直接判 REFUSE，不走检索")
     void blankQuestionRefuses() {
-        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).fastGraph();
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
 
         List<String> nodes = run(app, "   ");
 
@@ -321,11 +332,12 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("HITL：停在 approve 前（不抛异常），resume 带 APPROVE 后跑完")
     void hitlStopsBeforeApproveThenResumes() {
-        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).hitlGraph();
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
 
-        List<String> firstRun = run(app, "复杂：对比东方财富两年营业总收入");
+        List<String> firstRun = run(app, "复杂：对比东方财富两年营业总收入", true);
 
-        assertThat(firstRun).containsExactly("understand", "plan", "retrieve", "verify");
+        // 阶段 22：approve 前移到 plan 之后，所以停在「准备检索」这一刻
+        assertThat(firstRun).containsExactly("understand", "plan");
         assertThat(app.getState(CFG).nextNodeId()).isEqualTo("approve");
         assertThat(finalState(app).answer()).isEmpty();
 
@@ -337,7 +349,7 @@ class AnalysisGraphTest {
             }
         }
 
-        assertThat(secondRun).containsExactly("approve", "compute", "answer", "cite_check");
+        assertThat(secondRun).containsExactly("approve", "retrieve", "verify", "compute", "answer", "cite_check");
         AnalysisState state = finalState(app);
         assertThat(state.decision()).isEqualTo("APPROVE");
         assertThat(state.status()).isEqualTo(AgentRun.STATUS_DONE);
@@ -347,10 +359,10 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("引用校验不过的自动重试不再弹审批：一次人批，重试一路跑完（ST11 §19）")
     void citeRetryAfterApprovalDoesNotAskAgain() {
-        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 1)).hitlGraph();
+        CompiledGraph<AnalysisState> app = graph(new FakeAnalysisNodes(true, true, 1)).graph();
 
-        List<String> firstRun = run(app, "复杂：对比东方财富两年营业总收入");
-        assertThat(firstRun).containsExactly("understand", "plan", "retrieve", "verify");
+        List<String> firstRun = run(app, "复杂：对比东方财富两年营业总收入", true);
+        assertThat(firstRun).containsExactly("understand", "plan");
         assertThat(app.getState(CFG).nextNodeId()).isEqualTo("approve");
 
         List<String> secondRun = new ArrayList<>();
@@ -362,7 +374,8 @@ class AnalysisGraphTest {
         }
 
         // 关键：cite_check 失败 → 回 answer 重写，但不会再停在 approve（一次运行只批一次）
-        assertThat(secondRun).containsExactly("approve", "compute", "answer", "cite_check", "answer", "cite_check");
+        assertThat(secondRun).containsExactly("approve", "retrieve", "verify", "compute",
+                "answer", "cite_check", "answer", "cite_check");
         assertThat(finalState(app).citeAttempts()).isEqualTo(2);
         assertThat(finalState(app).status()).isEqualTo(AgentRun.STATUS_DONE);
     }
@@ -370,8 +383,8 @@ class AnalysisGraphTest {
     @Test
     @DisplayName("EDIT 的 note 会进答案（人工补充要点）")
     void editNoteShapesTheAnswer() {
-        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).hitlGraph();
-        run(app, "复杂：对比东方财富两年营业总收入");
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
+        run(app, "复杂：对比东方财富两年营业总收入", true);
 
         for (NodeOutput<AnalysisState> ignored : app.stream(
                 GraphInput.resume(Map.of(AnalysisState.DECISION, "EDIT",

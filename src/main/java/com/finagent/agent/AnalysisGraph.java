@@ -24,24 +24,25 @@ import java.util.function.Function;
  * 七个业务节点 + 两个终态节点的图（契约 C17 §2.2）。
  *
  * <pre>
- * START → understand → plan ─┬─ DIRECT ──────▶ retrieve
- *                            ├─ DECOMPOSE ───▶ retrieve（节点内按 subQuestions 顺序循环）
- *                            └─ REFUSE ──────▶ respond_insufficient
- * retrieve → verify ─┬─ ENOUGH ─────────────▶ approve → compute → answer
+ * START → understand → plan ─┬─ 需要检索 ─▶ approve ─▶ retrieve（节点内按 subQuestions 顺序循环）
+ *                            └─ REFUSE ───▶ respond_insufficient
+ * retrieve → verify ─┬─ ENOUGH ─────────────▶ compute → answer
  *                    ├─ RETRY（retryCount<1）▶ rewrite → retrieve
  *                    └─ INSUFFICIENT ───────▶ respond_insufficient
  * answer → cite_check ─┬─ 通过 ──▶ END（重写回 answer 时不再经过 compute，事实已在状态里）
  *                      └─ 不过且未重试 ──▶ answer（不经过 approve）
  * </pre>
  *
- * <p>为什么编两张图：{@code interruptsBefore} 是<b>编译期</b>配置，不能按请求开关，
- * 所以「要不要人批」只能编译期定 —— {@link #fastGraph()} 不中断，{@link #hitlGraph()} 在 {@code approve} 前停。
+ * <p><b>只编一张图</b>（阶段 22）：是否停等人批由 {@link ApprovalGate} 在<b>运行时</b>按状态
+ * （{@code approvalAllowed} + {@code decision} 是否已填）决定，不再靠编译期 {@code interruptsBefore} 区分
+ * {@code fast} / {@code hitl} 两张产物。代价是 {@code approve} 每次都会执行，但它只是返回空 {@code Map.of()}，
+ * 微秒级；换来的是「一个决策点、一份编译产物」。
  *
  * <p>为什么中断点不是 {@code answer} 而是单独一个 {@code approve} 节点（ST11 §19）：{@code cite_check}
  * 发现引用问题时会沿回边重跑 {@code answer}，若中断点挂在 {@code answer} 上，每重试一次就再弹一次审批
  * （2026-10-29 真链路实测：复杂问题批了两次）。{@code approve} 只在 verify 通过后进入一次，重试不再经过它。
  *
- * <p><b>两张图在实例内各缓存一份</b>（2026-11-02）：{@code StateGraph} 是"装配件"而不是"运行数据"——
+ * <p><b>图在实例内缓存一份</b>（2026-11-02 缓存两张，阶段 22 合并成一张）：{@code StateGraph} 是"装配件"而不是"运行数据"——
  * {@code CompiledGraph} 的五个字段（stateGraph / nodes / edges / processedData / compileConfig）全是
  * {@code final}，构造完就不再改；每次运行的变量走 {@code RunnableConfig(threadId)} 与检查点 saver，
  * 节点 lambda 也只从 state 里读身份。所以同一实例的图可以安全地被所有请求共享。
@@ -80,9 +81,11 @@ public final class AnalysisGraph {
     private final BaseCheckpointSaver saver;
     private final int recursionLimit;
 
-    /** 编译好的两张图（懒加载 + 双检锁）。{@code volatile} 是双检锁成立的前提。 */
-    private volatile CompiledGraph<AnalysisState> cachedFast;
-    private volatile CompiledGraph<AnalysisState> cachedHitl;
+    /** 编译好的唯一一张图（懒加载 + 双检锁）。{@code volatile} 是双检锁成立的前提。 */
+    private volatile CompiledGraph<AnalysisState> cached;
+
+    /** 人批闸门：无状态（判断全在 state 里），所有运行共用一份。 */
+    private final ApprovalGate approvalGate = new ApprovalGate();
 
     /**
      * @param saver          检查点存储；{@code null} 表示不持久化（只能用于一次性测试）
@@ -94,34 +97,24 @@ public final class AnalysisGraph {
         this.recursionLimit = recursionLimit;
     }
 
-    /** 不中断的图：简单问题（或测试）用它。同一个实例只编译一次。 */
-    public CompiledGraph<AnalysisState> fastGraph() {
-        CompiledGraph<AnalysisState> cached = cachedFast;
-        if (cached == null) {
+    /**
+     * 唯一的一张图。同一个实例只编译一次。
+     *
+     * <p>「要不要人批」不是这张图的属性，而是每次运行的状态（{@link AnalysisState#APPROVAL_ALLOWED}）：
+     * 同一个实例既跑「直接出答案」也跑「停下来等审批」。
+     */
+    public CompiledGraph<AnalysisState> graph() {
+        CompiledGraph<AnalysisState> local = cached;
+        if (local == null) {
             synchronized (this) {
-                cached = cachedFast;
-                if (cached == null) {
-                    cached = build(false);
-                    cachedFast = cached;
+                local = cached;
+                if (local == null) {
+                    local = build();
+                    cached = local;
                 }
             }
         }
-        return cached;
-    }
-
-    /** 在 {@code approve} 前停住等人批的图（每次运行只停一次，ST11 §19）。同一个实例只编译一次。 */
-    public CompiledGraph<AnalysisState> hitlGraph() {
-        CompiledGraph<AnalysisState> cached = cachedHitl;
-        if (cached == null) {
-            synchronized (this) {
-                cached = cachedHitl;
-                if (cached == null) {
-                    cached = build(true);
-                    cachedHitl = cached;
-                }
-            }
-        }
-        return cached;
+        return local;
     }
 
     /**
@@ -131,13 +124,12 @@ public final class AnalysisGraph {
      * 现在会在 Spring 建 bean 时就抛 {@code IllegalStateException}，而不是等第一个用户提问才 500。
      */
     public void warmUp() {
-        fastGraph();
-        hitlGraph();
+        graph();
     }
 
     /** Mermaid 文本（贴进文档/PR，代替 LangGraph4j Studio）。用缓存的那张，不额外编译。 */
     public String mermaid() {
-        GraphRepresentation rep = fastGraph().getGraph(GraphRepresentation.Type.MERMAID, "AnalysisGraph");
+        GraphRepresentation rep = graph().getGraph(GraphRepresentation.Type.MERMAID, "AnalysisGraph");
         return rep.content();
     }
 
@@ -177,11 +169,9 @@ public final class AnalysisGraph {
 
     /**
      *  🗝️ 核心业务流程
-     * 构建业务执行流程图
-     * @param hitl 是否需要真人审批
-     * @return
+     * 构建业务执行流程图（只有一张：审批由 {@link ApprovalGate} 在运行时决定）
      */
-    private CompiledGraph<AnalysisState> build(boolean hitl) {
+    private CompiledGraph<AnalysisState> build() {
         StateGraph<AnalysisState> graph;
         try {
             graph = new StateGraph<>(AnalysisState.SCHEMA, AnalysisState::new)
@@ -189,7 +179,8 @@ public final class AnalysisGraph {
                     .addNode(NODE_PLAN, node(nodes::plan))
                     .addNode(NODE_RETRIEVE, node(nodes::retrieve))
                     .addNode(NODE_VERIFY, node(nodes::verify))
-                    .addNode(NODE_APPROVE, node(state -> Map.of()))
+                    // 唯一的人在环落点：停不停由 ApprovalGate 在运行时按状态判断（阶段 22）
+                    .addNode(NODE_APPROVE, approvalGate)
                     .addNode(NODE_REWRITE, node(nodes::rewrite))
                     .addNode(NODE_COMPUTE, node(nodes::compute))
                     .addNode(NODE_ANSWER, node(nodes::answer))
@@ -206,11 +197,13 @@ public final class AnalysisGraph {
                                 || !state.refuseReason().isBlank()) {
                             return "refuse";
                         }
-                        return state.subQuestions().isEmpty() ? "direct" : "decompose";
+                        return "review";
                     }), Map.of(
-                            "direct", NODE_RETRIEVE,
-                            "decompose", NODE_RETRIEVE,
+                            // 可答的问题一律先过 approve 闸门：需要人批时会停在这里（阶段 22 前移到检索之前）
+                            "review", NODE_APPROVE,
                             "refuse", NODE_INSUFFICIENT))
+                    // approve 之后才真正查库：人批确认的是「准备怎么查」，所以改了年份/公司再检索才有意义
+                    .addEdge(NODE_APPROVE, NODE_RETRIEVE)
                     // retrieve 之后先看「检索阶段是否已经判了不可答」（作用域为空只会在这一步暴露）
                     .addConditionalEdges(NODE_RETRIEVE, AsyncEdgeAction.edge_async(state ->
                             state.refuseReason().isBlank() ? "verify" : "refuse"), Map.of(
@@ -226,12 +219,10 @@ public final class AnalysisGraph {
                         }
                         return state.retryCount() < 1 ? "retry" : "insufficient";
                     }), Map.of(
-                            "enough", NODE_APPROVE,
+                            "enough", NODE_COMPUTE,
                             "retry", NODE_REWRITE,
                             "insufficient", NODE_INSUFFICIENT))
-                    // approve 是唯一的人在环落点：过了它就一路跑到 final，cite_check 重试不再打扰人
-                    // compute 放在 approve 之后：审批不过时不该白算一遍事实与派生指标
-                    .addEdge(NODE_APPROVE, NODE_COMPUTE)
+                    // 唯一的人在环落点；一次运行只停一次（cite_check 的重试不再经过它）
                     .addEdge(NODE_COMPUTE, NODE_ANSWER)
                     .addEdge(NODE_REWRITE, NODE_RETRIEVE)
                     .addEdge(NODE_ANSWER, NODE_CITE_CHECK)
@@ -257,15 +248,11 @@ public final class AnalysisGraph {
             // IllegalStateException: Missing Checkpoint! —— 而我们要能查最终状态、也要能重启后续跑
             config.checkpointSaver(saver).releaseThread(false);
         }
-        if (hitl) {
-            config.interruptsBefore(Set.of(NODE_APPROVE));
-        }
         try {
             CompiledGraph<AnalysisState> compiled = graph.compile(config.build());
-            LOG.info("Agent 图已编译：{}（recursionLimit={}，interruptsBefore={}，检查点={}）",
-                    hitl ? "hitl" : "fast", recursionLimit,
-                    hitl ? NODE_APPROVE : "无",
-                    saver == null ? "无" : saver.getClass().getSimpleName());
+            // 不再打印 interruptsBefore：它是空的（审批走 InterruptibleAction 的运行时中断）
+            LOG.info("Agent 图已编译：（recursionLimit={}，人批=运行时按 state 决定，检查点={}）",
+                    recursionLimit, saver == null ? "无" : saver.getClass().getSimpleName());
             return compiled;
         } catch (GraphStateException e) {
             throw new IllegalStateException("Agent 图编译失败：" + e.getMessage(), e);

@@ -14,6 +14,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import tools.jackson.databind.ObjectMapper;
 
@@ -49,6 +51,28 @@ import static org.mockito.Mockito.verify;
 @Tag("e2e")
 class DocumentTaskFlowIntegrationTest {
 
+    /**
+     * 独立的消费者组：本机并行跑着的后端（spring-boot:run / IDE 启动）也在
+     * {@code document-worker} 组里订阅同一个 topic，会和本测试争抢消息 ——
+     * 抢到的那条会被**真** ReindexService 处理（给 document 7 多造一个 chunk 版本），
+     * 而测试自己的 mock 一次都没被调用 → {@code verify} 随机报
+     * 「Wanted but not invoked ... zero interactions」。
+     *
+     * <p>用一次性组名，测试只消费自己刚投递的消息，也顺带避免重放历史消息。
+     */
+    @DynamicPropertySource
+    static void isolatedConsumerGroup(DynamicPropertyRegistry registry) {
+        registry.add("spring.kafka.consumer.group-id", () -> GROUP);
+        // 光换组还不够：本机后端在**另一个组**里照样会收到同一条消息并真跑一遍
+        // （给 document 7 多造一个 chunk 版本）。topic 也必须是一次性的。
+        registry.add("finagent.task.parse-topic", () -> "test.document.parse" + SUFFIX);
+        registry.add("finagent.task.reindex-topic", () -> "test.document.reindex" + SUFFIX);
+    }
+
+    private static final String SUFFIX = "-" + UUID.randomUUID().toString().substring(0, 8);
+    private static final String GROUP = "test-taskflow-" + UUID.randomUUID();
+
+
     private static final long DOC_ID = 7L;
 
     @MockitoBean
@@ -66,6 +90,30 @@ class DocumentTaskFlowIntegrationTest {
     @Autowired
     private TaskMessageRepository taskMessages;
 
+    @Autowired
+    private org.springframework.kafka.config.KafkaListenerEndpointRegistry listenerRegistry;
+
+    /**
+     * 等监听容器真正跑起来再发消息。
+     *
+     * <p>本测试用的是**一次性消费者组**（见 {@link #isolatedConsumerGroup}），没有历史位点，
+     * 因此首次拉取时按 {@code auto.offset.reset=latest} 把起点定在「那一刻的日志末尾」。
+     * 若消息恰好在这个极短窗口内投递，就会被直接跳过 —— 现象是
+     * {@code badMessageGoesToDlq} 等了 90 秒 DLQ 里也没有那条消息。
+     * 这里先等容器 running，再留 1.5 秒让首个 poll 把位点落定。
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void waitForConsumersToSettle() throws Exception {
+        long deadline = System.currentTimeMillis() + 20_000;
+        while (System.currentTimeMillis() < deadline
+                && listenerRegistry.getListenerContainers().stream()
+                        .anyMatch(c -> !c.isRunning())) {
+            Thread.sleep(100);
+        }
+        Thread.sleep(1500);
+    }
+
+
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
 
@@ -79,7 +127,9 @@ class DocumentTaskFlowIntegrationTest {
         TaskMessage msg = awaitStatus(event.eventId(), "SUCCESS", 60);
 
         assertThat(msg.documentId()).isEqualTo(DOC_ID);
-        assertThat(msg.topic()).isEqualTo(props.reindexTopic());
+        // topic 列存的是**逻辑任务名**（listener 里写死的 "document.reindex"），不是物理 topic：
+        // 本测试把物理 topic 换成了 test.document.reindex-<uuid>，两者不再相等。
+        assertThat(msg.topic()).isEqualTo("document.reindex");
         assertThat(msg.retryCount()).isZero();
         // 断言 listener 真的走到了重索引（而不是只把状态改成 SUCCESS 就 ack）
         verify(reindexService, times(1)).reindex(DOC_ID, ReindexMode.RECHUNK);
