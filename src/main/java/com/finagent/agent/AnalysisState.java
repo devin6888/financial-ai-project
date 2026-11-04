@@ -219,221 +219,234 @@ public class AnalysisState extends AgentState {
         super(data);
     }
 
+    /**
+     * 读通道值，缺省用 {@code fallback}。
+     *
+     * <p>为什么不直接调 {@code AgentState.value(String, T)} / {@code value(String, Supplier)}：
+     * langgraph4j 1.9.7 把这两个重载都标了 {@code @Deprecated(forRemoval = true)}，
+     * 只留 {@code value(String) -> Optional<T>}。这里统一走 {@link #data()}，只在这一处做类型转换。
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T get(String key, T fallback) {
+        Object value = data().get(key);
+        return value == null ? fallback : (T) value;
+    }
+
     public long tenantId() {
-        return this.value(TENANT_ID, 0L);
+        return get(TENANT_ID, 0L);
     }
 
     public long userId() {
-        return this.value(USER_ID, 0L);
+        return get(USER_ID, 0L);
     }
 
     public String username() {
-        return this.value(USERNAME, "");
+        return get(USERNAME, "");
     }
 
     public List<String> roles() {
-        return this.value(ROLES, List.of());
+        return get(ROLES, List.of());
     }
 
     public String runId() {
-        return this.value(RUN_ID, "");
+        return get(RUN_ID, "");
     }
 
     /** 用户原话，永不改写（硬规则 3）。 */
     public String question() {
-        return this.value(QUESTION, "");
+        return get(QUESTION, "");
     }
 
     /** 检索用的查询：plan 或 rewrite 写；空表示直接用原问。 */
     public String rewrittenQuery() {
-        return this.value(REWRITTEN_QUERY, "");
+        return get(REWRITTEN_QUERY, "");
     }
 
     public String queryType() {
-        return this.value(QUERY_TYPE, "");
+        return get(QUERY_TYPE, "");
     }
 
     public List<String> companyCodes() {
-        return this.value(COMPANY_CODES, List.of());
+        return get(COMPANY_CODES, List.of());
     }
 
     /** 问题原文里的公司名字面；拆子问题补前缀用（ST15 §3.1）。 */
     public List<String> companyMentions() {
-        return this.value(COMPANY_MENTIONS, List.of());
+        return get(COMPANY_MENTIONS, List.of());
     }
 
     public Integer yearFrom() {
-        int v = this.value(YEAR_FROM, UNKNOWN_YEAR);
+        int v = get(YEAR_FROM, UNKNOWN_YEAR);
         return v == UNKNOWN_YEAR ? null : v;
     }
 
     public Integer yearTo() {
-        int v = this.value(YEAR_TO, UNKNOWN_YEAR);
+        int v = get(YEAR_TO, UNKNOWN_YEAR);
         return v == UNKNOWN_YEAR ? null : v;
     }
 
     /** 人可读的步骤（每项一句话），前端画计划卡片用。 */
     public List<String> plan() {
-        return this.value(PLAN, List.of());
+        return get(PLAN, List.of());
     }
 
     public List<String> subQuestions() {
-        return this.value(SUB_QUESTIONS, List.of());
+        return get(SUB_QUESTIONS, List.of());
     }
 
     /** 每条形如 {chunkId, documentId, page, sectionPath, type, score}。 */
     public List<Map<String, Object>> hits() {
-        return this.value(HITS, List.of());
+        return get(HITS, List.of());
     }
 
     public int evidenceCount() {
-        return this.value(EVIDENCE_COUNT, 0);
+        return get(EVIDENCE_COUNT, 0);
     }
 
     public boolean insufficient() {
-        return this.value(INSUFFICIENT, Boolean.FALSE);
+        return get(INSUFFICIENT, Boolean.FALSE);
     }
 
     public int retryCount() {
-        return this.value(RETRY_COUNT, 0);
+        return get(RETRY_COUNT, 0);
     }
 
     public String answer() {
-        return this.value(ANSWER, "");
+        return get(ANSWER, "");
     }
 
     public List<String> citationIssues() {
-        return this.value(CITATION_ISSUES, List.of());
+        return get(CITATION_ISSUES, List.of());
     }
 
     public int citeAttempts() {
-        return this.value(CITE_ATTEMPTS, 0);
+        return get(CITE_ATTEMPTS, 0);
     }
 
     public boolean marketIntent() {
-        return this.value(MARKET_INTENT, Boolean.FALSE);
+        return get(MARKET_INTENT, Boolean.FALSE);
     }
 
     public boolean marketOnly() {
-        return this.value(MARKET_ONLY, Boolean.FALSE);
+        return get(MARKET_ONLY, Boolean.FALSE);
     }
 
     public Map<String, Object> marketPlan() {
-        return this.value(MARKET_PLAN, Map.of());
+        return get(MARKET_PLAN, Map.of());
     }
 
     public Map<String, Object> marketData() {
-        return this.value(MARKET_DATA, Map.of());
+        return get(MARKET_DATA, Map.of());
     }
 
     public String marketAsOf() {
-        return this.value(MARKET_AS_OF, "");
+        return get(MARKET_AS_OF, "");
     }
 
     public String marketTool() {
-        return this.value(MARKET_TOOL, "");
+        return get(MARKET_TOOL, "");
     }
 
     public String marketError() {
-        return this.value(MARKET_ERROR, "");
+        return get(MARKET_ERROR, "");
     }
 
     public List<Map<String, Object>> marketFacts() {
-        return this.value(MARKET_FACTS, List.of());
+        return get(MARKET_FACTS, List.of());
     }
 
     public String decision() {
-        return this.value(DECISION, "");
+        return get(DECISION, "");
     }
 
     /** 这次运行是否允许停等人批；没种过就是 false（老测试、同步接口都走这条路）。 */
     public boolean approvalAllowed() {
-        return this.value(APPROVAL_ALLOWED, Boolean.FALSE);
+        return get(APPROVAL_ALLOWED, Boolean.FALSE);
     }
 
     /** understand 判出的歧义原因码；空 = 不需要人批。 */
     public List<String> approvalReasons() {
-        return this.value(APPROVAL_REASONS, List.of());
+        return get(APPROVAL_REASONS, List.of());
     }
 
     /** 审批卡上的候选（年份 / 公司 / 全选）。 */
     public List<Map<String, Object>> approvalCandidates() {
-        return this.value(APPROVAL_CANDIDATES, List.of());
+        return get(APPROVAL_CANDIDATES, List.of());
     }
 
     public String decisionNote() {
-        return this.value(DECISION_NOTE, "");
+        return get(DECISION_NOTE, "");
     }
 
     public String status() {
-        return this.value(STATUS, AgentRun.STATUS_RUNNING);
+        return get(STATUS, AgentRun.STATUS_RUNNING);
     }
 
     /** CORPUS / DOCUMENTS / FILTER（与 ChatScope.kind 同名）。 */
     public String scopeKind() {
-        return this.value(SCOPE_KIND, "CORPUS");
+        return get(SCOPE_KIND, "CORPUS");
     }
 
     public List<Long> scopeDocumentIds() {
-        return this.value(SCOPE_DOCUMENT_IDS, List.of());
+        return get(SCOPE_DOCUMENT_IDS, List.of());
     }
 
     public List<String> scopeCompanyCodes() {
-        return this.value(SCOPE_COMPANY_CODES, List.of());
+        return get(SCOPE_COMPANY_CODES, List.of());
     }
 
     public List<Integer> scopeYears() {
-        return this.value(SCOPE_YEARS, List.of());
+        return get(SCOPE_YEARS, List.of());
     }
 
     public List<String> scopeDocTypes() {
-        return this.value(SCOPE_DOC_TYPES, List.of());
+        return get(SCOPE_DOC_TYPES, List.of());
     }
 
     /** 0 表示这一轮没有会话。 */
     public long conversationId() {
-        return this.value(CONVERSATION_ID, 0L);
+        return get(CONVERSATION_ID, 0L);
     }
 
     /** 已渲染好的记忆段（空串 = 没有）；answer 节点用它重建 MemoryContext。 */
     public String memoryText() {
-        return this.value(MEMORY_TEXT, "");
+        return get(MEMORY_TEXT, "");
     }
 
     /** 非空表示不该检索（例如公司不在作用域内），plan 直接判 REFUSE。 */
     public String refuseReason() {
-        return this.value(REFUSE_REASON, "");
+        return get(REFUSE_REASON, "");
     }
 
     public List<String> metrics() {
-        return this.value(METRICS, List.of());
+        return get(METRICS, List.of());
     }
 
     /** 答案形态的名字列表；空表示「问题没有明确形态」（纯取数）。 */
     public List<String> answerShapes() {
-        return this.value(ANSWER_SHAPES, List.of());
+        return get(ANSWER_SHAPES, List.of());
     }
 
     /** 章节计划，每行键见 {@link #ANSWER_PLAN}；空表示「本题不分节」。 */
     public List<Map<String, Object>> answerPlan() {
-        return this.value(ANSWER_PLAN, List.of());
+        return get(ANSWER_PLAN, List.of());
     }
 
     /** 事实清单，每行键见 {@link #FACTS}；空表示这次没有表格或没抽到数。 */
     public List<Map<String, Object>> facts() {
-        return this.value(FACTS, List.of());
+        return get(FACTS, List.of());
     }
 
     /** 本轮跑过的检索车道（顺序即执行顺序）。 */
     public List<String> lanes() {
-        return this.value(LANES, List.of());
+        return get(LANES, List.of());
     }
 
     public List<String> warnings() {
-        return this.value(WARNINGS, List.of());
+        return get(WARNINGS, List.of());
     }
 
     public int citationCount() {
-        return this.value(CITATION_COUNT, 0);
+        return get(CITATION_COUNT, 0);
     }
 }

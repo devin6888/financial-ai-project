@@ -154,12 +154,15 @@ public class MarketToolSelector {
     }
 
     /**
-     * 必须从<b>模型自己的默认 options</b> 派生：OpenAI 客户端的 {@code call()} 会把 options 强转成
+     * 必须从<b>模型自己的 options</b> 派生：OpenAI 客户端的 {@code call()} 会把 options 强转成
      * {@code OpenAiChatOptions}，直接传通用的 {@code DefaultToolCallingChatOptions} 会抛
      * {@code ClassCastException}（冒烟时就是这么回落到规则调用的）。
+     *
+     * <p>取的是 {@code ChatModel#getOptions()}；它的旧名 {@code getDefaultOptions()} 在 Spring AI 2.0.1
+     * 已标 {@code @Deprecated(forRemoval = true)}，语义相同。
      */
     private ChatOptions options(List<ToolCallback> callbacks) {
-        ChatOptions defaults = chatModel.getDefaultOptions();
+        ChatOptions defaults = chatModel.getOptions();
         if (defaults instanceof ToolCallingChatOptions toolOptions) {
             return toolOptions.mutate()
                     .toolCallbacks(callbacks)
