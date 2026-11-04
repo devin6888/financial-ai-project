@@ -27,7 +27,7 @@ import java.util.function.Function;
  * START → understand → plan ─┬─ 需要检索 ─▶ approve ─▶ retrieve（节点内按 subQuestions 顺序循环）
  *                            └─ REFUSE ───▶ respond_insufficient
  * retrieve → verify ─┬─ ENOUGH ─────────────▶ compute → answer
- *                    ├─ RETRY（retryCount<1）▶ rewrite → retrieve
+ *                    ├─ RETRY（retryCount &lt; 1）▶ rewrite → retrieve
  *                    └─ INSUFFICIENT ───────▶ respond_insufficient
  * answer → cite_check ─┬─ 通过 ──▶ END（重写回 answer 时不再经过 compute，事实已在状态里）
  *                      └─ 不过且未重试 ──▶ answer（不经过 approve）
@@ -71,6 +71,15 @@ public final class AnalysisGraph {
     public static final String NODE_ANSWER = "answer";
     public static final String NODE_CITE_CHECK = "cite_check";
     public static final String NODE_INSUFFICIENT = "respond_insufficient";
+    /**
+     * 行情取数（阶段 23）：通过 MCP 子进程拿实时行情。
+     *
+     * <p>位置有两种：纯行情问题在 plan 之后直达（省掉检索），
+     * 「财报 + 行情」问题在 retrieve 之后插入（先有证据，再补行情）。
+     */
+    public static final String NODE_MARKET = "market";
+    /** 纯行情问题的答案落点：模板渲染，不进证据链、不参与 [E] 编号。 */
+    public static final String NODE_ANSWER_MARKET = "answer_market";
 
     private static final String START = StateGraph.START;
     private static final String END = StateGraph.END;
@@ -186,6 +195,8 @@ public final class AnalysisGraph {
                     .addNode(NODE_ANSWER, node(nodes::answer))
                     .addNode(NODE_CITE_CHECK, node(nodes::citeCheck))
                     .addNode(NODE_INSUFFICIENT, node(nodes::respondInsufficient))
+                    .addNode(NODE_MARKET, node(nodes::market))
+                    .addNode(NODE_ANSWER_MARKET, node(nodes::answerMarket))
                     .addEdge(START, NODE_UNDERSTAND)
                     .addEdge(NODE_UNDERSTAND, NODE_PLAN)
                     // plan 的三值分流：问题为空**或主体/范围已被判为不可答** → 直接拒答；
@@ -197,18 +208,35 @@ public final class AnalysisGraph {
                                 || !state.refuseReason().isBlank()) {
                             return "refuse";
                         }
+                        // 纯行情问题（只要股价/市值，没有财报要素）不必走检索：省一次 600ms 的库查询，
+                        // 也省掉「检索结果为空 → verify 判证据不足 → 拒答」这条错路
+                        if (state.marketOnly()) {
+                            return "market";
+                        }
                         return "review";
                     }), Map.of(
                             // 可答的问题一律先过 approve 闸门：需要人批时会停在这里（阶段 22 前移到检索之前）
                             "review", NODE_APPROVE,
-                            "refuse", NODE_INSUFFICIENT))
+                            "refuse", NODE_INSUFFICIENT,
+                            "market", NODE_MARKET))
                     // approve 之后才真正查库：人批确认的是「准备怎么查」，所以改了年份/公司再检索才有意义
                     .addEdge(NODE_APPROVE, NODE_RETRIEVE)
                     // retrieve 之后先看「检索阶段是否已经判了不可答」（作用域为空只会在这一步暴露）
-                    .addConditionalEdges(NODE_RETRIEVE, AsyncEdgeAction.edge_async(state ->
-                            state.refuseReason().isBlank() ? "verify" : "refuse"), Map.of(
+                    .addConditionalEdges(NODE_RETRIEVE, AsyncEdgeAction.edge_async(state -> {
+                        if (!state.refuseReason().isBlank()) {
+                            return "refuse";
+                        }
+                        // 「财报 + 行情」的混合问题：先检索（证据已进 hits），再补行情，之后照常 verify
+                        return state.marketIntent() ? "market" : "verify";
+                    }), Map.of(
                             "verify", NODE_VERIFY,
-                            "refuse", NODE_INSUFFICIENT))
+                            "refuse", NODE_INSUFFICIENT,
+                            "market", NODE_MARKET))
+                    // 行情节点之后：纯行情 → 模板答案收尾；混合问题 → 回到证据链
+                    .addConditionalEdges(NODE_MARKET, AsyncEdgeAction.edge_async(state ->
+                            state.marketOnly() ? "answer_market" : "verify"), Map.of(
+                            "answer_market", NODE_ANSWER_MARKET,
+                            "verify", NODE_VERIFY))
                     // verify 的三条出口：够 → answer；不够但还能改写一次 → rewrite；否则拒答
                     .addConditionalEdges(NODE_VERIFY, AsyncEdgeAction.edge_async(state -> {
                         if (!state.refuseReason().isBlank()) {
@@ -217,11 +245,17 @@ public final class AnalysisGraph {
                         if (!state.insufficient()) {
                             return "enough";
                         }
-                        return state.retryCount() < 1 ? "retry" : "insufficient";
+                        if (state.retryCount() < 1) {
+                            return "retry";
+                        }
+                        // 改写一次后仍缺证据，但手里已有实时行情：与其整题拒答把付费拿到的数字也丢掉，
+                        // 不如只答行情那部分，并明确写「年报部分没找到证据」（阶段 23 冒烟发现的错路）
+                        return state.marketFacts().isEmpty() ? "insufficient" : "market_fallback";
                     }), Map.of(
                             "enough", NODE_COMPUTE,
                             "retry", NODE_REWRITE,
-                            "insufficient", NODE_INSUFFICIENT))
+                            "insufficient", NODE_INSUFFICIENT,
+                            "market_fallback", NODE_ANSWER_MARKET))
                     // 唯一的人在环落点；一次运行只停一次（cite_check 的重试不再经过它）
                     .addEdge(NODE_COMPUTE, NODE_ANSWER)
                     .addEdge(NODE_REWRITE, NODE_RETRIEVE)
@@ -236,7 +270,8 @@ public final class AnalysisGraph {
                             "ok", END,
                             "rewrite", NODE_ANSWER,
                             "give_up", END))
-                    .addEdge(NODE_INSUFFICIENT, END);
+                    .addEdge(NODE_INSUFFICIENT, END)
+                    .addEdge(NODE_ANSWER_MARKET, END);
         } catch (GraphStateException e) {
             // 图定义写错是编程错误，不是运行时业务失败：包成 IllegalStateException 让启动期就炸
             throw new IllegalStateException("Agent 图定义有误：" + e.getMessage(), e);

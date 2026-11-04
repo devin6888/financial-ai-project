@@ -41,6 +41,7 @@ public record FactPack(String prompt, List<AnswerResult.Fact> rows, Set<String> 
 
         StringBuilder reported = new StringBuilder();
         StringBuilder computed = new StringBuilder();
+        StringBuilder market = new StringBuilder();
         List<AnswerResult.Fact> facts = new ArrayList<>();
         Set<String> allowed = new LinkedHashSet<>();
         for (Map<String, Object> row : ordered) {
@@ -53,8 +54,25 @@ public record FactPack(String prompt, List<AnswerResult.Fact> rows, Set<String> 
             String formula = str(row.get("formula"));
             String display = str(row.get("display"));
             String no = "F" + intOf(row.get("no"));
+            // 来源默认 PDF（compute 写的行都不带 source 键），行情行显式给 MARKET
+            String source = str(row.get("source"));
+            if (source.isEmpty()) {
+                source = AnswerResult.Fact.SOURCE_PDF;
+            }
 
-            if (AnswerResult.ORIGIN_COMPUTED.equals(origin)) {
+            if (AnswerResult.Fact.SOURCE_MARKET.equals(source)) {
+                // 行情行单独成段：它是「当前时点」的快照，与报告期无关。
+                // 混在【已报事实】里时模型会拿报告期去否它（2026-11-04 冒烟：答「2025 年报不含当前股价，故无法确定」）。
+                market.append('[').append(no).append("] ").append(metric).append(" = ");
+                market.append(value).append(unit);
+                if (!display.isEmpty() && !display.equals(value)) {
+                    market.append("（≈").append(display).append('）');
+                }
+                if (!evidence.isEmpty()) {
+                    market.append("〔").append(evidence).append('〕');
+                }
+                market.append('\n');
+            } else if (AnswerResult.ORIGIN_COMPUTED.equals(origin)) {
                 computed.append('[').append(no).append("] ").append(metric);
                 if (!period.isEmpty()) {
                     computed.append(" / ").append(period);
@@ -84,7 +102,7 @@ public record FactPack(String prompt, List<AnswerResult.Fact> rows, Set<String> 
                 reported.append('\n');
             }
             facts.add(new AnswerResult.Fact(metric, period, value, unit, str(row.get("scope")), evidence,
-                    AnswerResult.Fact.SOURCE_PDF, origin, formula.isEmpty() ? null : formula));
+                    source, origin, formula.isEmpty() ? null : formula));
             addNumbers(allowed, value);
             addNumbers(allowed, display);
         }
@@ -95,6 +113,10 @@ public record FactPack(String prompt, List<AnswerResult.Fact> rows, Set<String> 
         }
         if (computed.length() > 0) {
             prompt.append("【已计算事实】（系统按公式计算，可直接引用；不要自己再算一遍）\n").append(computed).append('\n');
+        }
+        if (market.length() > 0) {
+            prompt.append("【实时行情】（当前时点快照，与报告期无关；问题问「现在/目前/今天」时直接用这组数字，"
+                    + "不要说「年报里没有披露」；时间以〔〕里的数据时间为准）\n").append(market).append('\n');
         }
         return new FactPack(prompt.toString(), facts, allowed);
     }

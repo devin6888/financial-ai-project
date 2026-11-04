@@ -57,6 +57,9 @@ Windows 下执行脚本用 Git Bash：
 | `FINAGENT_COS_BUCKET` | 是 | 形如 `mybucket-1251234567`（**必须带 APPID 后缀**） |
 | `FINAGENT_COS_KEY_PREFIX` | 否 | 对象键前缀，便于多环境隔离，例如 `dev/` |
 | `FINAGENT_RERANK_API_KEY` | 否 | 百炼 Rerank Key（与 `SPRING_AI_OPENAI_API_KEY` 是同一把）。**缺失或为空时装配 NoopRerankModel**：检索照常返回 RRF 结果，trace 里 `degraded=true`、模型名 `none` |
+| `FINAGENT_MARKET_ENABLED` | 否 | 默认 `true`。设成 `false` 时装配 `UnavailableMarketGateway`：行情问题只回「暂时不可用」，不影响年报问答 |
+| `FINAGENT_MCP_JAR` | 否 | 行情 MCP Server 的 jar 路径，默认 `../financial-mcp-server4j/target/financial-mcp-server4j-0.1.0.jar`。**jar 名跟 artifactId 走**，那边改名这里要同步 |
+| `FINAGENT_MARKET_LIVE` | 否 | 设成 `true` 才跑 `McpMarketGatewayLiveTest`（真起子进程、真联网查行情），默认跳过 |
 
 推荐做法：在项目根目录创建 `.env`（已在 `.gitignore` 中），然后加载后运行：
 
@@ -75,7 +78,27 @@ FINAGENT_COS_REGION=ap-guangzhou
 FINAGENT_COS_BUCKET=mybucket-1251234567
 FINAGENT_COS_KEY_PREFIX=dev/
 FINAGENT_RERANK_API_KEY=sk-xxxxxxxx
+# 行情支路（可选）：jar 不存在时会静默降级成「行情服务暂时不可用」
+# FINAGENT_MCP_JAR=../financial-mcp-server4j/target/financial-mcp-server4j-0.1.0.jar
 ```
+
+### 行情 MCP Server 是独立进程（阶段 23）
+
+行情数据来自东方财富公开接口，由**同目录另一个项目** `financial-mcp-server4j` 以 stdio MCP Server 的形式提供：
+
+```powershell
+# 一次性：把它打成可执行 jar
+cd ..\financial-mcp-server4j; mvn -DskipTests package
+# 之后主应用启动时会按需拉起：java -jar .../financial-mcp-server4j-0.1.0.jar
+```
+
+- **懒初始化 + 启动后异步预热**（`spring.ai.mcp.client.initialized=false` + `ApplicationReadyEvent`）：
+  冷启动实测 3.7~9 s，既不能放在启动路径上，也不能让第一个用户请求去等 —— 应用起来后
+  后台线程就握手（日志里一行「行情 MCP 子进程握手完成」），之后单次 40 ms 量级；
+- 握手超时单独放宽到 30 s（`MarketConfig` 的 `McpClientCustomizer`），沿用请求超时 8 s 会让第一次调用稳定超时；
+- 子进程挂了或 jar 不在：60 s 冷却期内直接回「行情服务暂时不可用」，年报问答完全不受影响；
+- 只有 `market` 节点会调用它 —— `spring.ai.mcp.client.toolcallback.enabled=false`，
+  所以行情工具**不会**被注册进所有 ChatClient（否则模型做年报问答时可能自己去查股价）。
 
 ### 在 IDEA 里直接点「运行」也能拿到 `.env`（阶段 20）
 
@@ -109,6 +132,7 @@ At least one credential source must be specified: credential (apiKey), workloadI
 | `VectorStoreSmokeTest#dashscopeEmbeddingReturns1024Dimensions` | `SPRING_AI_OPENAI_API_KEY` |
 | `CosObjectStorageTest`（整类） | `FINAGENT_COS_*` 四项 |
 | `DashScopeRerankModelLiveTest` | `FINAGENT_RERANK_API_KEY` |
+| `McpMarketGatewayLiveTest` | `FINAGENT_MARKET_LIVE=true` + 上面那个 jar |
 
 ## 阶段 1 已验证的环境指纹
 

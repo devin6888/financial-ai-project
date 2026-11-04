@@ -24,11 +24,27 @@ public record ChatTrace(
         long answerMs,
         // QU（查询理解）耗时；阶段 13 起记录，0 表示未采集。
         long quMs,
-        List<String> warnings
+        List<String> warnings,
+        /**
+         * 行情段（阶段 23）：没走行情支路时是 {@link MarketTrace#EMPTY}。
+         *
+         * <p>单列一个字段而不是塞进 warnings：前端要把「数据时间」显示在答案旁边，
+         * 从字符串里解析时间戳是可维护性的反面教材。
+         */
+        MarketTrace market
 ) {
     public ChatTrace {
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
         memory = memory == null ? MemoryTrace.EMPTY : memory;
+        market = market == null ? MarketTrace.EMPTY : market;
+    }
+
+    /** 兼容阶段 22 之前的 12 参调用点（那时还没有行情段）。 */
+    public ChatTrace(String traceId, RetrievalTrace retrieval, ScopeTrace scope, MemoryTrace memory,
+                     int contextBlocks, int contextTokens, int citationsEmitted, int citationsDropped,
+                     long contextMs, long answerMs, long quMs, List<String> warnings) {
+        this(traceId, retrieval, scope, memory, contextBlocks, contextTokens, citationsEmitted,
+                citationsDropped, contextMs, answerMs, quMs, warnings, MarketTrace.EMPTY);
     }
 
     /** 兼容阶段 8 之前的 10 参调用点（那时还没有记忆段）。 */

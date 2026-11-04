@@ -170,19 +170,23 @@ public class AnswerService {
     private AnswerResult evaluate(AnswerDto dto, QueryUnderstanding qu, ContextPackage pkg,
                                   FactPack factPack, AnswerSectionPlan plan) {
         List<String> warnings = new ArrayList<>();
-        if (!dto.sufficient()) {
-            // 模型自己说「答不了」时，也必须给用户一句能读的话 + 一个机器可读的原因。
-            // 2026-10-28 阶段 9 e2e 抓到：answer 与 note 都是空串，客户端只收到空文本，
-            // 既没法展示也没法报警（confidence=insufficient 是唯一线索）。
-            String text = dto.answer() == null || dto.answer().isBlank()
-                    ? "证据不足：检索到的内容里没有能支撑这个问题的信息。"
-                    : dto.answer();
-            String note = dto.note() == null || dto.note().isBlank()
-                    ? "模型判定现有证据不足以回答，且未给出原因。"
-                    : dto.note();
+        // 模型自己说「答不了」有两种，处理必须分开：
+        // 1) 一句话都没有 —— 给可读文案 + 机器可读原因就结束（下面这个早退）。
+        //    2026-10-28 阶段 9 e2e 抓到：answer 与 note 都是空串，客户端只收到空文本，
+        //    既没法展示也没法报警（confidence=insufficient 是唯一线索）。
+        // 2) 答了一部分但声明不完整 —— 走完整校验并保住引用/事实，只把 confidence 落到 insufficient。
+        //    2026-11-04 冒烟抓到：混合问题（2025 净利润 + 现在股价）正文写着 [E8]/[F900]，
+        //    而 citations 被清空，前端那两个角标点不开（违反 C7）。见 WARNING_PARTIAL_ANSWER。
+        boolean partial = !dto.sufficient();
+        if (partial) {
             warnings.add(AnswerResult.WARNING_EVIDENCE_INSUFFICIENT);
-            return new AnswerResult(false, text, List.of(), List.of(),
-                    AnswerResult.CONFIDENCE_INSUFFICIENT, note, warnings, 0);
+            if (dto.answer() == null || dto.answer().isBlank()) {
+                String note = dto.note() == null || dto.note().isBlank()
+                        ? "模型判定现有证据不足以回答，且未给出原因。"
+                        : dto.note();
+                return new AnswerResult(false, "证据不足：检索到的内容里没有能支撑这个问题的信息。",
+                        List.of(), List.of(), AnswerResult.CONFIDENCE_INSUFFICIENT, note, warnings, 0);
+            }
         }
 
         List<FactDto> facts = dto.facts() == null ? List.of() : dto.facts();
@@ -251,6 +255,22 @@ public class AnswerService {
 
         List<AnswerResult.Fact> outFacts = mergeFacts(factPack, grounding.facts(), warnings);
 
+        if (partial) {
+            warnings.add(AnswerResult.WARNING_PARTIAL_ANSWER);
+            String note = mergeNote(dto.note(), guarded.note());
+            if (note == null || note.isBlank()) {
+                note = "模型判定证据不足以完整回答，已给出能确认的部分。";
+            }
+            return new AnswerResult(false,
+                    answerText == null ? "" : answerText,
+                    outFacts,
+                    citations.citations(),
+                    AnswerResult.CONFIDENCE_INSUFFICIENT,
+                    note,
+                    List.copyOf(warnings),
+                    citations.dropped().size());
+        }
+
         return new AnswerResult(true,
                 answerText == null ? "" : answerText,
                 outFacts,
@@ -273,6 +293,7 @@ public class AnswerService {
     private static List<AnswerResult.Fact> mergeFacts(FactPack pack, List<FactDto> modelFacts,
                                                       List<String> warnings) {
         List<AnswerResult.Fact> computed = new ArrayList<>();
+        List<AnswerResult.Fact> market = new ArrayList<>();
         List<AnswerResult.Fact> extracted = new ArrayList<>();
         for (AnswerResult.Fact f : pack == null ? List.<AnswerResult.Fact>of() : pack.rows()) {
             if (f == null) {
@@ -280,20 +301,35 @@ public class AnswerService {
             }
             if (AnswerResult.ORIGIN_COMPUTED.equals(f.origin())) {
                 computed.add(f);
+            } else if (AnswerResult.Fact.SOURCE_MARKET.equals(f.source())) {
+                // 行情行不是「原文抽取」，而是这一轮真取回来的实时数据：
+                // 不能因为模型自己给了 facts 就把它们当兜底丢掉（2026-11-04 冒烟：6 行行情事实全没了）
+                market.add(f);
             } else {
                 extracted.add(f);
             }
         }
 
         List<AnswerResult.Fact> out = new ArrayList<>();
+        // 行情行先占预算：它只存在于这一轮，丢了就再也拿不到；计算事实与模型事实都可以从正文读到
+        int marketBudget = Math.min(market.size(), MAX_FACTS);
+        int computedBudget = Math.min(MAX_COMPUTED_IN_ANSWER, MAX_FACTS - marketBudget);
         int computedCount = 0;
         for (AnswerResult.Fact f : computed) {
             // 计算事实只占前面几格：实测一轮能算出 8 条比率，全放进事实卡就把
             // 「营业总收入 = 160.68 亿元」这类原文数值挤掉了（2026-10-30 端到端复验）
-            if (out.size() >= MAX_FACTS || computedCount >= MAX_COMPUTED_IN_ANSWER) {
+            if (out.size() >= MAX_FACTS || computedCount >= computedBudget) {
                 break;
             }
             computedCount++;
+            if (!hasKey(out, f)) {
+                out.add(f);
+            }
+        }
+        for (AnswerResult.Fact f : market) {
+            if (out.size() >= MAX_FACTS) {
+                break;
+            }
             if (!hasKey(out, f)) {
                 out.add(f);
             }

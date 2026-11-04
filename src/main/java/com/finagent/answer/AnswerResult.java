@@ -37,6 +37,13 @@ public record AnswerResult(
     public static final String WARNING_ANSWER_UNGROUNDED = "answer_value_not_in_evidence";
     /** 模型自己判定证据不足（sufficient=false）：即使它不给答案/解释，也要有可读文案与机器可读原因。 */
     public static final String WARNING_EVIDENCE_INSUFFICIENT = "evidence_insufficient";
+    /**
+     * 模型说「答不全」但确实答了一部分（阶段 24）：答案、引用、事实都保留，只把 confidence 降到 insufficient。
+     *
+     * <p>为什么不再整段丢掉：混了实时行情的问题（「2025 年净利润和现在股价」）模型会答出净利润 + 当日股价，
+     * 只是「2025 年的股价」确实没有 —— 丢掉引用会让正文里的 [E8] 变成点不开的死角标（违反 C7）。
+     */
+    public static final String WARNING_PARTIAL_ANSWER = "partial_answer";
     /** 单条 fact 的数值在证据里找不到 → 丢弃该 fact。 */
     public static final String WARNING_FACT_UNGROUNDED = "fact_value_not_in_evidence:";
 
@@ -57,6 +64,14 @@ public record AnswerResult(
     public record Fact(String metric, String period, String value, String unit, String scope,
                        String evidence, String source, String origin, String formula) {
         public static final String SOURCE_PDF = "PDF";
+
+        /**
+         * 实时行情（阶段 23）：{@code SOURCE_PDF} 之外唯一的来源。
+         *
+         * <p>为什么不用 «PDF 特例» 混过去：答案里的数字要不要被 {@code ground()} 校验、
+         * 引用要不要标 [E*]，都按 source 分流；行情既不是证据也拿不到页码，必须能区分。
+         */
+        public static final String SOURCE_MARKET = "MARKET";
 
         /** 兼容构造：老的调用点（模型给的事实）默认 REPORTED、没有公式。 */
         public Fact(String metric, String period, String value, String unit, String scope,

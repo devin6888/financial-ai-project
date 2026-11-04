@@ -80,6 +80,13 @@
       <groupId>org.springframework.ai</groupId>
       <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
     </dependency>
+    <!-- Spring AI MCP client（阶段 23：把行情 MCP Server 当子进程拉起）。
+         只引 client，不引 server —— 本项目不对外暴露工具；BOM 2.0.1 托管版本，
+         其内部 MCP Java SDK 2.0.0 自带 mcp-json-jackson3，与 Boot 4 的 Jackson 3 对齐。 -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-starter-mcp-client</artifactId>
+    </dependency>
 
     <!-- Kafka（阶段 7：异步与任务化）。Boot 4 把自动配置拆成模块，同 spring-boot-flyway 写法；
          spring-kafka 4.0.7（含 kafka-clients 4.1.2）由该模块传递引入，版本走 spring-boot BOM。 -->

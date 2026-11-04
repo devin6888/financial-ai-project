@@ -1,6 +1,7 @@
 package com.finagent.agent;
 
 import com.finagent.answer.AnswerResult;
+import com.finagent.chat.MarketTrace;
 import com.finagent.chat.MemoryTrace;
 import com.finagent.memory.MemoryContext;
 import com.finagent.retrieval.RetrievalTrace;
@@ -61,6 +62,9 @@ public class AnswerStreamBridge {
      * 这段统计一直报 0，e2e 的 gateHit 断言因此变红（2026-10-31 抓到）。
      */
     private final Map<String, MemoryTrace> memoryTraces = new ConcurrentHashMap<>();
+
+    /** 本轮行情取数轨迹（market 节点写入；与 AnswerResult 同理，不能进状态）。 */
+    private final Map<String, MarketTrace> marketTraces = new ConcurrentHashMap<>();
 
     /**
      * 指代消解的输入（会话已确认的公司/年份/指标 + 最近几轮原文）。
@@ -150,6 +154,19 @@ public class AnswerStreamBridge {
         return memoryTraces.getOrDefault(runId, MemoryTrace.EMPTY);
     }
 
+    public void marketTrace(String runId, MarketTrace trace) {
+        if (runId != null && trace != null) {
+            marketTraces.put(runId, trace);
+        }
+    }
+
+    public MarketTrace marketTrace(String runId) {
+        if (runId == null) {
+            return MarketTrace.EMPTY;
+        }
+        return marketTraces.getOrDefault(runId, MarketTrace.EMPTY);
+    }
+
     /** 登记本轮指代消解上下文（HTTP 线程在开跑前调用）。 */
     public void turnContext(String runId, TurnContext context) {
         if (runId != null && context != null) {
@@ -196,6 +213,7 @@ public class AnswerStreamBridge {
             turnContexts.remove(runId);
             querys.remove(runId);
             scopes.remove(runId);
+            marketTraces.remove(runId);
         }
     }
 }

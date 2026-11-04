@@ -20,6 +20,10 @@ import com.finagent.fact.UnitConverter;
 import com.finagent.memory.LongTermMemory;
 import com.finagent.memory.LongTermMemoryRecaller;
 import com.finagent.memory.MemoryAssembler;
+import com.finagent.market.MarketApiException;
+import com.finagent.market.MarketGateway;
+import com.finagent.market.MarketToolSelector;
+import com.finagent.market.MarketUnavailableException;
 import com.finagent.memory.MemoryContext;
 import com.finagent.memory.MemoryGate;
 import com.finagent.retrieval.HybridRetriever;
@@ -123,13 +127,21 @@ public class RealAnalysisNodes implements AnalysisNodes {
     private final MemoryAssembler memoryAssembler;
     /** 期间标注：问 2023 却引用了 2024 年报的上年同期对比列时要留痕（不改数字）。 */
     private final PeriodLabeler periods;
+    /** 行情取数（阶段 23）：未启用时是 {@code UnavailableMarketGateway}，不是 null。 */
+    private final MarketGateway market;
+    /** 让模型选工具的可选路径；模型选不出来就回落到规则调用。 */
+    private final MarketToolSelector marketTools;
+    /** 公司名 → 股票代码的三级解析。 */
+    private final MarketCompanyResolver marketCompanies;
 
     public RealAnalysisNodes(RouterService router, ScopeResolver scopes, HybridRetriever retriever,
                              ContextBuilder contextBuilder, AnswerService answers,
                              CitationValidator citations, AnswerStreamBridge bridge,
                              AgentProperties props, ChunkRepository chunks,
                              MemoryGate memoryGate, LongTermMemoryRecaller longTermRecaller,
-                             MemoryAssembler memoryAssembler, PeriodLabeler periods) {
+                             MemoryAssembler memoryAssembler, PeriodLabeler periods,
+                             MarketGateway market, MarketToolSelector marketTools,
+                             MarketCompanyResolver marketCompanies) {
         this.router = router;
         this.scopes = scopes;
         this.chunks = chunks;
@@ -143,6 +155,9 @@ public class RealAnalysisNodes implements AnalysisNodes {
         this.citations = citations;
         this.bridge = bridge;
         this.props = props;
+        this.market = market;
+        this.marketTools = marketTools;
+        this.marketCompanies = marketCompanies;
     }
 
     // ---------------------------------------------------------------- understand
@@ -150,6 +165,7 @@ public class RealAnalysisNodes implements AnalysisNodes {
     @Override
     public Map<String, Object> understand(AnalysisState state) {
         String runId = state.runId();
+
         // 有会话上下文才走带上下文的 QU：那条路会让模型带着最近几轮解析「那净利润呢」，
         // 并在公司/年份是从上文补出来的时候打上 inferredFromContext（单轮路径永远为 false）
         TurnContext context = bridge.turnContext(runId);
@@ -255,16 +271,60 @@ public class RealAnalysisNodes implements AnalysisNodes {
             }
         }
         bridge.memoryTrace(runId, memoryStats);
-        if (!warnings.isEmpty()) {
-            patch.put(AnalysisState.WARNINGS, List.copyOf(warnings));
+        // 行情意图（阶段 23）：只判「问的是不是行情」，公司代码解析要靠 company 表/MCP 搜索。
+        // 判不出来公司就不进行情支路 —— 猜错公司比答不出更糟，问题仍走年报检索
+        MarketIntent intent = MarketIntentDetector.detect(state.question());
+        LOG.debug("行情意图：matched={} history={} days={}", intent.matched(), intent.history(), intent.days());
+        if (intent.matched()) {
+            java.util.Optional<MarketCompanyResolver.MarketCompany> target = marketCompanies.resolve(state.question(), qu.companyCodes(), qu.companyMentions());
+            LOG.debug("行情意图命中：question=「{}」codes={} mentions={} → {}", state.question(),
+                    qu.companyCodes(), qu.companyMentions(),
+                    target.map(t -> t.code() + "/" + t.name() + "(" + t.source() + ")").orElse("未解析出公司"));
+            if (target.isPresent()) {
+                MarketCompanyResolver.MarketCompany mc = target.get();
+                patch.put(AnalysisState.MARKET_INTENT, Boolean.TRUE);
+                Map<String, Object> marketPlan = new LinkedHashMap<>();
+                marketPlan.put("tool", intent.tool());
+                marketPlan.put("code", mc.code());
+                marketPlan.put("name", mc.name());
+                marketPlan.put("days", intent.history() ? intent.days() : 0);
+                marketPlan.put("codeSource", mc.source());
+                patch.put(AnalysisState.MARKET_PLAN, marketPlan);
+                // 纯行情：没有任何财报指标、也没指定年份。有指标/年份说明还要看年报，得先检索
+                // 纯行情：没有任何「年报口径」的指标、也没指定年份。有指标/年份说明还要看年报，得先检索。
+                // 注意 QU 常把「股价/市值/市盈率」也当指标抽出来 —— 这些本来就是行情口径，
+                // 不能算「要看年报」（否则「东方财富股价」会被送去检索年报，最后证据不足拒答）。
+                List<String> reportMetrics = nullToEmpty(qu.metrics()).stream()
+                        .filter(m -> !isMarketMetric(m))
+                        .toList();
+                boolean reportLike = !reportMetrics.isEmpty() || qu.yearRange() != null;
+                LOG.debug("行情口径判定：metrics={} reportMetrics={} yearRange={} reportLike={}",
+                        qu.metrics(), reportMetrics, qu.yearRange(), reportLike);
+                patch.put(AnalysisState.MARKET_ONLY, !reportLike);
+                plan.add("实时行情：" + (mc.name().isEmpty() ? mc.code() : mc.name() + "（" + mc.code() + "）"));
+            } else {
+                plan.add("像在问行情，但没确定是哪家公司 → 按年报问题处理");
+                warnings.add("market_company_unresolved");
+            }
         }
         if (company.blocked()) {
             String reason = "问题里的公司不在当前可检索范围内：" + String.join("、", company.unresolved());
             plan.add("公司不在作用域 → 拒答");
             patch.put(AnalysisState.REFUSE_REASON, reason);
         }
+        if (!warnings.isEmpty()) {
+            patch.put(AnalysisState.WARNINGS, List.copyOf(warnings));
+        }
         patch.put(AnalysisState.PLAN, plan);
         return patch;
+    }
+
+    /** QU 抽出来的指标里哪些其实是行情口径（股价、市值、估值倍数之类），不算「要看年报」。 */
+    private static final java.util.regex.Pattern MARKET_METRICS = java.util.regex.Pattern.compile(
+            "股价|价格|股价|市值|市盈率|市净率|估值|换手率?|成交额|成交量|涨跌幅?|现价|收盘价|开盘价|PE|PB");
+
+    static boolean isMarketMetric(String metric) {
+        return metric != null && MARKET_METRICS.matcher(metric).find();
     }
 
     // ---------------------------------------------------------------- plan
@@ -275,6 +335,15 @@ public class RealAnalysisNodes implements AnalysisNodes {
             return Map.of(AnalysisState.PLAN, List.of("拒答：" + state.refuseReason()));
         }
         Map<String, Object> patch = new LinkedHashMap<>();
+        // 纯行情问题：没有可拆的子问题、也没有证据形态，直接进行情支路（plan → market）
+        if (state.marketOnly()) {
+            patch.put(AnalysisState.PLAN, List.of(
+                    "只需实时行情：" + textOf(state.marketPlan().get("name"))
+                            + "（" + textOf(state.marketPlan().get("code")) + "）",
+                    "查行情快照，不检索年报",
+                    "数字与数据时间由模板渲染，不经模型"));
+            return patch;
+        }
         List<String> planSteps = new ArrayList<>();
 
         List<String> subQuestions = decompose(state);
@@ -288,6 +357,9 @@ public class RealAnalysisNodes implements AnalysisNodes {
         if (!shapes.isEmpty()) {
             patch.put(AnalysisState.ANSWER_SHAPES, AnswerShape.names(shapes));
             planSteps.add("答案形态：" + labels(shapes));
+        }
+        if (state.marketIntent()) {
+            planSteps.add("先检索年报证据，再查实时行情补充当前估值");
         }
         planSteps.add("证据不足会改写一次再检索");
         planSteps.add("生成答案后做引用校验");
@@ -662,16 +734,380 @@ public class RealAnalysisNodes implements AnalysisNodes {
         // 事实包来自 state.facts()（compute 节点写的 Map 行），这里只做渲染，不重算
         AnswerSectionPlan plan = AnswerSectionPlan.fromRows(state.answerPlan(), shapesOf(state));
         AnswerResult result = answers.answerStreaming(state.question(), qu, pkg, memory,
-                FactPack.from(state.facts()), delta -> bridge.delta(runId, delta), plan);
+                FactPack.from(withMarketFacts(state)), delta -> bridge.delta(runId, delta), plan);
         result = withPeriodLabel(result, qu, scope);
+        result = withMarketStamp(result, state);
         // 完整结果（facts / citations / confidence / note / 丢弃数）走旁路，不进可序列化的状态
         bridge.result(runId, result);
 
         Map<String, Object> patch = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>(result.warnings());
+        if (!state.marketFacts().isEmpty()) {
+            // 答案里混了实时行情：让前端/排障能区分「全是年报数」与「含当日行情」
+            warnings.add("market_live");
+        }
         patch.put(AnalysisState.ANSWER, result.answer() == null ? "" : result.answer());
-        patch.put(AnalysisState.WARNINGS, result.warnings());
+        patch.put(AnalysisState.WARNINGS, List.copyOf(warnings));
         patch.put(AnalysisState.STATUS, AgentRun.STATUS_DONE);
         return patch;
+    }
+
+    /**
+     * 混合问题的答案补一条确定性的行情脚注（C40.3：没有时间戳的行情等于错答案）。
+     *
+     * <p>为什么不让模型写：模型会把「2026-11-04」写成日期、还会漏掉时区与「这是快照不是年报口径」。
+     * 这里只在三件事同时成立时补：本轮确实取到了行情事实、有 asOf、答案里本来没有时间行。
+     * 纯年报问题的答案是原样返回的（不加任何后缀）。
+     */
+    private static AnswerResult withMarketStamp(AnswerResult result, AnalysisState state) {
+        List<Map<String, Object>> rows = state.marketFacts();
+        String asOf = state.marketAsOf();
+        if (rows.isEmpty() || asOf == null || asOf.isBlank()) {
+            return result;
+        }
+        String answer = result.answer() == null ? "" : result.answer();
+        if (answer.contains("数据时间")) {
+            return result;
+        }
+        String stamp = readable(asOf);
+        // 正文已经写过的数字不再重复；一项都没写过（模型常见：只说「股价未披露」）就把行情写全。
+        // 数字由代码渲染，模型转述漏不失真。
+        String quote = marketLine(rows, answer);
+        String block = quote.isEmpty()
+                ? "\n\n> 行情数据时间：" + stamp + "，来源：东方财富公开行情。"
+                : "\n\n> 实时行情：" + quote + "（数据时间：" + stamp + "，来源：东方财富公开行情）";
+        if (answer.contains(block.strip())) {
+            return result;
+        }
+        return new AnswerResult(result.sufficient(), answer + block, result.facts(), result.citations(),
+                result.confidence(), result.note(), result.warnings(), result.citationsDropped());
+    }
+
+    /** 行情事实行 → 一句可读的数字串（最多 4 项，避免脚注比答案还长；正文已出现过的项跳过）。 */
+    private static String marketLine(List<Map<String, Object>> rows, String answer) {
+        // 比对前把空白全去掉：正文写「3037.86亿元」，事实行 display 是「3037.86 亿元」
+        String flat = answer == null ? "" : answer.replaceAll("\\s+", "");
+        List<String> parts = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            if (parts.size() >= 4) {
+                break;
+            }
+            String value = textOf(row.get("value"));
+            if (value.isEmpty()) {
+                continue;
+            }
+            String written = textOf(row.get("display"));
+            String probe = (written.isEmpty() ? value : written).replaceAll("\\s+", "");
+            if (!flat.isEmpty() && (flat.contains(probe) || flat.contains(value))) {
+                continue;
+            }
+            String unit = textOf(row.get("unit"));
+            // 百分号紧贴数字（1.80%），其余单位空一格（19.20 元）——与 answer_market 模板一致
+            String shown = written.isEmpty() ? ("%".equals(unit) ? value + unit : value + " " + unit) : written;
+            parts.add(marketLabel(textOf(row.get("metric"))) + " " + shown);
+        }
+        return String.join("，", parts);
+    }
+
+    private static String marketLabel(String metric) {
+        return switch (metric) {
+            case "股价" -> "最新价";
+            case "市盈率TTM" -> "市盈率(TTM)";
+            default -> metric;
+        };
+    }
+
+    /** 已有事实 + 行情事实（no 从 900 起，排在最后）。行情数字必须进白名单，否则会被判成编造。 */
+    private static List<Map<String, Object>> withMarketFacts(AnalysisState state) {
+        List<Map<String, Object>> market = state.marketFacts();
+        if (market.isEmpty()) {
+            return state.facts();
+        }
+        List<Map<String, Object>> all = new ArrayList<>(state.facts());
+        all.addAll(market);
+        return all;
+    }
+
+    // ---------------------------------------------------------------- market
+
+    @Override
+    public Map<String, Object> market(AnalysisState state) {
+        Map<String, Object> patch = new LinkedHashMap<>();
+        Map<String, Object> plan = state.marketPlan();
+        String code = textOf(plan.get("code"));
+        String name = textOf(plan.get("name"));
+        if (code.isBlank()) {
+            patch.put(AnalysisState.MARKET_ERROR, "没能确定要查哪只股票");
+            return patch;
+        }
+        String tool = "get_history".equals(textOf(plan.get("tool"))) ? "get_history" : "get_quote";
+        int days = intOf(plan.get("days"), 20);
+
+        // 模型选工具（增强路径）：选不出来、超时、参数不合法都静默回落规则调用
+        String pickedBy = "rule";
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("code", code);
+        if ("get_history".equals(tool)) {
+            args.put("days", days);
+        }
+        try {
+            java.util.Optional<MarketToolSelector.Picked> picked = marketTools.pick(state.question(), code, market.tools());
+            if (picked.isPresent()) {
+                tool = picked.get().tool();
+                args = new LinkedHashMap<>(picked.get().arguments());
+                pickedBy = "model";
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("模型选行情工具失败，改用规则：{}", e.toString());
+        }
+
+        try {
+            MarketGateway.Snapshot snapshot = market.execute(tool, args, days);
+            patch.put(AnalysisState.MARKET_TOOL, tool);
+            patch.put(AnalysisState.MARKET_DATA, snapshot.data());
+            patch.put(AnalysisState.MARKET_AS_OF, snapshot.asOf());
+            patch.put(AnalysisState.MARKET_ERROR, "");
+            patch.put(AnalysisState.MARKET_FACTS, factsOf(tool, snapshot, name));
+            patch.put(AnalysisState.PLAN, List.of("行情：" + label(name, code) + " · " + tool
+                    + "（" + ("model".equals(pickedBy) ? "模型选的工具" : "规则兜底") + "）"));
+            bridge.marketTrace(state.runId(), new com.finagent.chat.MarketTrace(
+                    tool, code, name, snapshot.asOf(), "",
+                    ((List<?>) patch.get(AnalysisState.MARKET_FACTS)).size()));
+            LOG.info("行情取数成功：tool={} code={} by={} asOf={}", tool, code, pickedBy, snapshot.asOf());
+        } catch (MarketApiException e) {
+            LOG.info("行情工具返回业务错误：code={} reason={}", code, e.getMessage());
+            patch.put(AnalysisState.MARKET_ERROR, e.getMessage());
+        } catch (MarketUnavailableException e) {
+            LOG.warn("行情服务不可用：code={} reason={}", code, e.getMessage());
+            patch.put(AnalysisState.MARKET_ERROR, "行情服务暂时不可用");
+        } catch (RuntimeException e) {
+            LOG.error("行情取数出现未预期错误：code={}", code, e);
+            patch.put(AnalysisState.MARKET_ERROR, "行情服务异常");
+        }
+        if (!textOf(patch.get(AnalysisState.MARKET_ERROR)).isEmpty()) {
+            bridge.marketTrace(state.runId(), new com.finagent.chat.MarketTrace(
+                    tool, code, name, "", textOf(patch.get(AnalysisState.MARKET_ERROR)), 0));
+        }
+        return patch;
+    }
+
+    /** 行情事实行：形状与 compute 写的 FACTS 完全一致，只是 source 标成实时行情。 */
+    private static List<Map<String, Object>> factsOf(String tool, MarketGateway.Snapshot snapshot, String name) {
+        Map<String, Object> data = snapshot.data();
+        String asOf = snapshot.asOf();
+        String subject = name.isBlank() ? textOf(data.get("name")) : name;
+        String evidence = "实时行情 " + asOf;
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int no = 900;
+        if ("get_history".equals(tool)) {
+            List<Map<String, Object>> bars = barsOf(data);
+            if (bars.isEmpty()) {
+                return rows;
+            }
+            Map<String, Object> first = bars.get(0);
+            Map<String, Object> last = bars.get(bars.size() - 1);
+            double firstClose = dblOf(first.get("close"));
+            double lastClose = dblOf(last.get("close"));
+            double high = bars.stream().mapToDouble(b -> dblOf(b.get("high"))).max().orElse(0);
+            double low = bars.stream().mapToDouble(b -> dblOf(b.get("low"))).min().orElse(0);
+            double changePct = firstClose == 0 ? 0 : (lastClose - firstClose) / firstClose * 100;
+            rows.add(factRow(no++, "收盘价", asOf.substring(0, 10), money(lastClose), "元", "", subject, evidence));
+            rows.add(factRow(no++, "区间涨跌幅", textOf(last.get("date")), pct(changePct), "%", "", subject, evidence));
+            rows.add(factRow(no++, "区间最高价", textOf(last.get("date")), money(high), "元", "", subject, evidence));
+            rows.add(factRow(no++, "区间最低价", textOf(last.get("date")), money(low), "元", "", subject, evidence));
+            return rows;
+        }
+        String period = asOf.substring(0, Math.min(10, asOf.length()));
+        if (data.get("price") != null) {
+            rows.add(factRow(no++, "股价", period, money(dblOf(data.get("price"))), "元", "", subject, evidence));
+        }
+        if (data.get("changePct") != null) {
+            rows.add(factRow(no++, "涨跌幅", period, pct(dblOf(data.get("changePct"))), "%", "", subject, evidence));
+        }
+        if (data.get("totalMarketCap") != null) {
+            long cap = (long) dblOf(data.get("totalMarketCap"));
+            rows.add(factRow(no++, "总市值", period, String.valueOf(cap), "元", yi(cap), subject, evidence));
+        }
+        if (data.get("peTtm") != null) {
+            rows.add(factRow(no++, "市盈率TTM", period, pct(dblOf(data.get("peTtm"))), "倍", "", subject, evidence));
+        }
+        if (data.get("pb") != null) {
+            rows.add(factRow(no++, "市净率", period, pct(dblOf(data.get("pb"))), "倍", "", subject, evidence));
+        }
+        if (data.get("turnoverPct") != null) {
+            rows.add(factRow(no++, "换手率", period, pct(dblOf(data.get("turnoverPct"))), "%", "", subject, evidence));
+        }
+        return rows;
+    }
+
+    @Override
+    public Map<String, Object> answerMarket(AnalysisState state) {
+        Map<String, Object> plan = state.marketPlan();
+        String code = textOf(plan.get("code"));
+        String name = textOf(plan.get("name"));
+        String error = state.marketError();
+        if (!error.isBlank()) {
+            String answer = "暂时查不到" + label(name, code) + "的实时行情：" + error
+                    + "。可以稍后再试；如果问题里还有财报要素，也可以先只看年报数据。";
+            return Map.of(
+                    AnalysisState.ANSWER, answer,
+                    AnalysisState.WARNINGS, List.of("market_unavailable"),
+                    AnalysisState.STATUS, AgentRun.STATUS_DONE);
+        }
+        Map<String, Object> data = state.marketData();
+        String asOf = state.marketAsOf();
+        String subject = name.isBlank() ? textOf(data.get("name")) : name;
+        StringBuilder answer = new StringBuilder();
+        // 走到这里的「混合问题」意味着检索已判证据不足（图里 market_fallback 边）：
+        // 先把话说清楚，再给能给的行情，避免读者以为下面这些数字来自年报
+        boolean partial = state.insufficient();
+        if (partial) {
+            answer.append("年报里没有找到能支撑这个问题的证据，下面只给实时行情：\n\n");
+        }
+        if ("get_history".equals(state.marketTool())) {
+            List<Map<String, Object>> bars = barsOf(data);
+            if (bars.isEmpty()) {
+                answer.append("没有查到").append(label(subject, code)).append("的历史行情。");
+            } else {
+                Map<String, Object> first = bars.get(0);
+                Map<String, Object> last = bars.get(bars.size() - 1);
+                double firstClose = dblOf(first.get("close"));
+                double lastClose = dblOf(last.get("close"));
+                double changePct = firstClose == 0 ? 0 : (lastClose - firstClose) / firstClose * 100;
+                double high = bars.stream().mapToDouble(b -> dblOf(b.get("high"))).max().orElse(0);
+                double low = bars.stream().mapToDouble(b -> dblOf(b.get("low"))).min().orElse(0);
+                answer.append(label(subject, code)).append("最近 ").append(bars.size()).append(" 个交易日：")
+                        .append("最新收盘 ").append(money(lastClose)).append(" 元，")
+                        .append("区间涨跌幅 ").append(pct(changePct)).append("%，")
+                        .append("区间最高 ").append(money(high)).append(" 元 / 最低 ")
+                        .append(money(low)).append(" 元。");
+            }
+        } else {
+            answer.append(label(subject, code));
+            if (data.get("price") != null) {
+                answer.append(" 最新价 ").append(money(dblOf(data.get("price")))).append(" 元");
+            }
+            if (data.get("changePct") != null) {
+                answer.append("，涨跌幅 ").append(pct(dblOf(data.get("changePct")))).append("%");
+            }
+            if (data.get("totalMarketCap") != null) {
+                answer.append("，总市值 ").append(yi((long) dblOf(data.get("totalMarketCap"))));
+            }
+            if (data.get("peTtm") != null) {
+                answer.append("，市盈率(TTM) ").append(pct(dblOf(data.get("peTtm")))).append(" 倍");
+            }
+            if (data.get("pb") != null) {
+                answer.append("，市净率 ").append(pct(dblOf(data.get("pb")))).append(" 倍");
+            }
+            answer.append("。");
+        }
+        answer.append("\n\n数据时间：").append(readable(asOf)).append("，来源：东方财富公开行情。");
+        List<String> warnings = partial
+                ? List.of("market_live", "market_partial")
+                : List.of("market_live");
+        return Map.of(
+                AnalysisState.ANSWER, answer.toString(),
+                AnalysisState.WARNINGS, warnings,
+                AnalysisState.STATUS, AgentRun.STATUS_DONE);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> barsOf(Map<String, Object> data) {
+        Object bars = data.get("bars");
+        if (!(bars instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                out.add((Map<String, Object>) map);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> factRow(int no, String metric, String period, String value,
+                                               String unit, String display, String scope, String evidence) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("no", no);
+        row.put("metric", metric);
+        row.put("period", period == null ? "" : period);
+        row.put("value", value);
+        row.put("unit", unit);
+        row.put("scope", scope == null ? "" : scope);
+        row.put("evidence", evidence);
+        row.put("origin", AnswerResult.ORIGIN_EXTRACTED);
+        row.put("formula", "");
+        row.put("display", display == null ? "" : display);
+        row.put("note", "");
+        row.put("source", AnswerResult.Fact.SOURCE_MARKET);
+        return row;
+    }
+
+    private static String label(String name, String code) {
+        if (name == null || name.isBlank()) {
+            return code;
+        }
+        if (code == null || code.isBlank()) {
+            return name;
+        }
+        return name + "（" + code + "）";
+    }
+
+    private static String money(double value) {
+        return String.format(java.util.Locale.ROOT, "%.2f", value);
+    }
+
+    /** 比率/倍数保留两位；行情接口本身已放大 100 倍还原过，这里只负责格式。 */
+    private static String pct(double value) {
+        return String.format(java.util.Locale.ROOT, "%.2f", value);
+    }
+
+    /** 元 → 亿元（保留两位），只用于展示；白名单里同时有原始值与展示值。 */
+    private static String yi(long yuan) {
+        return java.math.BigDecimal.valueOf(yuan, 8).setScale(2, java.math.RoundingMode.HALF_UP) + " 亿元";
+    }
+
+    /** 2026-11-04T15:00:00+08:00 → 2026-11-04 15:00（北京时间）。 */
+    private static String readable(String asOf) {
+        if (asOf == null || asOf.isBlank()) {
+            return "未知";
+        }
+        String text = asOf.replace('T', ' ');
+        int plus = text.indexOf('+');
+        if (plus > 0) {
+            text = text.substring(0, plus);
+        }
+        if (text.length() > 16) {
+            text = text.substring(0, 16);
+        }
+        return text + "（北京时间）";
+    }
+
+    private static String textOf(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private static int intOf(Object value, int fallback) {
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return value == null ? fallback : Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static double dblOf(Object value) {
+        if (value instanceof Number n) {
+            return n.doubleValue();
+        }
+        try {
+            return value == null ? 0 : Double.parseDouble(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /**

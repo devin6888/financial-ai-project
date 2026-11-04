@@ -123,6 +123,40 @@ public class AnalysisState extends AgentState {
     public static final String USERNAME = "username";
     public static final String ROLES = "roles";
 
+    /**
+     * 这一轮是否在问行情（阶段 23）。understand 节点写，plan / retrieve 的条件边读。
+     *
+     * <p>为什么先把判定结果写进状态，而不是让条件边自己再判一次：条件边不该有业务逻辑，
+     * 而且 trace 里要能解释「为什么走了行情支路」。
+     */
+    public static final String MARKET_INTENT = "marketIntent";
+
+    /** 只问行情、没有可检索的财报要素（metrics 空且没指定年份）—— plan 直接分到行情支路。 */
+    public static final String MARKET_ONLY = "marketOnly";
+
+    /** 行情调用计划（{@code Map}）：tool / code / name / days / codeSource。 */
+    public static final String MARKET_PLAN = "marketPlan";
+
+    /** 行情原始返回（{@code Map}，MCP 工具的 JSON 原样）：get_quote 的字段或 get_history 的 bars。 */
+    public static final String MARKET_DATA = "marketData";
+
+    /** 数据时间（ISO-8601 带时区），答案里必须出现。 */
+    public static final String MARKET_AS_OF = "marketAsOf";
+
+    /** 实际执行的工具名（get_quote / get_history），区分「模型选的」与「规则兜底的」。 */
+    public static final String MARKET_TOOL = "marketTool";
+
+    /** 行情失败原因（人话）；非空且 MARKET_ONLY 时 answer_market 用它出降级文案。 */
+    public static final String MARKET_ERROR = "marketError";
+
+    /**
+     * 行情事实行（{@code List<Map>}，形状与 {@link #FACTS} 相同）。
+     *
+     * <p>「先检索、再查行情」的问题要两种证据一起进答案：行情数字拼进 FactPack 后，
+     * {@code AnswerService.ground()} 的数字白名单里才会有它们，否则会被判成编造。
+     */
+    public static final String MARKET_FACTS = "marketFacts";
+
     /** 年份通道的哨兵值：通道默认值不能为 null，0 表示「没指定年份」。 */
     public static final int UNKNOWN_YEAR = 0;
 
@@ -168,6 +202,14 @@ public class AnalysisState extends AgentState {
             Map.entry(LANES, Channels.<String>appender(ArrayList::new)),
             Map.entry(WARNINGS, Channels.<String>appender(ArrayList::new)),
             Map.entry(CITATION_COUNT, Channels.base(() -> 0)),
+            Map.entry(MARKET_INTENT, Channels.base(() -> Boolean.FALSE)),
+            Map.entry(MARKET_ONLY, Channels.base(() -> Boolean.FALSE)),
+            Map.entry(MARKET_PLAN, Channels.<Map<String, Object>>base(() -> Map.of())),
+            Map.entry(MARKET_DATA, Channels.<Map<String, Object>>base(() -> Map.of())),
+            Map.entry(MARKET_AS_OF, Channels.base(() -> "")),
+            Map.entry(MARKET_TOOL, Channels.base(() -> "")),
+            Map.entry(MARKET_ERROR, Channels.base(() -> "")),
+            Map.entry(MARKET_FACTS, Channels.<List<Map<String, Object>>>base(() -> List.of())),
             Map.entry(TENANT_ID, Channels.base(() -> 0L)),
             Map.entry(USER_ID, Channels.base(() -> 0L)),
             Map.entry(USERNAME, Channels.base(() -> "")),
@@ -266,6 +308,38 @@ public class AnalysisState extends AgentState {
 
     public int citeAttempts() {
         return this.value(CITE_ATTEMPTS, 0);
+    }
+
+    public boolean marketIntent() {
+        return this.value(MARKET_INTENT, Boolean.FALSE);
+    }
+
+    public boolean marketOnly() {
+        return this.value(MARKET_ONLY, Boolean.FALSE);
+    }
+
+    public Map<String, Object> marketPlan() {
+        return this.value(MARKET_PLAN, Map.of());
+    }
+
+    public Map<String, Object> marketData() {
+        return this.value(MARKET_DATA, Map.of());
+    }
+
+    public String marketAsOf() {
+        return this.value(MARKET_AS_OF, "");
+    }
+
+    public String marketTool() {
+        return this.value(MARKET_TOOL, "");
+    }
+
+    public String marketError() {
+        return this.value(MARKET_ERROR, "");
+    }
+
+    public List<Map<String, Object>> marketFacts() {
+        return this.value(MARKET_FACTS, List.of());
     }
 
     public String decision() {

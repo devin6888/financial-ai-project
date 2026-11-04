@@ -52,6 +52,30 @@ spring:
           # 必须显式指定：默认 2048 维会超出 pgvector 的 vector 索引上限（2000）
           dimensions: 1024
 
+    # ---------- MCP client（阶段 23：行情 Server 是独立 Java 进程，走 stdio） ----------
+    # initialized: false —— 子进程冷启动实测 3.6 秒，不在启动期握手；
+    # 首次调用由 McpMarketGateway 懒初始化（失败后 60 秒冷却）。
+    # request-timeout 8s 比服务端自己的 5s 大：让服务端先超时吐出结构化错误，
+    # 而不是客户端先断连拿不到原因。
+    mcp:
+      client:
+        enabled: true
+        name: finagent-market-client
+        version: 0.1.0
+        initialized: false
+        request-timeout: 8s
+        # 只手动调 McpSyncClient，不让 starter 把行情工具注册进所有 ChatClient：
+        # 模型若能自己调 get_quote，答案里会出现没经模板渲染、没有数据时间的数字
+        toolcallback:
+          enabled: false
+        stdio:
+          connections:
+            market:
+              command: java
+              args:
+                - -jar
+                - ${FINAGENT_MCP_JAR:../financial-mcp-server4j/target/financial-mcp-server4j-0.1.0.jar}
+
     # 说明：本 profile 不启用 PgVectorStore 的持久化配置。
     # PgVectorStore 默认使用自己的 vector_store 表，而设计文档 §15 要求 embedding 存在
     # document_chunk.embedding —— 两者归属尚未决定，留到阶段 3（见阶段 1 计划文末「未决问题」）。
@@ -133,6 +157,15 @@ finagent:
     # Rerank 可降级，所以宁可快速失败：连接 2 s、读取 15 s
     connect-timeout: 2s
     read-timeout: 15s
+
+  # ---------- 实时行情（阶段 23，契约 C41） ----------
+  # 通过 MCP 子进程（financial-mcp-server4j）查 A 股快照/日线。
+  # enabled=false 时装配 UnavailableMarketGateway：图拓扑不变，纯行情问题答「未启用」。
+  market:
+    enabled: ${FINAGENT_MARKET_ENABLED:true}
+    days: 20
+    search-limit: 5
+    warn-missing-as-of: true
 
   # ---------- 旧 chunk 版本清理（阶段 20 技术债 #3，契约 C32） ----------
   # 默认关闭：删除是破坏性动作，只能由人显式触发并先看干跑计划。

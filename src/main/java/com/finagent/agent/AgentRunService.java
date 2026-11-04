@@ -502,6 +502,10 @@ public class AgentRunService {
             case AnalysisGraph.NODE_VERIFY -> state.insufficient() ? "证据不足" : "证据充足";
             case AnalysisGraph.NODE_REWRITE -> "改写检索式后重试";
             case AnalysisGraph.NODE_COMPUTE -> "事实 " + state.facts().size() + " 条（含派生指标）";
+            case AnalysisGraph.NODE_MARKET -> state.marketError().isBlank()
+                    ? "行情：" + state.marketTool() + "（" + state.marketAsOf() + "）"
+                    : "行情失败：" + state.marketError();
+            case AnalysisGraph.NODE_ANSWER_MARKET -> "行情答案已生成（" + state.answer().length() + " 字）";
             case AnalysisGraph.NODE_ANSWER -> "答案已生成（" + state.answer().length() + " 字）";
             case AnalysisGraph.NODE_CITE_CHECK -> "引用校验：" + state.citationCount() + " 条通过";
             case AnalysisGraph.NODE_INSUFFICIENT -> "拒答：" + shorten(state.answer(), 30);

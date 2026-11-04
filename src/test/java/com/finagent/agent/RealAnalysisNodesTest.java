@@ -63,6 +63,9 @@ class RealAnalysisNodesTest {
     @Mock private com.finagent.memory.MemoryGate memoryGate;
     @Mock private com.finagent.memory.LongTermMemoryRecaller longTermRecaller;
     @Mock private com.finagent.memory.MemoryAssembler memoryAssembler;
+    @Mock private com.finagent.market.MarketGateway marketGateway;
+    @Mock private com.finagent.market.MarketToolSelector marketToolSelector;
+    @Mock private MarketCompanyResolver marketCompanyResolver;
 
     private AnswerStreamBridge bridge;
     private RealAnalysisNodes nodes;
@@ -73,7 +76,8 @@ class RealAnalysisNodesTest {
         bridge = new AnswerStreamBridge();
         nodes = new RealAnalysisNodes(router, scopes, retriever, contextBuilder, answers, citations,
                 bridge, new AgentProperties(true, 2, 4, 25, true, 30), chunks,
-                memoryGate, longTermRecaller, memoryAssembler, new com.finagent.answer.PeriodLabeler());
+                memoryGate, longTermRecaller, memoryAssembler, new com.finagent.answer.PeriodLabeler(),
+                marketGateway, marketToolSelector, marketCompanyResolver);
         scope = ResolvedScope.of(ScopeKind.CORPUS, List.of(
                 new com.finagent.scope.DocMeta(7L, 7L, "300059", "东方财富", 2025, "ANNUAL",
                         null, null, 3, "东方财富2025年年度报告")),
@@ -810,5 +814,211 @@ class RealAnalysisNodesTest {
                 .contains("year_coverage_missing:2024")
                 .doesNotContain("year_coverage_missing:2025");
         assertThat(patch).doesNotContainKey(AnalysisState.REFUSE_REASON);
+    }
+    // ---------------------------------------------------------------- 阶段 23：行情支路
+
+    private static Map<String, Object> quoteData() {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("name", "东方财富");
+        data.put("price", 18.63);
+        data.put("changePct", -1.22);
+        data.put("totalMarketCap", 294_767_583_671.0);
+        data.put("peTtm", 18.57);
+        data.put("pb", 3.11);
+        data.put("turnoverPct", 1.04);
+        data.put("tradedAt", "2026-11-04T15:00:00+08:00");
+        return data;
+    }
+
+    private static Map<String, Object> marketPlan(String tool, int days) {
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("tool", tool);
+        plan.put("code", "300059");
+        plan.put("name", "东方财富");
+        plan.put("days", days);
+        plan.put("codeSource", "question");
+        return plan;
+    }
+
+    @Test
+    @DisplayName("market：模型没选工具时按规则调 get_quote，落 facts（source=MARKET）与 asOf")
+    @SuppressWarnings("unchecked")
+    void marketFallsBackToRuleAndRecordsFacts() {
+        when(marketToolSelector.pick(anyString(), anyString(), anyList())).thenReturn(java.util.Optional.empty());
+        when(marketGateway.execute(eq("get_quote"), any(), eq(0)))
+                .thenReturn(new com.finagent.market.MarketGateway.Snapshot(quoteData(), "2026-11-04T15:00:00+08:00"));
+
+        Map<String, Object> patch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, marketPlan("get_quote", 0))));
+
+        assertThat(patch).containsEntry(AnalysisState.MARKET_TOOL, "get_quote");
+        assertThat(patch).containsEntry(AnalysisState.MARKET_AS_OF, "2026-11-04T15:00:00+08:00");
+        assertThat(patch).containsEntry(AnalysisState.MARKET_ERROR, "");
+        List<Map<String, Object>> facts = (List<Map<String, Object>>) patch.get(AnalysisState.MARKET_FACTS);
+        assertThat(facts).extracting(row -> row.get("metric"))
+                .containsExactly("股价", "涨跌幅", "总市值", "市盈率TTM", "市净率", "换手率");
+        assertThat(facts).allSatisfy(row -> {
+            assertThat(row.get("source")).isEqualTo(AnswerResult.Fact.SOURCE_MARKET);
+            assertThat(String.valueOf(row.get("evidence"))).contains("2026-11-04T15:00:00+08:00");
+            assertThat((Integer) row.get("no")).isGreaterThanOrEqualTo(900);
+        });
+        assertThat(facts.get(0)).containsEntry("value", "18.63").containsEntry("unit", "元");
+        assertThat(facts.get(2)).containsEntry("value", "294767583671").containsEntry("display", "2947.68 亿元");
+    }
+
+    @Test
+    @DisplayName("market：模型选了 get_history 就按模型走，days 用模型给的值")
+    @SuppressWarnings("unchecked")
+    void marketUsesModelPickedTool() {
+        when(marketToolSelector.pick(anyString(), anyString(), anyList()))
+                .thenReturn(java.util.Optional.of(new com.finagent.market.MarketToolSelector.Picked(
+                        "get_history", Map.of("code", "300059", "days", 30))));
+        List<Map<String, Object>> bars = List.of(
+                Map.of("date", "2026-10-08", "close", 17.0, "high", 17.2, "low", 16.8),
+                Map.of("date", "2026-11-04", "close", 18.63, "high", 18.9, "low", 16.9));
+        when(marketGateway.execute(eq("get_history"), any(), any(Integer.class)))
+                .thenReturn(new com.finagent.market.MarketGateway.Snapshot(
+                        Map.of("name", "东方财富", "code", "300059", "bars", bars), "2026-11-04T15:00:00+08:00"));
+
+        Map<String, Object> patch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, marketPlan("get_quote", 0))));
+
+        assertThat(patch).containsEntry(AnalysisState.MARKET_TOOL, "get_history");
+        List<Map<String, Object>> facts = (List<Map<String, Object>>) patch.get(AnalysisState.MARKET_FACTS);
+        assertThat(facts).extracting(row -> row.get("metric"))
+                .containsExactly("收盘价", "区间涨跌幅", "区间最高价", "区间最低价");
+        assertThat(facts.get(0)).containsEntry("value", "18.63");
+        assertThat(facts.get(1)).containsEntry("value", "9.59");
+    }
+
+    @Test
+    @DisplayName("market：业务错误按原话落 MARKET_ERROR 并登记失败 trace；没代码时不调用网关")
+    void marketRecordsBusinessError() {
+        when(marketToolSelector.pick(anyString(), anyString(), anyList())).thenReturn(java.util.Optional.empty());
+        when(marketGateway.execute(anyString(), any(), any(Integer.class)))
+                .thenThrow(new com.finagent.market.MarketApiException("股票代码应为 6 位数字，收到：abc"));
+
+        Map<String, Object> patch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, marketPlan("get_quote", 0))));
+
+        assertThat(patch).containsEntry(AnalysisState.MARKET_ERROR, "股票代码应为 6 位数字，收到：abc");
+        assertThat(bridge.marketTrace("run-1").failed()).isTrue();
+        assertThat(bridge.marketTrace("run-1").error()).contains("6 位数字");
+
+        // 上面已经调过一次：先清调用记录，这一段只验「没代码时不再调网关」
+        org.mockito.Mockito.clearInvocations(marketGateway);
+        Map<String, Object> noCode = new LinkedHashMap<>();
+        noCode.put("tool", "get_quote");
+        Map<String, Object> errorPatch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, noCode)));
+        assertThat(errorPatch).containsEntry(AnalysisState.MARKET_ERROR, "没能确定要查哪只股票");
+        verify(marketGateway, never()).execute(anyString(), any(), any(Integer.class));
+    }
+
+    @Test
+    @DisplayName("market：传输失败只给用户一句「暂时不可用」，技术细节不外泄")
+    void marketHidesTransportDetail() {
+        when(marketToolSelector.pick(anyString(), anyString(), anyList())).thenReturn(java.util.Optional.empty());
+        when(marketGateway.execute(anyString(), any(), any(Integer.class)))
+                .thenThrow(new com.finagent.market.MarketUnavailableException("pipe closed"));
+
+        Map<String, Object> patch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, marketPlan("get_quote", 0))));
+
+        assertThat(patch).containsEntry(AnalysisState.MARKET_ERROR, "行情服务暂时不可用");
+        assertThat(String.valueOf(patch.get(AnalysisState.MARKET_ERROR))).doesNotContain("pipe");
+    }
+
+    @Test
+    @DisplayName("market：模型选工具抛异常时静默回落规则，不让行情整条支路挂掉")
+    void marketSurvivesSelectorFailure() {
+        when(marketToolSelector.pick(anyString(), anyString(), anyList())).thenThrow(new IllegalStateException("rate limited"));
+        when(marketGateway.execute(eq("get_quote"), any(), eq(0)))
+                .thenReturn(new com.finagent.market.MarketGateway.Snapshot(quoteData(), "2026-11-04T15:00:00+08:00"));
+
+        Map<String, Object> patch = nodes.market(state(Map.of(AnalysisState.MARKET_PLAN, marketPlan("get_quote", 0))));
+
+        assertThat(patch).containsEntry(AnalysisState.MARKET_TOOL, "get_quote");
+        assertThat(patch).containsEntry(AnalysisState.MARKET_ERROR, "");
+    }
+
+    @Test
+    @DisplayName("answer：正文没提行情数字 → 脚注自己把行情写全（C40.3 / C41.3）")
+    void answerAppendsMarketLineWhenModelOmitsIt() {
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new AnswerResult(false, "净利润 12,084,594,947.22 元 [E1]，股价未在年报中披露。",
+                        List.of(), List.of(), AnswerResult.CONFIDENCE_INSUFFICIENT, null,
+                        List.of(AnswerResult.WARNING_EVIDENCE_INSUFFICIENT), 0));
+
+        Map<String, Object> patch = nodes.answer(state(Map.of(
+                AnalysisState.HITS, List.of(hit(101, "第三节", "净利润 12,084,594,947.22 元")),
+                AnalysisState.EVIDENCE_COUNT, 1,
+                AnalysisState.MARKET_AS_OF, "2026-11-04T15:34:06+08:00",
+                AnalysisState.MARKET_FACTS, marketRows())));
+
+        String answer = String.valueOf(patch.get(AnalysisState.ANSWER));
+        assertThat(answer).contains("实时行情：最新价 19.20 元，涨跌幅 1.80%");
+        assertThat(answer).contains("数据时间：2026-11-04 15:34（北京时间）");
+        assertThat(answer).contains("来源：东方财富公开行情");
+        assertThat(patch.get(AnalysisState.WARNINGS)).asList().contains("market_live");
+    }
+
+    @Test
+    @DisplayName("answer：正文已经写过的行情数字不再重复，只补没写的那几项")
+    void answerAppendsOnlyMissingMarketValues() {
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new AnswerResult(true, "净利润 12,084,594,947.22 元 [E1]，当前股价 19.20 元。",
+                        List.of(), List.of(), AnswerResult.CONFIDENCE_HIGH, null, List.of(), 0));
+
+        Map<String, Object> patch = nodes.answer(state(Map.of(
+                AnalysisState.HITS, List.of(hit(101, "第三节", "净利润 12,084,594,947.22 元")),
+                AnalysisState.EVIDENCE_COUNT, 1,
+                AnalysisState.MARKET_AS_OF, "2026-11-04T15:34:06+08:00",
+                AnalysisState.MARKET_FACTS, marketRows())));
+
+        String answer = String.valueOf(patch.get(AnalysisState.ANSWER));
+        // 19.20 已写过 → 跳过；涨跌幅没写过 → 补上
+        assertThat(answer).doesNotContain("最新价 19.20 元");
+        assertThat(answer).contains("实时行情：涨跌幅 1.80%");
+        assertThat(answer).contains("数据时间：2026-11-04 15:34（北京时间）");
+    }
+
+    @Test
+    @DisplayName("answer：正文写了总市值但没写股价 → 脚注只补股价，不重复市值")
+    void answerDedupesMarketValuesItemByItem() {
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new AnswerResult(true, "净利润 12,084,594,947.22 元 [E1]，当前总市值 3037.88 亿元。",
+                        List.of(), List.of(), AnswerResult.CONFIDENCE_HIGH, null, List.of(), 0));
+
+        Map<String, Object> patch = nodes.answer(state(Map.of(
+                AnalysisState.HITS, List.of(hit(101, "第三节", "净利润 12,084,594,947.22 元")),
+                AnalysisState.EVIDENCE_COUNT, 1,
+                AnalysisState.MARKET_AS_OF, "2026-11-04T15:34:06+08:00",
+                AnalysisState.MARKET_FACTS, marketRows())));
+
+        String answer = String.valueOf(patch.get(AnalysisState.ANSWER));
+        assertThat(answer).contains("实时行情：最新价 19.20 元，涨跌幅 1.80%");
+        // 正文写「3037.88亿元」（无空格）也要能去重，只出现一次
+        assertThat(answer.split("3037\\.88 ?亿元", -1)).hasSize(2);
+    }
+
+    /** 快照的 6 行行情事实（与 `factsOf` 同构，只保留脚注会读的字段）。 */
+    private static List<Map<String, Object>> marketRows() {
+        return List.of(
+                Map.of("no", 900, "metric", "股价", "value", "19.20", "unit", "元", "display", ""),
+                Map.of("no", 901, "metric", "涨跌幅", "value", "1.80", "unit", "%", "display", ""),
+                Map.of("no", 902, "metric", "总市值", "value", "303787607500", "unit", "元",
+                        "display", "3037.88 亿元"));
+    }
+
+    @Test
+    @DisplayName("answer：纯年报问题不加行情脚注")
+    void answerSkipsMarketStampWithoutMarketFacts() {
+        when(answers.answerStreaming(anyString(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new AnswerResult(true, "净利润 12,084,594,947.22 元 [E1]", List.of(), List.of(),
+                        AnswerResult.CONFIDENCE_HIGH, null, List.of(), 0));
+
+        Map<String, Object> patch = nodes.answer(state(Map.of(
+                AnalysisState.HITS, List.of(hit(101, "第三节", "净利润 12,084,594,947.22 元")),
+                AnalysisState.EVIDENCE_COUNT, 1)));
+
+        assertThat(String.valueOf(patch.get(AnalysisState.ANSWER)))
+                .isEqualTo("净利润 12,084,594,947.22 元 [E1]")
+                .doesNotContain("行情数据时间");
     }
 }

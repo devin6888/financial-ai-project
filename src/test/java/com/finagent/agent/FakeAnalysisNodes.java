@@ -35,6 +35,15 @@ final class FakeAnalysisNodes implements AnalysisNodes {
         // 与真实现同样的规则：问题里没点年份就当成「没说清」（阶段 22 的审批闸门靠它）
         boolean ambiguous = !YEAR.matcher(state.question()).find();
         Map<String, Object> patch = new LinkedHashMap<>();
+        // 行情支路：问题里带「股价/市值」就当成纯行情（拓扑用例只关心走哪条边）
+        if (state.question().contains("股价") || state.question().contains("市值")) {
+            patch.put(AnalysisState.MARKET_INTENT, Boolean.TRUE);
+            // 有年份 → 还要看年报，属于「财报 + 行情」；没有 → 纯行情
+            patch.put(AnalysisState.MARKET_ONLY, !YEAR.matcher(state.question()).find());
+            patch.put(AnalysisState.MARKET_PLAN, Map.of(
+                    "tool", "get_quote", "code", "300059", "name", "东方财富", "days", 0,
+                    "codeSource", "question"));
+        }
         patch.put(AnalysisState.QUERY_TYPE, complex ? "COMPLEX_ANALYSIS" : "EXACT_FACT");
         patch.put(AnalysisState.COMPANY_CODES, List.of("300059"));
         patch.put(AnalysisState.YEAR_FROM, 2025);
@@ -121,6 +130,22 @@ final class FakeAnalysisNodes implements AnalysisNodes {
         return Map.of(
                 AnalysisState.CITATION_ISSUES, fail ? List.of("缺少引用编号") : List.of(),
                 AnalysisState.CITE_ATTEMPTS, 1);
+    }
+
+    @Override
+    public Map<String, Object> market(AnalysisState state) {
+        // 拓扑用例只关心支路走没走：行情内容由 RealMarketNodesTest 用假 gateway 覆盖
+        return Map.of(
+                AnalysisState.MARKET_TOOL, "get_quote",
+                AnalysisState.MARKET_AS_OF, "2026-11-04T15:00:00+08:00",
+                AnalysisState.MARKET_DATA, Map.of("code", "300059", "price", 18.63));
+    }
+
+    @Override
+    public Map<String, Object> answerMarket(AnalysisState state) {
+        return Map.of(
+                AnalysisState.ANSWER, "fake-market-answer",
+                AnalysisState.STATUS, AgentRun.STATUS_DONE);
     }
 
     @Override

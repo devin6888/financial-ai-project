@@ -37,4 +37,15 @@ public interface AnalysisNodes {
 
     /** 证据确实不够时的终态：给可读答案 + 明确原因（契约 C6 第 5 条）。 */
     Map<String, Object> respondInsufficient(AnalysisState state);
+
+    /**
+     * 行情取数（阶段 23）：走 MCP 子进程拿实时快照/历史，写 MARKET_* 与 MARKET_FACTS。
+     *
+     * <p>失败不抛异常：写 MARKET_ERROR 后继续，由 {@code answer_market} 出降级文案 ——
+     * 行情是可选的增强，不该让整轮问答 500。
+     */
+    Map<String, Object> market(AnalysisState state);
+
+    /** 纯行情问题的答案：模板渲染数字与数据时间，不经模型（数字必须逐字准确）。 */
+    Map<String, Object> answerMarket(AnalysisState state);
 }

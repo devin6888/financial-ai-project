@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>两个线程池都是<b>必须</b>的：
  * <ul>
- *   <li>生成池：{@link } 要求 controller 立刻返回，模型调用必须挪到别的线程；</li>
+ *   <li>生成池：{@link org.springframework.web.servlet.mvc.method.annotation.SseEmitter} 要求 controller 立刻返回，模型调用必须挪到别的线程；</li>
  *   <li>心跳池：单线程即可，只用来每 15 秒发一行注释，防中间层把空闲连接掐掉。</li>
  * </ul>
  *

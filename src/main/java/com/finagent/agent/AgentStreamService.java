@@ -289,7 +289,8 @@ public class AgentStreamService {
         RetrievalTrace retrieval = bridge.retrievalTrace(runId.toString());
         return new ChatTrace(runId.toString(), retrieval, scope, bridge.memoryTrace(runId.toString()), 0, 0,
                 citations.size(), citationsDropped, 0, stepMs(view, AnalysisGraph.NODE_ANSWER),
-                stepMs(view, AnalysisGraph.NODE_UNDERSTAND), view.warnings());
+                stepMs(view, AnalysisGraph.NODE_UNDERSTAND), view.warnings(),
+                bridge.marketTrace(runId.toString()));
     }
 
     private static long stepMs(AgentRunService.RunView view, String node) {
@@ -388,6 +389,18 @@ public class AgentStreamService {
                 if (!titles.isEmpty()) {
                     detail.put("plan", titles);
                 }
+            }
+            case AnalysisGraph.NODE_MARKET -> {
+                label = state.marketError().isBlank() ? "查询实时行情" : "行情查询失败";
+                detail.put("tool", state.marketTool());
+                detail.put("asOf", state.marketAsOf());
+                if (!state.marketError().isBlank()) {
+                    detail.put("error", state.marketError());
+                }
+            }
+            case AnalysisGraph.NODE_ANSWER_MARKET -> {
+                label = "行情答案";
+                detail.put("asOf", state.marketAsOf());
             }
             case AnalysisGraph.NODE_ANSWER -> label = "生成答案";
             case AnalysisGraph.NODE_CITE_CHECK -> {

@@ -74,6 +74,22 @@ class FactPackTest {
     }
 
     @Test
+    @DisplayName("行情行单独成段【实时行情】，不混进【已报事实】（阶段 24）")
+    void marketRowsGetOwnSection() {
+        Map<String, Object> quote = row(900, "股价", "", "19.20", "元",
+                "实时行情 2026-11-04T15:34:06+08:00", AnswerResult.ORIGIN_EXTRACTED, "", "", "");
+        quote.put("source", AnswerResult.Fact.SOURCE_MARKET);
+
+        FactPack pack = FactPack.from(List.of(quote));
+
+        assertThat(pack.prompt()).contains("【实时行情】").contains("与报告期无关");
+        assertThat(pack.prompt()).doesNotContain("【已报事实】");
+        assertThat(pack.prompt()).contains("[F900] 股价 = 19.20元").contains("2026-11-04T15:34:06+08:00");
+        assertThat(pack.rows()).singleElement()
+                .satisfies(f -> assertThat(f.source()).isEqualTo(AnswerResult.Fact.SOURCE_MARKET));
+    }
+
+    @Test
     @DisplayName("空状态 → 空包：提示词里不出现空标题")
     void emptyRowsYieldEmptyPack() {
         assertThat(FactPack.from(List.of())).isSameAs(FactPack.EMPTY);

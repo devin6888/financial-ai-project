@@ -145,6 +145,45 @@ class AnswerServiceTest {
     }
 
     @Test
+    @DisplayName("sufficient=false 但答了一部分 → 保住引用与事实，只把 confidence 落到 insufficient（阶段 24）")
+    void partialAnswerKeepsCitationsAndFacts() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":false,"answer":"2025年净利润 12,084,594,947.22 元 [E1]，但 2025 年股价不在年报里。",
+                 "facts":[{"metric":"净利润","period":"2025","value":"12,084,594,947.22",
+                           "unit":"元","scope":"合并","evidence":"E1"}],
+                 "usedEvidence":["E1"],"confidence":"high","note":"股价不是年报口径"}
+                """);
+
+        AnswerResult r = service.answer("东方财富2025年净利润和现在股价", qu(2025, 2025),
+                pkg(block(1, 101, 38, 47, "TABLE", "2025年归属于上市公司股东的净利润为12,084,594,947.22元")));
+
+        assertThat(r.sufficient()).isFalse();
+        assertThat(r.confidence()).isEqualTo(AnswerResult.CONFIDENCE_INSUFFICIENT);
+        // 正文里的 [E1] 必须点得开（C7：正文角标 = citations 下标 + 1）
+        assertThat(r.citations()).extracting(Citation::childChunkId).containsExactly(101L);
+        assertThat(r.answer()).contains("[E1]");
+        assertThat(r.facts()).hasSize(1);
+        assertThat(r.warnings()).contains(AnswerResult.WARNING_EVIDENCE_INSUFFICIENT,
+                AnswerResult.WARNING_PARTIAL_ANSWER);
+        assertThat(r.note()).isEqualTo("股价不是年报口径");
+    }
+
+    @Test
+    @DisplayName("sufficient=false 且一个字都没有 → 仍是早退的拒答文案，不带引用")
+    void blankPartialStillRefuses() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":false,"answer":"","facts":[],"usedEvidence":["E1"],"confidence":"high","note":""}
+                """);
+
+        AnswerResult r = service.answer("2023年营业收入", qu(2023, 2023), pkg(block(1, 101, 38, 47, "TEXT")));
+
+        assertThat(r.sufficient()).isFalse();
+        assertThat(r.citations()).isEmpty();
+        assertThat(r.answer()).startsWith("证据不足");
+        assertThat(r.note()).isEqualTo("模型判定现有证据不足以回答，且未给出原因。");
+    }
+
+    @Test
     @DisplayName("模型带 markdown 围栏 → 仍能解析")
     void lenientParsing() {
         when(generator.complete(anyString(), anyString())).thenReturn("""
@@ -351,6 +390,34 @@ class AnswerServiceTest {
         assertThat(r.facts()).hasSize(1);
         assertThat(r.facts().get(0).origin()).isEqualTo(AnswerResult.ORIGIN_EXTRACTED);
         assertThat(r.warnings()).contains(AnswerResult.WARNING_FACTS_BACKFILLED);
+    }
+
+    @Test
+    @DisplayName("模型自己给了 facts 时，行情行仍然保留（它是这一轮真取回来的，不是兜底）")
+    void marketFactsSurviveModelFacts() {
+        when(generator.complete(anyString(), anyString())).thenReturn("""
+                {"sufficient":true,"answer":"2025年净利润 12,084,594,947.22 元 [E1]，当前股价 19.20 元 [F900]",
+                 "facts":[{"metric":"净利润","period":"2025","value":"12,084,594,947.22",
+                           "unit":"元","scope":"合并","evidence":"E1"}],
+                 "usedEvidence":["E1"],"confidence":"high","note":""}
+                """);
+        FactPack pack = new FactPack("【已报事实】\n", List.of(
+                new AnswerResult.Fact("净利润", "2025", "12,084,594,947.22", "元", "合并", "E1",
+                        AnswerResult.Fact.SOURCE_PDF),
+                new AnswerResult.Fact("股价", "", "19.20", "元", "", "实时行情 2026-11-04T15:34:06+08:00",
+                        AnswerResult.Fact.SOURCE_MARKET, AnswerResult.ORIGIN_EXTRACTED, null)),
+                java.util.Set.of("12084594947.22", "19.20"));
+
+        AnswerResult r = service.answer("东方财富2025年净利润和现在股价", qu(2025, 2025),
+                pkg(block(1, 101, 38, 47, "TABLE", "2025年归属于上市公司股东的净利润为12,084,594,947.22元")),
+                null, pack);
+
+        assertThat(r.facts()).extracting(AnswerResult.Fact::source).contains(AnswerResult.Fact.SOURCE_MARKET);
+        assertThat(r.facts()).anySatisfy(f -> {
+            assertThat(f.metric()).isEqualTo("股价");
+            assertThat(f.origin()).isEqualTo(AnswerResult.ORIGIN_EXTRACTED);
+        });
+        assertThat(r.warnings()).doesNotContain(AnswerResult.WARNING_FACTS_BACKFILLED);
     }
 
     @Test

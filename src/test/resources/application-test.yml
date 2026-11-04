@@ -5,6 +5,11 @@ spring:
       # 写成占位符而不是字面量：有 .env / 环境变量时就用真的（那几条「真模型」用例才跑得起来），
       # 没有时回落到这个明显是假的字符串，需要真 Key 的用例自己 assume 跳过。
       api-key: ${SPRING_AI_OPENAI_API_KEY:test-key-not-used}
+    mcp:
+      client:
+        # 测试不拉起行情 MCP 子进程（stdio 起 JVM 很慢，且 CI/本机不一定有 jar）。
+        # 行情相关逻辑用 mock 的 MarketGateway 覆盖（McpMarketGatewayTest / RealAnalysisNodesTest）。
+        enabled: false
     vectorstore:
       pgvector:
         initialize-schema: true
@@ -23,6 +28,9 @@ spring:
       minimum-idle: 0
 
 finagent:
+  # 行情默认关掉：装配出来的是 UnavailableMarketGateway，谁都不需要真网络。
+  market:
+    enabled: false
   # 记忆默认关掉：会话类测试自己显式打开（properties = "finagent.memory.enabled=true"），
   # 这样其余 300+ 用例的 Prompt 与阶段 8 完全一致。
   memory:

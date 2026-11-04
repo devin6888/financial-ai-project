@@ -90,6 +90,16 @@ class AnalysisGraphTest {
             }
 
             @Override
+            public Map<String, Object> market(AnalysisState state) {
+                return fake.market(state);
+            }
+
+            @Override
+            public Map<String, Object> answerMarket(AnalysisState state) {
+                return fake.answerMarket(state);
+            }
+
+            @Override
             public Map<String, Object> compute(AnalysisState state) {
                 return fake.compute(state);
             }
@@ -149,6 +159,61 @@ class AnalysisGraphTest {
         // 拒答文案由 respondInsufficient 决定（这里用的是假节点，不校验文案）；
         // 真实文案在 RealAnalysisNodesTest 与真链路里验证
         assertThat(finalState(app).status()).isEqualTo(AgentRun.STATUS_REJECTED);
+    }
+
+    @Test
+    @DisplayName("纯行情问题：plan 之后直达 market，answer_market 收尾，不经过检索与引用校验")
+    void marketOnlySkipsRetrievalAndAnswer() {
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
+
+        List<String> nodesRun = run(app, "东方财富现在股价多少");
+
+        assertThat(nodesRun).containsExactly("understand", "plan", "market", "answer_market");
+        AnalysisState state = finalState(app);
+        assertThat(state.answer()).isEqualTo("fake-market-answer");
+        assertThat(state.status()).isEqualTo(AgentRun.STATUS_DONE);
+        // 行情不进证据链：一条 hits 都不该有
+        assertThat(state.hits()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("财报 + 行情：先检索再查行情，之后照常 verify → answer（行情不替代证据）")
+    void mixedQuestionRetrievesThenQueriesMarket() {
+        CompiledGraph<AnalysisState> app = graph(FakeAnalysisNodes.happy()).graph();
+
+        List<String> nodesRun = run(app, "东方财富2025年净利润和现在股价");
+
+        assertThat(nodesRun).containsExactly("understand", "plan", "approve", "retrieve",
+                "market", "verify", "compute", "answer", "cite_check");
+        assertThat(finalState(app).marketTool()).isEqualTo("get_quote");
+    }
+
+    @Test
+    @DisplayName("改写一次后仍证据不足、但手里已有行情 → answer_market 兜底，不整题拒答")
+    void insufficientWithMarketFallsBackToMarketAnswer() {
+        FakeAnalysisNodes fake = FakeAnalysisNodes.happy();
+        AnalysisNodes nodes = new DelegatingNodes(fake) {
+            @Override
+            public Map<String, Object> verify(AnalysisState state) {
+                return Map.of(AnalysisState.INSUFFICIENT, true);
+            }
+
+            @Override
+            public Map<String, Object> market(AnalysisState state) {
+                Map<String, Object> patch = new java.util.LinkedHashMap<>(fake.market(state));
+                patch.put(AnalysisState.MARKET_FACTS, List.of(Map.of(
+                        "no", 900, "metric", "股价", "value", "18.63", "unit", "元")));
+                return patch;
+            }
+        };
+        CompiledGraph<AnalysisState> app = new AnalysisGraph(nodes, new MemorySaver(), 25).graph();
+
+        List<String> nodesRun = run(app, "东方财富2025年净利润和现在股价");
+
+        // 改写一次 → 再检索一次 → 再查一次行情 → 仍不足，但行情在手里，走 answer_market
+        assertThat(nodesRun).containsExactly("understand", "plan", "approve", "retrieve", "market",
+                "verify", "rewrite", "retrieve", "market", "verify", "answer_market");
+        assertThat(finalState(app).answer()).isEqualTo("fake-market-answer");
     }
 
     @Test
@@ -224,6 +289,16 @@ class AnalysisGraphTest {
         @Override
         public Map<String, Object> respondInsufficient(AnalysisState state) {
             return delegate.respondInsufficient(state);
+        }
+
+        @Override
+        public Map<String, Object> market(AnalysisState state) {
+            return delegate.market(state);
+        }
+
+        @Override
+        public Map<String, Object> answerMarket(AnalysisState state) {
+            return delegate.answerMarket(state);
         }
     }
 
