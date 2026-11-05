@@ -25,8 +25,14 @@ python -m venv .venv
 .venv/Scripts/python test_client.py      # 协议层冒烟：initialize → tools/list → tools/call
 ```
 
-Java 侧由 Spring AI 的 MCP client 以 stdio 子进程拉起，配置见 `src/main/resources/application.yml` 的
-`spring.ai.mcp.client.stdio.connections.market`。
+## 与 Java 版的关系（重要）
+
+这份 Python 实现是阶段 23 之前在本地验证 MCP 协议与字段换算的**参考实现**，三个工具（`search_stock` /
+`get_quote` / `get_history`）与返回字段都和 Java 版一致。
+
+主应用实际接线的是同级 Java 项目 `../financial-mcp-server4j`（Spring AI 版 MCP Server）：`src/main/resources/application.yml`
+里 `spring.ai.mcp.client.stdio.connections.market` 拉起的是它的 jar，**不是这个 Python 脚本**。
+要换回这一版，把配置里的 `args` 从 `-jar ...` 改成 `server.py` 即可 —— 这正是 MCP 的价值：换实现不动 Java 一行。
 
 ## 错误约定
 

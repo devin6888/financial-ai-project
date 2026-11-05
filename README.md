@@ -1,1366 +1,344 @@
 # 金融研报智能分析 Agent
 
-基于 **Spring Boot + Spring AI** 的金融研报 RAG 问答系统。
+把上市公司年报 PDF 变成**能追问、能核对、能拒答**的问答系统。
 
-- 设计文档：`金融研报智能分析Agent_系统架构设计_v0.10.docx`
-- 开发路线图与阶段计划：`docs/superpowers/plans/`
-- 环境搭建手册：`docs/阶段1-环境搭建手册.md`
-- **术语表（第一次做 RAG 就先读这份）**：`docs/术语表.md` —— 每个缩写都有中文全称、为什么要它、在本项目里长什么样
-- 文档写作规范：`docs/文档写作规范.md`
-- **每轮问答请求了几次模型（含完整流程图）**：`docs/每轮问答的模型调用与流程图.md` —— LLM 只有 3 个调用点、每轮 1~2 次，另有向量化与精排按「车道」计
-- **主流程导读（代码看不懂就从这份开始）**：`docs/主流程导读.md` —— 一次提问从 HTTP 到答案的完整调用链、9 个节点、状态里每个键谁写谁读、LangGraph4j 到底只做了哪四件事
+上传一份年报，它会按版面解析、按父子结构切块、建向量与中文全文索引；提问时走多路召回 + 融合 + 精排，答案里每个结论都带 `[E1]` 这样的引用编号，能点回原文页码；证据不够时它直接说不够，不编。
 
-**当前进度：阶段 21（文档归属与授权：默认私有 + 文档级批量授权）、阶段 20（技术债清理：检索 #1 #2 + 旧版本保留策略）、阶段 19（入库执行记录）、阶段 18（演示前的体验打磨）、阶段 17（答案版式：自适应章节 + 阅读层级）、阶段 16（答案质量：骨架 / 事实层 / 派生指标 / 结构化输出 / 复制为 Markdown）、阶段 15（多路检索的证据覆盖）、阶段 14（统一图引擎）、阶段 12（前端体验补强）已完成。** 全部计划的阶段（1~20）均已完成，没有「计划写好但没动手」的项。各阶段报告：阶段 2 `docs/阶段2-解析结果报告.md`、阶段 3 `docs/阶段3-切块与入库报告.md`、阶段 4 `docs/阶段4-检索报告.md`、阶段 5 `docs/阶段5-答案生成报告.md`、阶段 6 `docs/阶段6-评测报告.md`、阶段 7 `docs/阶段7-异步任务化报告.md`、阶段 8 `docs/阶段8-权限与多租户报告.md`、阶段 9 `docs/阶段9-Memory与会话报告.md`、阶段 10 `docs/阶段10-前端报告.md`、阶段 12 `docs/阶段12-体验补强报告.md`、阶段 13 `docs/阶段13-首屏时延报告.md`、阶段 11 `docs/阶段11-Agent工作流报告.md`、阶段 14 `docs/阶段14-统一图引擎报告.md`、阶段 15 `docs/阶段15-多路检索证据覆盖报告.md`、阶段 16 `docs/阶段16-答案质量报告.md`、阶段 17 `docs/阶段17-答案版式报告.md`。
+> 这不是又一个「切片 + 向量库 + 拼 prompt」的 RAG demo。项目的核心命题是：**答案里的数字必须能回到原文**。为此答案之后还有一层数字回查，对不上就重答或拒答。
 
----
+| | |
+| --- | --- |
+| 语言 / 框架 | Java 21 · Spring Boot 4.0.8 · Spring AI 2.0.1 |
+| 存储 | PostgreSQL 16.15 + pgvector 0.8.7 + zhparser 2.4 |
+| 编排 | LangGraph4j 1.9.7（状态图 + PostgreSQL 检查点） |
+| 前端 | Vue 3.5 · Vite · Element Plus · Pinia |
+| 模型 | 阿里云百炼：qwen-plus · text-embedding-v4（1024 维）· qwen3-rerank |
 
-## 环境要求
+## 目录
 
-- JDK 21
-- Maven 3.9+
-- Docker Desktop
+- [它能做什么](#它能做什么)
+- [亮点](#亮点)
+- [技术栈](#技术栈)
+- [架构](#架构)
+- [本地跑起来](#本地跑起来)
+- [怎么用](#怎么用)
+- [项目结构](#项目结构)
+- [注意事项](#注意事项)
+- [已知限制](#已知限制)
+- [文档](#文档)
 
-## 快速开始
+## 它能做什么
 
-```bash
-docker compose up -d          # 启动 PostgreSQL（含 pgvector + zhparser）与 Kafka
-bash scripts/verify-db.sh     # 断言验证：6 项检查，全 PASS 才算通过
-mvn test                     # 集成测试
+| 能力 | 说明 |
+| --- | --- |
+| **文档入库** | 上传 PDF → 版面解析 → 父子块切分 → 向量化 → 可检索。全程异步，进度可见，失败可重试；同一文件按 `content_hash` 幂等，重复上传 0 秒返回。 |
+| **混合检索** | 向量（pgvector）、中文全文（zhparser + tsvector）、精确子串（pg_trgm）三路并行召回，RRF 融合后按配额分配给「车道」，再走精排。 |
+| **Query Understanding** | 判断问题类型（事实查询 / 跨年对比 / 归因解释 / 拒答类），抽取公司、年份、指标；规则优先，规则不中才问模型。 |
+| **检索改写** | 「那净利润呢」这类追问会结合对话上下文补全成完整检索语句，并且补全到的年份 / 公司会回填到执行状态里。 |
+| **证据闸门** | 三道校验判断「够不够答」：命中条数、目标指标是否真的出现在证据里、归因类问题是否有归因证据。不够先回环重检索一次，仍不够就拒答。 |
+| **事实层与计算** | 从表格单元格抽结构化事实（营业收入、净利润、毛利率…），派生出同比、占比、两年对比，全部是代码算的，不让模型「心算」。 |
+| **引用与数字校验** | 正文里每个数字都要能在被引用的块里找到，或者是系统算出来的派生值；引用编号必须与证据一一对应。 |
+| **拒答** | 没证据就说没证据，且是模板化文案，不花一次模型调用去「编一个礼貌的拒绝」。 |
+| **人工审批** | 高风险问题在检索前停下来等人确认；确认后从检查点继续，不是从头跑。 |
+| **实时行情** | 市值、股价、PE、PB、涨跌幅、历史 K 线，通过独立的 MCP Server 取；纯行情问题走模板渲染，混合问题单独标注「实时行情 + 时间」。 |
+| **多轮与记忆** | 会话历史、上下文补全、长期偏好（例如「结论先给数字」），记忆只影响表达风格，不产生引用。 |
+| **多租户与授权** | 租户隔离 + 文档级 ACL（`document_grant`）+ 管理后台；身份只从 Bearer token 推导。 |
+
+## 亮点
+
+**1. 答案里的数字都能回查。** 生成完不是直接返回：`ground()` 会扫正文里所有数字，逐个到被引块的原文里找，找不到就看它是不是派生值（同比、占比、求和）。全部对不上 → 重答一次 → 还不行 → 拒答。这一层在真实语料上抓到过「引用是真的、数字是编的」。
+
+**2. 拒答是确定性的，不是模型的心情。** 三道闸门（条数 / 目标指标是否出现 / 归因证据）在代码里判，拒答文案是模板。同一个问题问十遍，答不出来就是答不出来。
+
+**3. 事实层用代码算，不让模型心算。** 表格里的数字先抽成 `financial_fact`（带页码、块号、单位），同比和占比用 BigDecimal 算。模型只负责组织语言。
+
+**4. 检索全过程可解释。** 每条车道都记 trace：Dense / Sparse 各召回几条、RRF 后名次、精排分数、各段耗时。前端「诊断」面板直接展开——这是整个项目里最难造假的部分。
+
+**5. 图编排 + 检查点。** LangGraph4j 12 个节点，`plan` 之后可以在 `approve` 停下等人；恢复是从 PostgreSQL 检查点接着跑，审批超时也有兜底。
+
+**6. 中文检索不引 Elasticsearch。** 一个 PostgreSQL 同时承担向量（pgvector）、中文全文（zhparser + GIN）、模糊子串（pg_trgm）。少一套中间件，也就少一致性问题：元数据和向量同表同事务，切换 chunk 版本才能做到原子。
+
+**7. 成本可控。** 每轮问答通常只有 1~2 次大模型调用（Query Understanding 0~1 次 + 答案生成 1 次），其余全是确定性逻辑。最复杂的跨年对比问题实测 18 次模型 API（含 8 次向量化、8 次精排）。
+
+**8. 行情不污染证据链。** 行情来自独立 MCP Server 子进程，单独两个节点，模板渲染，不参与 `[E]` 编号——价格和时间戳必须逐字准确，不能交给模型复述。
+
+**9. 每个阶段都有实测数字。** 不是「写完了」，而是「跑通了、延迟多少、命中多少、踩了什么坑」。见 [`docs/阶段开发日志.md`](docs/阶段开发日志.md)。
+
+## 技术栈
+
+| 层 | 选型 | 为什么是它 |
+| --- | --- | --- |
+| 语言 / 框架 | Java 21 · Spring Boot 4.0.8 · Spring AI 2.0.1 | 项目目标之一是学 Spring AI 的 RAG 全家桶：`ChatClient`、`EmbeddingModel`、`VectorStore`、MCP |
+| 数据库 | PostgreSQL 16.15 | 业务表、向量、全文索引、LangGraph 检查点都放一个库；向量与元数据同事务 |
+| 向量检索 | pgvector 0.8.7 | 不额外引向量数据库；1024 维，HNSW 索引 |
+| 中文分词 | zhparser 2.4（SCWS） | 本地可装、直接产出 `tsvector`，与 GIN 索引原生配合 |
+| 图编排 | LangGraph4j 1.9.7 + postgres-saver | 状态图 + 检查点，人工审批（interrupt）与崩溃恢复都靠它 |
+| 迁移 | Flyway（V1 ~ V20） | schema 只有一个来源，禁止手工改库 |
+| 解析 | Python 3 + Docling 2.x | 版面与表格还原成 Markdown 明显好于纯文本抽取；独立进程，崩了不影响主服务 |
+| 模型 | 百炼 qwen-plus / text-embedding-v4 / qwen3-rerank | 中文效果好、OpenAI 兼容协议，Spring AI 直接接 |
+| 前端 | Vue 3.5 · Vite · Element Plus · Pinia | 与后端同构建（产物落 `src/main/resources/static`），单端口部署 |
+| 消息 | Kafka | 解析流水线任务化，消费失败可重投 |
+| 对象存储 | 腾讯云 COS | PDF 原件不入库，库里只存对象键 |
+| 行情 | 独立 MCP Server（Java，stdio） | 外部数据源用 MCP 隔离，换数据源不动主服务 |
+
+## 架构
+
+### 一次提问经过的 12 个节点
+
+```mermaid
+flowchart TD
+  start(["用户提问"]) --> understand["understand<br/>判类型 · 抽公司/年份/指标"]
+  understand --> plan{"plan<br/>策略路由"}
+  plan -->|"没有可查的证据"| refuse["respond_insufficient<br/>拒答"]
+  plan -->|"问行情"| market["market<br/>MCP 工具调用"]
+  plan -->|"查年报"| approve["approve<br/>人工审批闸门"]
+  approve --> retrieve["retrieve<br/>多路检索 · RRF · 精排"]
+  retrieve --> market
+  market -->|"纯行情"| answerMarket["answer_market<br/>模板渲染"]
+  market -->|"年报 / 混合"| verify{"verify<br/>证据够不够"}
+  verify -->|"不够，还有重试次数"| rewrite["rewrite<br/>改写后重检索"]
+  rewrite --> retrieve
+  verify -->|"仍然不够"| refuse
+  verify -->|"够了"| compute["compute<br/>抽事实 · 算派生指标"]
+  compute --> answer["answer<br/>流式生成"]
+  answer --> citeCheck{"cite_check<br/>引用与数字校验"}
+  citeCheck -->|"不过，还能改"| answer
+  citeCheck -->|"仍然不过"| refuse
+  citeCheck -->|"通过"| done(["final"])
+  answerMarket --> done
+  refuse --> done
 ```
 
-### 时区（看库里时间对不上时先看这里）
+12 个节点里只有 **3 个**会调模型：`understand`（规则不中时的意图路由）、`rewrite`（检索改写）、`answer`（生成）。其余都是确定性逻辑。
 
-业务时间列**全部**是 `timestamp with time zone`（timestamptz），存的是「瞬间」，不是「墙上时间」。
-所以 `2026-11-02 13:44:15+00` 与 `2026-11-02 21:44:15+08` **是同一条记录**，只是会话时区不同。
+### 一次提问的数据流
 
-- 数据库默认会话时区已设为 `Asia/Shanghai`：`ALTER DATABASE finagent SET timezone = 'Asia/Shanghai';`（随数据卷持久化，不需要重建容器）。
-- `docker-compose.yml` 里也给 postgres 加了 `TZ` / `PGTZ`，让容器日志与 `initdb` 默认时区一致。
-- **已有的长连接不会自己变**：DBeaver 要断开重连，后端要重启（Hikari 池里的连接是启动时建的），否则看到的仍是 `+00`。
-- 前端不受影响：接口给的是带偏移量的 ISO 串（`…Z` 或 `…+08:00`），列表里的时间是 `new Date(...)` 按**浏览器**时区渲染的。
+1. **入口**：`POST /api/chat/stream` → 鉴权（token → 租户 + 用户）→ 首屏立即推一条 `stage` 事件（0.06 s 就能看到「理解中」）→ 异步进图。
+2. **理解**：判问题类型、抽公司 / 年份 / 指标，必要时用对话历史补全追问。
+3. **规划**：没有可查证据 → 直接拒答；纯行情 → 走 `market`；查年报 → 先过人工审批闸门。
+4. **检索**：三路并行召回 → RRF 融合 → 按配额分车道 → 精排 → 证据闸门。每路都记 trace。
+5. **生成与校验**：事实层算好数字 → 模型流式生成（带 `[E]` 编号）→ 数字回查 + 引用校验 → 通过则 `final`，不通过重答或拒答。
 
-Windows 下执行脚本用 Git Bash：
+### 数据模型（核心表）
+
+| 表 | 作用 |
+| --- | --- |
+| `company` / `document` | 公司、文档元数据；`document.parse_status` 四态 + `active_chunk_version` |
+| `document_chunk` | 父子块（`parent_id` 自指）、`embedding` 1024 维、`content_tsv` 生成列、版本号 + `ACTIVE` / `SUPERSEDED` |
+| `financial_fact` | 表格抽出的结构化数字（指标、期间、值、单位、来源块） |
+| `conversation` / `message` / `memory` | 会话、消息、长期偏好 |
+| `agent_run` / `agent_run_step` / 检查点表 | 图执行记录、每步状态、LangGraph 检查点 |
+| `tenant` / `app_user` / `api_token` / `document_grant` | 多租户、账号、令牌、文档级授权 |
+
+## 本地跑起来
+
+### 0. 前置
+
+- **JDK 21**、**Maven 3.9+**
+- **Docker Desktop**（PostgreSQL 与 Kafka 都跑在容器里）
+- 可选：**Node 20+**（想改前端）、**Python 3.12+**（想重新解析 PDF）
+- 一个百炼 API Key（[阿里云百炼控制台](https://bailian.console.aliyun.com/)）
+
+### 1. 起依赖（PostgreSQL + Kafka）
+
+```bash
+docker compose up -d          # 首次会构建带 pgvector + zhparser 的镜像，约 5 分钟
+bash scripts/verify-db.sh     # 6 项断言：扩展、分词配置、表、索引
+```
+
+Windows 上用 Git Bash 跑脚本：
 
 ```powershell
 & "D:\Program Files\Git\bin\bash.exe" scripts/verify-db.sh
 ```
 
-## 环境变量（凭据）
+看到 `ALL CHECKS PASSED` 再往下走。
 
-凭据通过环境变量注入（也可放在项目根目录的 `.env`，启动时自动读取，见下），**不写入仓库**。
+### 2. 配置凭据
 
-| 变量 | 必需 | 说明 |
-|---|---|---|
-| `SPRING_AI_OPENAI_API_KEY` | 是 | 阿里云百炼 API Key（宽松绑定自动映射到 `spring.ai.openai.api-key`） |
-| `FINAGENT_COS_SECRET_ID` | 是 | 腾讯云 SecretId |
-| `FINAGENT_COS_SECRET_KEY` | 是 | 腾讯云 SecretKey |
-| `FINAGENT_COS_REGION` | 是 | 例如 `ap-guangzhou` |
-| `FINAGENT_COS_BUCKET` | 是 | 形如 `mybucket-1251234567`（**必须带 APPID 后缀**） |
-| `FINAGENT_COS_KEY_PREFIX` | 否 | 对象键前缀，便于多环境隔离，例如 `dev/` |
-| `FINAGENT_RERANK_API_KEY` | 否 | 百炼 Rerank Key（与 `SPRING_AI_OPENAI_API_KEY` 是同一把）。**缺失或为空时装配 NoopRerankModel**：检索照常返回 RRF 结果，trace 里 `degraded=true`、模型名 `none` |
-| `FINAGENT_MARKET_ENABLED` | 否 | 默认 `true`。设成 `false` 时装配 `UnavailableMarketGateway`：行情问题只回「暂时不可用」，不影响年报问答 |
-| `FINAGENT_MCP_JAR` | 否 | 行情 MCP Server 的 jar 路径，默认 `../financial-mcp-server4j/target/financial-mcp-server4j-0.1.0.jar`。**jar 名跟 artifactId 走**，那边改名这里要同步 |
-| `FINAGENT_MARKET_LIVE` | 否 | 设成 `true` 才跑 `McpMarketGatewayLiveTest`（真起子进程、真联网查行情），默认跳过 |
+在仓库根目录放一份 `.env`（已 gitignore），然后用脚本加载进当前 shell：
 
-推荐做法：在项目根目录创建 `.env`（已在 `.gitignore` 中），然后加载后运行：
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `SPRING_AI_OPENAI_API_KEY` | 是 | 百炼 Key，对话与向量共用 |
+| `FINAGENT_RERANK_API_KEY` | 否 | 精排 Key；留空则自动装配「不精排」实现，功能照常跑 |
+| `FINAGENT_COS_SECRET_ID` / `_SECRET_KEY` / `_REGION` / `_BUCKET` / `_KEY_PREFIX` | 否 | 腾讯云 COS，存 PDF 原件 |
+| `FINAGENT_MCP_JAR` | 否 | 行情 MCP Server 的 jar 路径，不配则行情能力关闭 |
+| `FINAGENT_MARKET_ENABLED` | 否 | 行情开关，默认 `true` |
+| `KAFKA_BOOTSTRAP_SERVERS` | 否 | 默认 `localhost:9092` |
 
 ```powershell
-. .\scripts\load-env.ps1     # 把 .env 读入当前进程环境
-mvn test
+. .\scripts\load-env.ps1
 ```
 
-`.env` 内容示例：
+> 数据库连接默认就是 `jdbc:postgresql://localhost:5432/finagent`，用户 / 密码都是 `finagent`，与 `docker-compose.yml` 对齐，通常不用改。
 
-```dotenv
-SPRING_AI_OPENAI_API_KEY=sk-xxxxxxxx
-FINAGENT_COS_SECRET_ID=AKIDxxxxxxxx
-FINAGENT_COS_SECRET_KEY=xxxxxxxx
-FINAGENT_COS_REGION=ap-guangzhou
-FINAGENT_COS_BUCKET=mybucket-1251234567
-FINAGENT_COS_KEY_PREFIX=dev/
-FINAGENT_RERANK_API_KEY=sk-xxxxxxxx
-# 行情支路（可选）：jar 不存在时会静默降级成「行情服务暂时不可用」
-# FINAGENT_MCP_JAR=../financial-mcp-server4j/target/financial-mcp-server4j-0.1.0.jar
-```
+### 3.（可选）起文档解析服务
 
-### 行情 MCP Server 是独立进程（阶段 23）
-
-行情数据来自东方财富公开接口，由**同目录另一个项目** `financial-mcp-server4j` 以 stdio MCP Server 的形式提供：
-
-```powershell
-# 一次性：把它打成可执行 jar
-cd ..\financial-mcp-server4j; mvn -DskipTests package
-# 之后主应用启动时会按需拉起：java -jar .../financial-mcp-server4j-0.1.0.jar
-```
-
-- **懒初始化 + 启动后异步预热**（`spring.ai.mcp.client.initialized=false` + `ApplicationReadyEvent`）：
-  冷启动实测 3.7~9 s，既不能放在启动路径上，也不能让第一个用户请求去等 —— 应用起来后
-  后台线程就握手（日志里一行「行情 MCP 子进程握手完成」），之后单次 40 ms 量级；
-- 握手超时单独放宽到 30 s（`MarketConfig` 的 `McpClientCustomizer`），沿用请求超时 8 s 会让第一次调用稳定超时；
-- 子进程挂了或 jar 不在：60 s 冷却期内直接回「行情服务暂时不可用」，年报问答完全不受影响；
-- 只有 `market` 节点会调用它 —— `spring.ai.mcp.client.toolcallback.enabled=false`，
-  所以行情工具**不会**被注册进所有 ChatClient（否则模型做年报问答时可能自己去查股价）。
-
-### 在 IDEA 里直接点「运行」也能拿到 `.env`（阶段 20）
-
-`load-env.ps1` 只在 PowerShell 会话里生效；在 IDEA 里对 `FinAgentApplication` 点运行，不经过任何脚本，于是
-`spring.ai.openai.api-key` 为空，Spring AI 2.0 的 `OpenAiEmbeddingModel` 在装配阶段就会抛：
-
-```
-Failed to instantiate [org.springframework.ai.openai.OpenAiEmbeddingModel]:
-Factory method 'openAiEmbeddingModel' threw exception with message:
-At least one credential source must be specified: credential (apiKey), workloadIdentity, or adminApiKey
-```
-
-为了让「命令行能跑」和「IDE 能跑」一致，应用启动时会自己读项目根目录的 `.env`：
-`DotenvEnvironmentPostProcessor`（注册在 `src/main/resources/META-INF/spring.factories`）把它作为一个
-**优先级最低**的属性源加进 `Environment`。
-
-| 行为 | 说明 |
-|---|---|
-| 变量名写法 | `.env` 里写环境变量名（`SPRING_AI_OPENAI_API_KEY`），代码里照常读 `spring.ai.openai.api-key`，由 `SystemEnvironmentPropertySource` 做宽松转换 |
-| 优先级 | 真实环境变量 > `application.yml` / 命令行参数 > `.env`。CI 与容器注入的凭据不会被本地文件覆盖 |
-| 文件位置 | 先看 `-Dfinagent.dotenv.path=...`，再看工作目录，再退到上一级（IDE 有时以模块目录为工作目录） |
-| 没有文件 | 静默跳过，不影响生产部署 |
-| 启动日志 | 命中时打印「已从 `<绝对路径>` 加载 N 个变量（优先级最低…）」；若 `spring.ai.openai.api-key` 仍为空，额外 WARN 提示该去 `.env` 写哪个键。日志用 `DeferredLogFactory`，因为 EPP 跑在日志系统初始化之前，普通 `Logger` 打的内容会被丢弃 |
-
-安全提醒：`.env` 已在 `.gitignore` 中，不要把真实 Key 写进 `application.yml` 或提交到仓库。
-
-**缺少凭据时的行为**：应用仍可正常启动，相关测试**自动跳过**（不会失败）。
-
-| 测试 | 需要的变量 |
-|---|---|
-| `VectorStoreSmokeTest#dashscopeEmbeddingReturns1024Dimensions` | `SPRING_AI_OPENAI_API_KEY` |
-| `CosObjectStorageTest`（整类） | `FINAGENT_COS_*` 四项 |
-| `DashScopeRerankModelLiveTest` | `FINAGENT_RERANK_API_KEY` |
-| `McpMarketGatewayLiveTest` | `FINAGENT_MARKET_LIVE=true` + 上面那个 jar |
-
-## 阶段 1 已验证的环境指纹
-
-| 组件 | 版本 |
-|---|---|
-| PostgreSQL | 16.15 (Debian 16.15-1.pgdg12+2) |
-| pgvector | 0.8.7 |
-| zhparser | 2.4（commit `2e995c4df672563992b4d7a147b8fa2d0d4cda6c`） |
-| Spring Boot | 4.0.8 |
-| Spring AI | 2.0.1 |
-| Java | 21 |
-
-验收结果：
-
-| 命令 | 结果 |
-|---|---|
-| `bash scripts/verify-db.sh` | 6/6 PASS，退出码 0 |
-| `mvn test`（未配置凭据） | Tests run: 4, Failures: 0, Errors: 0, Skipped: 2 |
-| `mvn test`（配置凭据后） | Tests run: 4, Failures: 0, Errors: 0, **Skipped: 0** |
-
-**已实证的关键假设**：
-
-- 百炼 `text-embedding-v4` 经 OpenAI 兼容接口返回 **1024 维**（`dimensions=1024` 参数生效）
-- 腾讯云 COS 经官方 SDK 完成 put → exists → get → 生成签名 URL → delete 全链路往返
-
-## 镜像构成与体积
-
-Dockerfile 采用**多阶段构建**：
-
-| 阶段 | 内容 | 是否进入最终镜像 |
-|---|---|---|
-| builder | 编译工具链（build-essential / autoconf / automake / libtool / postgresql-server-dev-16）+ SCWS + zhparser | ❌ 否 |
-| 运行 | pgvector 基础镜像 + 仅拷入 SCWS 运行库与 zhparser 产物 | ✅ 是 |
-
-- 最终镜像 **652 MB**（单阶段方案为 2 GB，差额是约 1.3 GB 的编译工具链）
-- 运行镜像不含任何编译工具链，attack surface 更小
-- ⚠️ **本机磁盘净占用变化不大**：被裁掉的图层会留在 Docker 构建缓存里（约 1.37 GB），以便快速重建。
-  想真正回收：执行 `docker builder prune -f`（代价是下次重建需重新编译，约 5 分钟）
-
-## 目录结构
-
-```
-financial-ai-project/
-├── docker-compose.yml                 # 本地依赖编排
-├── docker/postgres/
-│   ├── Dockerfile                     # pgvector + zhparser 镜像
-│   └── init/
-│       ├── 01-extensions.sql          # 扩展与中文分词配置
-│       └── 02-schema.sql              # 4 张业务表
-├── scripts/verify-db.sh               # 数据库断言脚本
-├── docs/
-│   ├── 术语表.md                      # 所有缩写的解释（先读这份）
-│   ├── 文档写作规范.md                # 报告/计划怎么写才看得懂
-│   ├── 主流程导读.md                  # 一次提问的完整调用链（代码入口）
-│   ├── 测试规范.md                    # 三层测试怎么分、什么时候跑哪层、旧测试什么时候删
-│   ├── 阶段1~13-*.md                  # 各阶段报告（阶段 10 另有一份前端验收清单）
-│   ├── 技术选型.md                    # 选了什么 / 没选什么 / 为什么 / 何时该改
-│   │                                  #   附录 A：为什么不用 ORM（MyBatis-Plus / JPA 实测对照）
-│   ├── 关键契约.md                    # C1~C16 跨阶段不变式（C12 记忆 / C13 公司名→代码 / C14 登录 / C15 流式 / C16 首屏）
-│   ├── pgvector-工作机制.md           # 向量库机制与实测
-│   ├── PG文本索引-tsv与trgm.md        # 中文全文检索机制与实测
-│   ├── 权限与多租户-工作机制.md       # 认证 / 租户 / RLS / ACL 四层机制与实测
-│   ├── LangGraph4j-工作机制.md        # Agent 图：状态 / 通道 / 检查点 / 中断恢复（1.9.7 实测）
-│   └── superpowers/plans/             # 路线图与各阶段计划
-├── src/main/java/com/finagent/        # Spring Boot 应用
-├── src/main/resources/application.yml
-└── src/test/java/com/finagent/        # 集成测试
-```
-
-## 阶段 2：文档解析服务（Python / Docling）
-
-解析跑在一个**独立的 Python 服务**里，Java 侧通过 HTTP 调用。
-边界很清楚：**Python 只负责「看懂 PDF」，不接触数据库与对象存储**；
-结果写哪、状态存哪，全由 Java 侧决定。
-
-### 启动
+只有上传新的 PDF 才需要它；已有语料可以直接查。
 
 ```powershell
 cd document-parser-service
-$env:HF_ENDPOINT = 'https://hf-mirror.com'   # 必须！本机 huggingface.co 不可达
+$env:HF_ENDPOINT = 'https://hf-mirror.com'   # 国内必须，否则模型下载超时
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 接口
+`GET http://127.0.0.1:8000/health` 返回 ok 即可。一份 181 页年报解析约 25 分钟。
 
-| 接口 | 用途 |
-|---|---|
-| GET /health | 健康检查 |
-| POST /parse | 同步解析，小页范围与手工验证用 |
-| POST /jobs | **提交作业**，立即返回 job_id（202）。长文档走这条 |
-| GET /jobs/{id} | 查询状态、耗时、错误与结果 |
-
-> **为什么有 /jobs**：181 页约 25 分钟。同步 HTTP 在这个量级上是缺陷 ——
-> 网络抖动全部重来、worker 被占死、客户端看不到进度。作业化之后提交耗时从
-> 15.6 秒（3 页同步）降到 **0.07 秒**。阶段 7 已用 Kafka 把这一层换成事件驱动（见下节）。
-
-### 端到端验证
+### 4.（可选）打包行情 MCP Server
 
 ```powershell
-# 1) 启动解析服务（见上）
-# 2) 跑端到端：真 HTTP + 真 Kafka + 真 COS（上传幂等 / 版本 +1 / 增量复用 / DLQ 重投）
-. .\scripts\load-env.ps1
-mvn -B -Dsurefire.excludedGroups= -Dgroups=e2e -Dtest=DocumentTaskE2ETest test
+cd ..\financial-mcp-server4j
+mvn -DskipTests package
+# 产出 target/financial-mcp-server4j-0.1.0.jar；主应用会按 FINAGENT_MCP_JAR 懒拉起这个子进程
 ```
 
-> **真解析（181 页约 25 分钟）不在自动化里**：原来承担它的 `FullDocumentPipelineTest`、
-> `IngestReportTest` 已在测试分层时删除（见 docs/测试规范.md §7）。需要重跑解析时用
-> `POST /api/documents` 上传，走 Kafka → worker，不要指望一条测试跑完。
+> 仓库里的 [`mcp-market-server/`](mcp-market-server/) 是同一协议的 **Python 参考实现**，也可以直接跑，只需改 `args`。
 
-> -Dsurefire.excludedGroups= **不能省**：-Dgroups=e2e 是包含语义，
-> 而配置里的 excludedGroups 仍在生效，两者叠加会一条都不跑。
-
-### 数据库迁移
-
-从阶段 2 起 schema 由 **Flyway** 管理，只有一个来源：src/main/resources/db/migration/。
-
-**改表只需新增 V*.sql，不要再 docker compose down -v。**
-
-## 阶段 7：异步任务化（Kafka）
-
-解析与重索引不再是「测试里手动调的两个方法」，而是两条 Kafka 事件：
-
-| Topic | 谁投 | 谁消费 | 干什么 |
-|---|---|---|---|
-| `document.parse` | `POST /api/documents` | `DocumentParseListener` | 从 COS 读回 PDF → Docling 解析 → 切块 → 增量嵌入 → 入库 |
-| `document.reindex` | 人工投递（后续可加计划任务） | `DocumentReindexListener` | 从已存解析产物重切 + 增量重嵌，**不重新解析 PDF** |
-
-失败处理：瞬时错误（超时、COS 5xx）重试 3 次、间隔 1 秒；仍失败或业务/数据错误 → 消息进
-`document.parse.dlt` / `document.reindex.dlt`，同时 `task_message` 表留一行（事件去重 + 失败原因）。
-
-### 上传并轮询
+### 5. 起后端
 
 ```powershell
 . .\scripts\load-env.ps1
-
-# 上传（multipart）。docType 只能是 ANNUAL / SEMI_ANNUAL / Q1 / Q3
-curl.exe -X POST http://localhost:8080/api/documents `
-  -F "file=@docs/东方财富2025年年度报告.pdf" `
-  -F "companyCode=300059" -F "companyName=东方财富" -F "market=SH" `
-  -F "docType=ANNUAL" -F "docYear=2025" -F "title=东方财富2025年年度报告"
-# -> {"documentId":7,"parseStatus":"DONE"}   同一份 PDF 重复上传命中幂等快路径，0 秒返回
-
-# 查状态与元数据
-curl.exe http://localhost:8080/api/documents/7
+mvn spring-boot:run        # http://localhost:8080
 ```
 
-> **幂等快路径**：`content_hash` 已解析完成且存在 ACTIVE chunk 时，直接返回旧 `documentId`，
-> 不落 COS、不投递、不解析。反过来说 —— 想真正触发一次解析，必须传一份**内容不同**的 PDF：
-> 181 页在 CPU 上的 Docling 约 50 分钟，别拿大文件试速度。
+首次启动时 Flyway 会跑 V1 ~ V20 建表并写入种子数据（演示账号、令牌）。
 
-### 验证
+### 6. 起前端（二选一）
 
-```powershell
-. .\scripts\load-env.ps1
-mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=DocumentTaskE2ETest"
-```
-
-四个用例约 35 秒跑完：上传幂等（同 hash 只一次解析）、状态查询（DONE + 公司信息）、
-真重索引（版本号恰好 +1，654 个块 100% 复用旧向量、0 次 embedding 调用）、
-坏消息进 DLQ 后改 documentId 重放（`FAILED` → `SUCCESS`）。
-
-> Kafka 按**开发规格**配置：堆 256M（镜像默认 1G）、健康检查用 `nc -z`（不用 Java 客户端，否则每 10 秒起一个 JVM）、
-> 数据落在 `kafkadata` 卷上（镜像默认写 `/tmp/kafka-logs`，容器一重建就丢）。实测常驻内存 **约 260MB**、空闲 CPU **< 3%**。
-> 代价：日志只保留 24 小时 —— 想看更久的死信要把 `KAFKA_LOG_RETENTION_HOURS` 改回去。
-
-机制细节、实测数字与已知限制见 `docs/阶段7-异步任务化报告.md`。
-
-## 阶段 8：权限与多租户（认证 / RLS / ACL）
-
-所有对外端点都要带 `Authorization: Bearer <token>`。**身份只从 token 来** ——
-请求体或查询串里塞 `tenantId` / `userId` 一律无效（有专门的测试盯着这一条）。
-
-| 层 | 管什么 | 破了会怎样 | 失败时返回 |
-|---|---|---|---|
-| ① 认证 | 有没有身份、token 是否有效 | 谁都能读 | **401** `AUTH_REQUIRED` / `AUTH_INVALID` |
-| ② 租户（数据库 RLS） | 跨租户读写（硬边界） | 跨客户数据泄漏 | 查不到任何行（不是报错，是空） |
-| ③ ACL（应用层） | 同租户内的「文档归属 + 文档级授权」（见「阶段 21」） | 同事之间互相看到不该看的 | **409** `SCOPE_EMPTY`，或列表里少几份 |
-
-### 本地体验用的三个 token（V8 种子数据）
-
-| token | 用户 | 角色 | 能看到什么 |
-|---|---|---|---|
-| `dev-admin-token` | admin | ADMIN | 租户 1 的全部文档 |
-| `dev-analyst-token` | analyst | ANALYST | 只有 300059（东方财富）的两份年报 |
-| `dev-outsider-token` | outsider | VIEWER | 什么都没有（无任何授权）→ 409 |
-
-> 阶段 21 起**文档默认只有上传者自己能看**，「公司级可见」这个概念已经取消。
-> 上面 analyst 能看到两份年报，是因为 V19 把历史上那条「ANALYST → 公司 300059」的授权
-> 展开成了两行「ANALYST → 文档 7 / 38」。想再放开一份，就在管理页给它加一条文档级授权。
+**A. 开发模式（改前端时用）**
 
 ```powershell
-# 有权限：正常回答，带引用
-curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
-  -H "Authorization: Bearer dev-analyst-token" -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
-
-# 没带 token：401
-curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
-  -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
-
-# 同租户但无授权：409（正文里一个数字都没有）
-curl.exe -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" `
-  -H "Authorization: Bearer dev-outsider-token" -d "{\"question\":\"东方财富2025年营业收入是多少\"}"
-```
-
-### 开关（只用于本地调试）
-
-| 配置 | 默认 | 作用 |
-|---|---|---|
-| `finagent.tenant.auth-enabled` | `true` | 关掉后不校验 token。**只给本地调试**，对外必须为 true |
-| `finagent.tenant.acl-enabled` | `true` | 关掉后装配「全部放行」的实现。测试 profile 默认关（否则每个聊天测试都要先造授权行） |
-
-> 关掉 ACL 的代价：**测试环境不验 ACL**。所以 ACL 有独立的数据库级测试（`AclScopeAuthorizerTest`、
-> `ScopeResolverAclTest`）和真 HTTP 越权用例（`TenantIsolationE2ETest`、`ZeroLeakGateTest`）。
-
-### 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=TenantIsolationE2ETest,ZeroLeakGateTest"
-```
-
-7 个用例（约 60 秒，其中一条调真模型）：
-
-1. 同租户无授权 → 409，正文无数字；
-2. 传他人 `documentId` → 409，不返回引用；
-3. 跨租户枚举文档 → `[]`；
-4. 跨租户查详情 → **404**（不是 403：403 等于确认这个 id 存在）；
-5. 请求体伪造 `tenantId` → 结果不变；
-6. 对照组：分析师能正常拿到带引用的答案；
-7. 零泄漏门限：对象键 / 他人标题 / 他人正文片段，命中数全为 0。
-
-机制细节见 `docs/权限与多租户-工作机制.md`，实测数字与已知限制见 `docs/阶段8-权限与多租户报告.md`。
-
-## 阶段 9：会话与记忆（多轮 / 摘要 / 长期偏好）
-
-阶段 8 之前每一轮都是「第一次问」。阶段 9 让系统记住三件事：**刚才聊了什么**（短期）、**更早聊了什么**（摘要）、**用户明确要求过什么**（长期偏好）。四层记忆的分工、预算与「为什么记忆不能当引用」见 `docs/阶段9-Memory与会话报告.md` 与 `docs/关键契约.md`（C12）。
-
-> 公司名与证券代码的分工也在这一阶段定稿（C13）：**模型只抽「原文里出现的公司名」，代码由程序在作用域内查库**。理由见报告 6.6 —— 让模型输出代码，等于让它凭训练记忆背答案，实测会给「东方财富」配一个 600519。
-
-| 层 | 存在哪 | 进 Prompt | 能当引用 |
-|---|---|---|---|
-| 短期记忆（默认 6 轮） | `conversation_message` | 是 | 否 |
-| 会话摘要（≤200 字） | `conversation_summary` | 是 | 否 |
-| 结构化上下文（公司/年份/指标） | `conversation_context` | 是（一行） | 否 |
-| 长期记忆（偏好 / 关注点） | `long_term_memory` | 按需（Gate 通过才查） | 否 |
-| 本轮证据 | `document_chunk` | 是 | **是** |
-
-### 四条 curl（建会话 → 追问 → 写偏好 → 查记忆）
-
-```powershell
-# 1) 建会话，记下返回的 conversationId
-curl.exe -s -X POST http://localhost:8080/api/conversations -H 'Content-Type: application/json' `
-  -H 'Authorization: Bearer dev-analyst-token' -d '{"title":"东方财富 2025 年报问答"}'
-
-# 2) 问一句，再追问「那净利润呢」——第二轮的检索查询会被补成「东方财富（300059） 2025年 净利润」
-curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
-  -H 'Authorization: Bearer dev-analyst-token' `
-  -d '{"question":"东方财富2025年营业总收入是多少","conversationId":1}'
-
-curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
-  -H 'Authorization: Bearer dev-analyst-token' `
-  -d '{"question":"那净利润呢？","conversationId":1}'
-
-# 3) 写一条长期偏好（句首命令即可；也可以 POST /api/memories 显式写）
-curl.exe -s -X POST http://localhost:8080/api/chat -H 'Content-Type: application/json' `
-  -H 'Authorization: Bearer dev-analyst-token' -d '{"question":"记住：回答先给结论，再列数字"}'
-
-# 4) 看当前记忆（同 key 只有一条 ACTIVE；改写会生成 version+1，旧行 SUPERSEDED）
-curl.exe -s http://localhost:8080/api/memories -H 'Authorization: Bearer dev-analyst-token'
-```
-
-> 追问能生效的前提是 `warnings` 里出现 `query_inferred_from_context` —— 它表示这一轮的公司/年份是**推出来的**，不是用户说的。
-> 反过来，如果模型判断上下文不足以补全，会原样检索并置 `resolved=false`，不会编造年份（编造的年份会变成一个真实的过滤条件，把正确答案过滤掉）。
-
-### 开关（只用于本地调试 / 基线对照）
-
-| 配置 | 默认 | 作用 |
-|---|---|---|
-| `finagent.memory.enabled` | `true` | 关掉后行为与阶段 8 **完全一致**（不装配记忆、不落库、不写 trace 记忆段）。测试 profile 默认 `false`，这是回归门限 |
-| `finagent.memory.gate-enabled` | `true` | 关掉后一律不召回长期记忆（也不调 embedding），用于「记忆到底有没有用」的基线对照 |
-| `finagent.memory.summary-trigger-messages` | `12` | 未汇总消息数超过它就触发摘要（1 轮 = 2 条） |
-| `finagent.memory.short-term-rounds` | `6` | 短期窗口最多 6 轮 |
-
-### 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ConversationE2ETest"
-```
-
-6 个用例全部调真模型（多轮指代消解 4 + 偏好跨会话 1 + 记忆不冒充证据 1）：
-
-1. 「那净利润呢」→ 补全成 300059 / 2025 / 净利润，答案数字落在 golden set 里；
-2. 「比去年增长多少」→ 答案给出增长率（实测 38.46%）并把两个年度写清楚；
-3. 「它现在的现金流怎么样」→ 引用仍只来自 2025 年报（document 7）；
-4. 「那毛利率呢」→ 允许证据不足，但不许 500；
-5. 写一条偏好 → 新会话带「按我的」提问 → `trace.memory.gateHit=true` 且 `longTermItems>=1`；
-6. 记忆里的数字若被复述 → 必须留下 `answer_ungrounded` 痕迹；引用全部来自真实文档行。
-
-机制与设计取舍见 `docs/阶段9-Memory与会话报告.md`，契约条款见 `docs/关键契约.md`（C12）。
-
-
-## 阶段 10：Web 前端（不再用 curl 才能问问题）
-
-阶段 1~9 的全部能力都只有 API。阶段 10 加了浏览器界面：**四页**（问答 / 文档 / 记忆 / 登录），技术栈 Vue 3 + TypeScript + Vite + Element Plus，产物直接输出到 `src/main/resources/static`，单端口即可使用。
-
-> 为什么自己写而不套后台模板：实测 `vue-pure-admin` 是 41,250 行 src、64 个运行时依赖，而我们要写的只有 4 页 + 1 个 API 客户端（约 3,100 行，含 24 个文件）。脚手架用官方的 `create-vue --bare`（23 个文件、0 业务代码），模板不用。实测数据与取舍见 `docs/阶段10-前端报告.md`。
-
-![问答页](docs/screenshots/chat-answer.png)
-
-> 界面是「纸墨·朱批」：暖米纸面 + 发丝线 + 宋体答案 + 朱砂只用于强调。三栏 = 68px 图标条 / 248px 会话栏 / 主区（正文 960px）/ **可调宽侧栏**证据面板（默认 424px，拖分隔条 340~760px、双击复位、←/→ 微调、收起后正文扩张，宽度记在本机 `localStorage`；视口 ≤980px 时自动退回浮层）（截图 1440×980，脚本 `target/ui-shots.js` 生成）。
-
-| 页面 | 地址 | 能做什么 |
-|---|---|---|
-| 概览 | `#/overview` | 4 个 KPI（可检索文档 / 活跃子块 / 我的会话 / 长期记忆）、语料状态、最近会话、长期记忆；数据来自 `GET /api/stats`，只统计当前账号可读的文档 |
-| 问答 | `#/chat`、`#/chat/{id}` | 提问、追问、引用卡片、数值表、诊断面板、作用域三模式、会话改名/删除 |
-| 文档 | `#/documents` | 上传 PDF（带进度）、看 PENDING/PARSING/DONE/FAILED、2 秒自动刷新 |
-| 记忆 | `#/memories` | 写/删长期偏好（同 key 自动升版本）、按类型筛选 |
-| 登录 | `#/login` | **用户名 + 密码登录**（默认账号已填好），也可切到 API token 方式粘贴脚本用的 token |
-
-> **前端是独立仓库**：`D:\Project\myproject\financial-ai-web`（与本仓库 `financial-ai-project` 平级）。2026-10-28 从本仓库的 `web/` 拆出——前端有自己的 `package.json` / 锁文件 / IDE 配置，独立仓库能单独 clone、单独发版，也不让 `node_modules` 混进后端的 `git status`。两边的连接只有一个：`financial-ai-web/vite.config.ts` 的 `build.outDir` 指回本仓库的 `src/main/resources/static`。
-
-### 默认账号
-
-登录页默认填好这个账号，点「进入工作台」即可（密码由 V11 迁移用 PostgreSQL `pgcrypto` 的 bcrypt 存哈希，登录成功才签发会话 token）：
-
-| 账号      | 密码 | 角色 | 能看到 |
-|---------| --- | --- | --- |
-| `admin` | `demo123456` | ADMIN | 本租户全部文档（两份东方财富年报）、记忆、会话 |
-| `demo`  | `demo123456` | ADMIN + ANALYST | 本租户全部文档（两份东方财富年报）、记忆、会话 |
-
-改密码 = 改库：`UPDATE app_user SET password_hash = crypt('新密码', gen_salt('bf', 10)) WHERE username = 'demo';`。
-登录接口与撤销机制见 `docs/关键契约.md`（C14）；想对比权限差异时，登录页切到「API token」仍可用三个 `dev-*` 种子 token。
-
-### 两条跑法
-
-**A. 开发模式（前端热更新，改完立刻看到）**
-
-```powershell
-# 终端 1：后端
-. .\scripts\load-env.ps1
-mvn spring-boot:run
-
-# 终端 2：前端（Vite，5173；/api 自动代理到 8080）
-# 前端是独立仓库，与本仓库平级：D:\Project\myproject\financial-ai-web
 cd ..\financial-ai-web
-npm install        # 首次；走该仓库 .npmrc 里的 registry.npmmirror.com
-npm run dev
+npm install
+npm run dev               # http://localhost:5173，Vite 已代理 /api → 8080
 ```
 
-打开 <http://localhost:5173>。开发模式不需要给后端加 CORS：Vite 代理把 `/api` 转到 8080，浏览器眼里始终同源。
-
-**B. 单端口（一条命令打包，打开 8080 就能用）**
+**B. 单端口（想直接体验完整形态）**
 
 ```powershell
-.\scripts\build-ui.ps1      # npm ci（首次）+ npm run build，产物落到 src/main/resources/static
-. .\scripts\load-env.ps1
-mvn spring-boot:run          # 打开 http://localhost:8080
+.\scripts\build-ui.ps1     # npm ci + build，产物落到 src/main/resources/static
+# 然后打开 http://localhost:8080
 ```
 
-`mvn -B clean package` 产出的 jar 里已含 `BOOT-INF/classes/static/`，`java -jar` 一样可用。
+### 7. 登录
 
-> 改了前端但只跑 `mvn package`（不 clean）时，`target/classes` 里会残留旧 hash 的 chunk —— `build-ui.ps1` 已经会先删掉 `target/classes/static`，手工打包时请用 `clean`。
+| 账号 | 密码 | 角色 |
+| --- | --- | --- |
+| `admin` | `demo123456` | ADMIN |
+| `demo` | `demo123456` | ADMIN + ANALYST |
 
-### 五分钟演示路线（面试用）
+前端是 hash 路由，后台入口 `http://localhost:8080/#/admin`。
 
-1. 登录页直接用默认账号 `demo / demo123456` 登录 → 概览；先说清「这些数字来自真实可检索语料，不是写死的；换 outsider 账号会变成 0」。
-2. 问答页点示例问题「东方财富 2025 年营业总收入是多少？」→ 答案 + 数值表 + 证据 chip + 右侧面板（页码 / 章节 / 块 id）。
-3. 追问「那净利润呢？」→ 界面提示主语来自上文（`query_inferred_from_context`），不是模型猜的。
-4. 展开「诊断」→ 查询理解路由、Dense/Sparse 召回条数、精排状态、分项耗时（这是最难造假的部分）。
-5. 文档页看 PENDING→DONE 四态；记忆页写「回答先给结论」再问一句，观察它进背景信息、但不产生引用。
+## 怎么用
 
-| 概览 | 登录 |
-| --- | --- |
-| ![概览](docs/screenshots/overview.png) | ![登录](docs/screenshots/login.png) |
+### 前端走一遍（约 5 分钟）
 
-设计与实测（三栏宽度、字体命中、去重、无溢出）见 `docs/阶段10-前端报告.md` §10。
+1. **上传文档**：文档页选一份年报 PDF，填公司代码（如 `300059`）、名称、年份、类型（ANNUAL），提交。页面会实时显示解析 / 切块 / 向量化进度。
+2. **提问**：回到对话页，问「东方财富 2025 年营业总收入是多少」。首屏立刻出现阶段提示，随后答案流式出现，每条结论后面跟着 `[E1]` 之类编号。
+3. **追问**：「那净利润呢」。系统会结合上一轮把问题补全，界面会标注「问题已根据上下文补全」。
+4. **看诊断**：展开「检索诊断」，能看到这条问题走了哪几条车道、各召回多少、融合与精排的分数、每段耗时。
+5. **问行情**：「东方财富现在市值多少」。走行情支路，答案带「数据时间」标注，且不产生 `[E]` 引用。
+6. **验拒答**：问一个年报里没有的问题（比如未收录公司的营收），它会明确说证据不足，而不是编一个数。
 
-### 界面上三个值得注意的地方
-
-1. **引用是可点的**：答案里的 `[E1]` 是按钮，点它高亮下方对应证据卡（文档名 / 页码 / 章节 / 类型 / chunk id）。若模型没在正文标编号，卡片上方会明确写出「正文未标注编号」—— 界面**不替模型补标**，补标等于编造归因。
-2. **诊断面板**（默认折叠）暴露检索细节：查询理解路由、dense/sparse 召回条数、rerank 状态、各段耗时、记忆闸门是否命中。答案不对时先看这里。
-3. **作用域改完从下一轮生效**：后端 `request.scope` 优先，会话只在创建时存一份默认范围（见 C12）。界面上有这句提示。
-
-### 验证
+### 用 curl 调
 
 ```powershell
-cd ..\financial-ai-web   # 前端独立仓库
-npx vitest run           # 16 个前端单测（答案 tokenizer 7 + SSE 解析 9）
-```
+# 1) 登录拿 token
+$login = curl.exe -s -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"demo","password":"demo123456"}'
+$token = ($login | ConvertFrom-Json).token
 
-界面的手工验收清单（10 条，含四类失败态与三种作用域）在 `docs/阶段10-前端验收清单.md`，每条都写了实测输出。
+# 2) 上传一份年报（需要先起解析服务）
+curl.exe -s -X POST http://localhost:8080/api/documents `
+  -H "Authorization: Bearer $token" `
+  -F "file=@D:\reports\东方财富2025年年度报告.pdf" `
+  -F "companyCode=300059" -F "companyName=东方财富" -F "market=SZ" `
+  -F "docType=ANNUAL" -F "docYear=2025" -F "title=东方财富2025年年度报告"
 
-## 阶段 11：Agent 工作流（LangGraph4j 图 + 人工审批）
-
-前十个阶段是一条**直线**：理解 → 检索 → 装配 → 生成 → 校验。它能答对问题，但三个需求一直做不到：
-
-| 需求 | 直线为什么做不到 |
-| --- | --- |
-| 证据不够时换个检索式再试 | 回退要在多层方法之间跳回去，写成 if-else 就是十几处互相调用 |
-| 复杂分析先让人看计划再花钱 | 中途没有停顿点，更没有「暂停—存档—再继续」 |
-| 进程重启后接着跑 | 状态全在方法栈里，进程一停就没了 |
-
-阶段 11 把这条直线搬进一张**图**：八个节点、条件边、检查点落库、`answer` 之前可停住等人批。业务逻辑一行没重写 —— 每个节点只是把既有组件包一层（`RouterService` / `HybridRetriever` / `ContextBuilder` / `AnswerService` / `CitationValidator`）。
-
-```
-START → understand → plan ─┬─ DIRECT / DECOMPOSE ─▶ retrieve
-                           └─ REFUSE ─────────────▶ respond_insufficient
-retrieve → verify ─┬─ ENOUGH ──────────────▶ answer
-                   ├─ RETRY（retryCount<1）──▶ rewrite → retrieve
-                   └─ INSUFFICIENT ─────────▶ respond_insufficient
-answer → cite_check ─┬─ 通过 ────▶ END
-                     └─ 不过且未重试 ─▶ answer
-```
-
-### 两种模式，一个开关
-
-> **2026-10-29 起这张表已合并**：所有问答都走图（阶段 14 / C18），「深度分析」开关已删除。
-> 下面这一节保留，是为了说明图是怎么长出来的、人批与检查点的语义是什么。
-
-| 模式 | 入口（阶段 11 时） | 特征 |
-| --- | --- | --- |
-| 普通问答 | `POST /api/chat/stream` | 阶段 13 的直接链路，5~12 秒出答案（**已删除**） |
-| 深度分析 | `POST /api/agent/runs/stream` | 走图：先给计划与证据，人批后才生成；可 `GET /api/agent/runs/{id}` 查状态（**现为唯一引擎**；该端点 2026-10-30 已删，开新运行统一走 `/api/chat/stream`） |
-
-### 事件协议：复用 C15/C16，只多一个 `approval`
-
-| 事件 | 载荷 | 时机 |
-| --- | --- | --- |
-| `stage` | `{phase,label,detail}`，`phase` 就是节点 id | 每个节点跑完一次 |
-| `delta` | `{text}` | 只有 `answer` 节点会发 |
-| `approval` | `{runId,status,plan,evidence,steps}` | 停在 `approve` 前，**此时还没有答案**；一次运行只出现一次 |
-| `final` | `{runId,status,answer,warnings,plan,evidence,steps,currentNode,decision,decisionNote,error}` | 结束（含拒答 / 驳回 / 失败） |
-
-### 人批三决定
-
-| 决定 | 含义 | 理由 |
-| --- | --- | --- |
-| APPROVE | 照计划生成 | 可空 |
-| EDIT | 按意见改后再生成 | **必填**（空 EDIT 等于白停一次） |
-| REJECT | 不生成 | **必填**，要能解释为什么这次不该继续 |
-
-超时 30 分钟**不自动通过**（`approval_timeout` 直接失败）—— 自动放行等于把「人批」变成装饰。
-
-审批点是独立节点 `approve`（不是 `answer`）：`cite_check` 不过会沿回边重跑 `answer`，中断点若挂在 `answer` 上每重试一次就再弹一次（2026-10-29 实测复杂问题批了两次，改为一次运行只批一次，见 ST11 §19）。
-
-### 实测（2026-10-29，真模型真库）
-
-一次深度分析（`agent_run_step` 原始数据，总 18.8 秒）：
-
-| 节点 | 耗时 | 摘要 |
-| --- | --- | --- |
-| understand | 6,467 ms | 问题已结构化：EXACT_FACT |
-| plan | 136 ms | 单轮检索 |
-| retrieve | 1,107 ms | 召回 8 条证据 |
-| verify | 281 ms | 证据充足 |
-| approval | — | 等待人工审批 → 人工批准 |
-| answer | 9,035 ms | 答案已生成（80 字） |
-| cite_check | 410 ms | 引用校验：3 条通过 |
-
-![审批卡](docs/screenshots/agent-approval.png)
-![分析完成](docs/screenshots/agent-final.png)
-
-### 怎么打开（默认关闭）
-
-```powershell
-# 环境变量（推荐）
-$env:FINAGENT_AGENT_ENABLED = 'true'
-. .\scripts\load-env.ps1
-mvn -q -o spring-boot:run
-
-# 或直接给 JVM 参数
-mvn -q -o spring-boot:run '-Dspring-boot.run.jvmArguments=-Dfinagent.agent.enabled=true'
-```
-
-关闭时端点返回 400 `AGENT_DISABLED`（不是 500）。
-
-### 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=AgentStreamE2ETest,AgentHitlDbTest"   # 13 个用例
-node target\ui-agent-check.js 'C:/Program Files/Google/Chrome/Application/chrome.exe'               # 真浏览器：审批 → 通过 → 答案
-```
-
-### 三条容易做错的（完整见契约 C17）
-
-1. **身份要显式搬进图**：`TenantContext` 是 ThreadLocal，图在自己的线程上跑节点，不搬就会在第一处查库抛「缺少认证上下文」。
-2. **中断不抛异常**：流只是停在 `answer` 前，判据是 `getState(cfg).nextNodeId()`；别等 `GraphInterruptException`。
-3. **用了检查点必须 `releaseThread(false)`**：库默认跑到 END 就释放线程，之后 `getState` 抛 `Missing Checkpoint!`。
-
-
-### 拒答的三种来源（阶段 11 收尾修正）
-
-| 情形 | 行为 | 语义 |
-| --- | --- | --- |
-| 一份文档都看不到（越权/范围空） | agent 发 `error` + `SCOPE_EMPTY`；chat 返回 409 | 权限/范围问题，重试无用 |
-| 点名的公司不在可检索范围 | `final` + `status=REJECTED` + `company_unresolved` | 主体越界，永远重试不出来 |
-| 检索到但证据不足 | `final` + `status=REJECTED` + `evidence_insufficient` | 可以再换问法/换范围 |
-
-三条都必须在**检索之前或检索当下**判出来，并且**结论要真的改变路径**（契约 C17 §17.7）。2026-10-29 的真事故：拒答结论只写进状态备注、没接进条件边，导致「五粮液」被回答成东方财富的净利润。
-
-### 已知限制（阶段 11）
-
-- 深度分析轮次**不落** `conversation_message`（只在 `agent_run` / `agent_run_step` 留痕），刷新页面气泡就没了（数据仍在库里）。
-- agent 的证据不带 bbox，所以「原文」页签在这些轮次不可用。
-- 打开开关即人批（不区分问题类型），因为 `interruptsBefore` 是编译期配置。（阶段 22 已改成按状态决定，见文末「阶段 22」）
-
----
-
-## 阶段 12：体验补强（流式 / 引用点开原文 / 切块可视）
-
-阶段 10 让界面「能用」，阶段 12 让它「敢拿去演示」。触发点是 `docs/竞品对比与技术债.md` 的结论：与 RAGFlow / FastGPT 的差距集中在三项**用户看得见**的能力上 —— 回答是憋 8 秒一次蹦出来的、引用给了页码但点不开、切块只有数据库里的行。
-
-| 加的什么 | 以前 | 现在 |
-|---|---|---|
-| 流式输出 | 等 7~11 秒，屏幕静止，后面整段出现 | 首字 **7.87 秒**、逐字到达（实测 60 个 delta），结束用 `final` 整条替换 |
-| 引用点开原文 | 只有「第 66 页」这行字 | 点 `[E1]` → 后端把第 66 页渲成 PNG（1240×1754），朱砂框落在该块真实位置 |
-| 切块可视 | 只有 `chunk_index` / `token_count` | 文档页「看切块」抽屉：104 个父块 / 630 个子块，选中即看正文 + 原文位置 |
-| 证据面板可调宽 | 424px 浮层，盖住正文，只能整块关掉 | 右侧**侧栏**：拖分隔条 340~760px（双击回 424、←/→ ±16px）、收起后正文从 784px 扩到 1124px、宽度刷新后仍记得（`localStorage`） |
-
-![原文高亮](docs/screenshots/page-highlight.png)
-
-![切块抽屉](docs/screenshots/chunk-browser.png)
-
-### 流式接口
-
-```powershell
-$body = '{"question":"东方财富2025年营业总收入是多少"}'
+# 3) 提问（SSE 流式）
 curl.exe -N -X POST http://localhost:8080/api/chat/stream `
-  -H "Authorization: Bearer dev-analyst-token" `
-  -H "Content-Type: application/json" --data $body
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" `
+  -d '{"question":"东方财富2025年营业总收入是多少"}'
 ```
 
-| 事件 | 什么时候发 | 里面有什么 |
-|---|---|---|
-| `meta` | 检索完、模型开始生成前 | traceId、作用域、证据清单（编号 / 块 id / 页码 / 章节 / 类型）、上下文 token 数 |
-| `delta` | 模型每吐一段 | `{text}`；**这里的编号是临时编号**，会被 `final` 重排 |
-| `final` | 四层校验全部完成 | 与 `POST /api/chat` 逐字段相同的完整响应（引用 / 置信度 / 警告 / 诊断 / messageId） |
-| `error` | 任一阶段失败 | `{code, message}` |
-| `: ping` | 每 15 秒 | 注释行，防中间层空闲断流 |
+SSE 事件依次是 `stage`（阶段变化）、`meta`（问题类型、证据条数）、`delta`（正文增量）、`final`（引用、事实、耗时）。
 
-> 前端只用两件事：`delta` 让字动起来，`final` 覆盖真相。流式不可用（404 / 断流 / 5xx）时自动回落一次到 `POST /api/chat`；`409 SCOPE_EMPTY` 与 `401` 是业务结论，不回落。
+### 几个好用的示例问题
 
-### 两个新端点
-
-| 端点 | 作用 | 规则 |
-|---|---|---|
-| `GET /api/documents/{id}/pages/{page}?dpi=150` | 渲出 PDF 某页的 PNG | 先过 ACL；不可读 / 越界 / 无对象键 **全部同一个 404**（403 等于确认存在）；dpi 夹紧 72~300；进程内 LRU 48 页 |
-| `GET /api/documents/{id}/chunks?limit=800&offset=0` | 当前 ACTIVE 版本的切块扁平列表 | Parent 在前、Child 紧随；只带 220 字缩略；不可读返回空数组 |
-
-### 演示时怎么讲这三项
-
-1. **流式**：「你现在看到的字是模型一个字一个字吐的，不是我编好的动画」—— 顺手点开诊断，指出首字 7.9 秒里 QU 和精排各占多少。
-2. **原文**：「截图谁都会放，这份 PDF 是从私有 COS 桶里按需渲的，框的位置来自切块时存下的归一化 bbox，不是人工标的」。
-3. **切块**：「104 个父块是章节分组，630 个子块才是真正被检索的单位；你点任意一个子块，我都能告诉你它来自哪一页哪一段」。
-
-### 一个计划外的必要修复：引用编号重排
-
-模型会给 `[E2][E7][E11][E13]`，而 `citations` 只收「用到的」4 条 —— 编号对不上，角标就点不开。现在 `AnswerService` 在引用校验之后统一重排成 `[E1..En]`，越界编号直接从正文删掉。不变量写在契约 C15：**正文里出现的最大编号 ≤ `citations.size()`**。
-
-实测数据、六个踩坑与 7 条限制见 `docs/阶段12-体验补强报告.md`；契约条款见 `docs/关键契约.md`（C15）。
-
-### 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn -B test                                    # 560 通过 / 1 跳过（需要解析服务的那条）
-mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ChatStreamE2ETest"   # 流式 e2e，约 30 秒
-cd ..\financial-ai-web; npx vitest run         # 16 个前端单测
-```
-
-## 已知限制（阶段 1）
-
-- 尚未接入 Docling 解析服务，**问答链路不可用**（见阶段 2~5 计划）。已接入并验证：百炼 embedding（1024 维）、腾讯云 COS。
-- `mvn test` 需要先 `docker compose up -d`（测试依赖本地 PostgreSQL）。
-- 中文分词目前只用 zhparser 默认词典；金融专有名词（如「扣非净利润」）的切分效果需在阶段 4 用真实语料验证并补充自定义词典。
-- 设计文档 §4.1（容量/SLO）与 §21.3（容灾 RPO/RTO）属生产运维目标，开发阶段不以此作为验收条件；**功能范围仍按设计文档完整建设**。
-
-## ⚠️ 三个容易踩的坑
-
-**1. init SQL 只在数据卷为空时执行一次。**
-
-改完 `docker/postgres/init/` 下的 SQL 再 `docker compose up -d`，**改动不会生效**。必须：
-
-```powershell
-docker compose down -v
-docker compose up -d
-```
-
-**2. 本机 Docker 加速器拉不到 pgvector 镜像。**
-
-加速器 `docker.m.daocloud.io` 对 `library/*` 正常，但对 `pgvector/pgvector` 命名空间返回 401。
-若换了机器或删除了该镜像，需手动拉取并改回原标签：
-
-```powershell
-docker pull docker.1ms.run/pgvector/pgvector:pg16
-docker tag docker.1ms.run/pgvector/pgvector:pg16 pgvector/pgvector:pg16
-```
-
-**3. 百炼的 `base-url` 必须包含 `/v1`。**
-
-Spring AI 2.0 改用官方 OpenAI Java SDK，该 SDK 的 `base-url` 需**包含** `/v1`（SDK 自行拼接 `/chat/completions`、`/embeddings`）：
-
-| 配置 | 结果 |
-|---|---|
-| `https://dashscope.aliyuncs.com/compatible-mode/v1` | ✅ 正常 |
-| `https://dashscope.aliyuncs.com/compatible-mode` | ❌ `404 NotFound` |
-
-⚠️ 这个 404 **不会提示缺少 `/v1`**，很容易误判成模型名写错或 Key 无效。
-（这是从 Spring AI 1.0 升级到 2.0 的破坏性变更：1.0 的 base-url 不含 `/v1`。）
-
-## 阶段 13：首屏反馈（状态行 + 证据先行）
-
-阶段 12 解决了「有字在动」，但没解决「**什么时候**有东西动」：第一个 `delta` 实测 7.87 秒才到，前面这 7.87 秒屏幕上只有一个静态骨架屏。阶段 13 补的不是速度，是**感知** —— 同样的 12 秒总耗时，现在 0.06 秒就有反应。
-
-| 时刻 | 用户看到 | 系统在做 |
-|---|---|---|
-| 0.06 s | 四个点第一个亮起「正在理解问题 · 已用 0.1s」 | Query Understanding（规则命中或调模型解析公司/年份/指标） |
-| 3.5 s | 「正在检索证据」 | Dense + Sparse 双路召回、RRF 融合 |
-| 4.3 s | 「正在精排证据」 | qwen3-rerank 对候选重排 |
-| 4.9 s | **证据条出现**（E1 表格 · 第 66 页 …），答案区仍是骨架 | 上下文装配完成，`meta` 已发 |
-| 5.5 s | 首字出现，逐字生长 | 模型生成第一个 token |
-| 12.5 s | 状态行消失、证据条按 `citations` 重绘 | 四层校验完成，`final` |
-
-### 四个阶段事件
-
-```
-stage(understanding) → stage(retrieving) → stage(reranking) → meta → stage(generating) → delta* → final
-```
-
-| phase | 谁发 | 带什么 |
-|---|---|---|
-| `understanding` | `ChatService.askStreaming` 第一行 | 无 |
-| `retrieving` | 作用域解析完、检索前 | `{documents:N}` |
-| `reranking` | `HybridRetriever` 融合后、调精排前（无候选则不出现） | `{candidates:N}` |
-| `generating` | `meta` 之后、调模型前 | `{evidence:N, contextTokens:N}` |
-
-三条最容易被做错的规矩（完整五条见契约 C16）：
-
-1. **stage 只说「正在做什么」**：不带答案文本、证据正文、页码、chunk id。带了就等于把结果从流里提前漏出去。
-2. **必须真实进入该段才发**：禁止定时器补发、禁止前端按时间伪造。假进度条在演示时被追问「现在到哪一步」就崩。
-3. **发过 stage 就必须有终止事件**：`meta` / `final` / `error` 至少一个，不允许停在「正在精排」。
-
-### 实测（2026-10-28，热路径）
-
-| 指标 | 阶段 12 | 阶段 13 | 目标 |
-|---|---|---|---|
-| 首屏有反应 | 7,870 ms（首字） | **16~19 ms**（Java e2e 两次）/ **59 ms**（真浏览器） | ≤ 300 ms |
-| 证据可见 | 无（只有骨架） | **4,288~4,904 ms** | ≤ 5,000 ms |
-| 首字 | 7,870 ms | **5,275~6,250 ms** | ≤ 8,000 ms |
-| 总耗时 | 10,994 ms | 11,377~12,862 ms | 观察值 |
-
-![证据先行](docs/screenshots/stage-evidence-first.png)
-
-### 前端怎么实现的
-
-- `StageLine.vue`：四个点 + 后端 `label` + `已用 x.xs`（本地 200 ms 计时，`clearInterval` 在组件卸载时执行）。**阶段名不自己编**，直接用后端文案，避免两边说法分叉。
-- `EvidenceStrip.vue`：单行证据条，超出 4 条折叠成 `+N`。生成中不可点（数据来自 `meta.evidence` 候选全集），`final` 后按 `citations` 重绘并可点。
-- `ChatView.vue`：发消息时先把阶段设为 `understanding`（它永远是第一段），所以后端第一帧到达前也不会空白；`final` 时清掉状态行、记下首屏时延。
-- 滚动策略：只有用户本来就在底部 40 px 内才跟随滚动，否则往上翻正文时不会被拽回底部。
-
-### 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn -B test                                    # 568 通过 / 1 跳过
-mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ChatStreamE2ETest"   # 断言 firstStage ≤ 300ms，约 56 秒
-cd ..\financial-ai-web; npx vitest run         # 17 个前端单测
-```
-
-观测值落盘在 `target/stream-timing.json`；完整分析见 `docs/阶段13-首屏时延报告.md`，契约条款见 `docs/关键契约.md`（C16）。
-
-## 阶段 14：统一图引擎（所有问答都走 LangGraph4j）
-
-阶段 11 把问答搬进图，但只做成**可选**的第二条链路：勾「深度分析」才走图，不勾还是直链。两条链路要各维护一套兜底（会话落库、记忆注入、facts/trace 合成、空作用域 409），行为迟早分叉。
-
-阶段 14 把直链删掉，`/api/chat` 与 `/api/chat/stream` 内部改成图。**URL 与事件协议不变，换的是实现**。
-
-### 14.1 端点对照
-
-| 端点 | 现在是谁在跑 | 说明 |
-| --- | --- | --- |
-| `POST /api/chat` | `AgentStreamService.ask` → 图（`hitl=false`） | 同步语义，一次返回标准 `ChatResponse` |
-| `POST /api/chat/stream` | `AgentStreamService.startStream` → 图 | 歧义时停在 `approve` 前发 `approval` |
-| `POST /api/agent/runs/{id}/resume` | `AgentStreamService.resumeStream` | 聊天流与人批共用这一个续跑入口 |
-| `GET /api/agent/runs/{id}` | `AgentRunService.view` | 刷新页面看进度 / 排障 |
-
-`finagent.agent.enabled` 不再是入口闸门（默认 `false` 只是历史遗留）。
-
-### 14.2 四件必须先补的事（否则是功能回退）
-
-| 能力 | 直链原本在哪 | 搬进图后在哪 |
-| --- | --- | --- |
-| 会话消息 / 上下文 / 记忆命令 / 摘要 | `ChatService.finishTurn` | `TurnRecorder.record`，`final` 之前调用一次 |
-| facts / citations / confidence / note | `AnswerResult` 直接进响应 | `AnswerStreamBridge.result`，`synthesize` 优先取它 |
-| trace 落盘 | `ChatTraceWriter.write` | `AnswerStreamBridge.retrievalTrace` + `synthesize` 组 `ChatTrace` |
-| 证据先行（`meta`） | 检索完就发 | 图的 `verify` 节点完成后发 `metaEvidence` |
-
-### 14.3 阶段事件的取值变了
-
-阶段 13 的四个中文阶段名（`understanding/retrieving/reranking/generating`）换成图节点 id：
-
-```
-stage(understand) → stage(plan) → stage(retrieve) → stage(verify) → meta
-  → [approval] → delta* → stage(answer) → stage(cite_check) → final
-```
-
-`understand` 在**开跑前**先发一条：该节点内部要跑一次 QU（约 4 秒），等它完成再发首屏就失去意义。`approve` 不发 stage（由 `approval` 事件表达）。
-
-### 14.4 什么时候还会弹「确认理解」
-
-只有**歧义**才弹。判定仍在开跑前做（纯规则、便宜），但结论不再用来「选图」，而是写进状态里的 `approvalAllowed`，
-由图在 `approve` 前自己决定停不停（阶段 22）：
-
-| 信号 | 例子 |
+| 问题 | 会走到哪 |
 | --- | --- |
-| 作用域里有多家公司、问题里没点名 | 「营业总收入是多少？」（语料有 2024/2025 两份但同一家 → 不弹） |
-| 作用域里有多份年份、问题里没写年份 | 同上的年份维度 |
+| 东方财富 2025 年营业总收入是多少 | 精准事实查询，跳过向量检索，最快 |
+| 东方财富 2024 到 2025 年营业收入增长了多少 | 跨年对比，两个车道 + 派生计算 |
+| 为什么东方财富 2025 年净利润增长 | 归因类，需要归因证据，否则拒答 |
+| 东方财富现在市值多少 | 纯行情，MCP 工具 + 模板渲染 |
+| 东方财富 2025 年净利润和现在市值对比 | 混合问题，年报证据 + 实时行情 |
 
-问题里点了公司名或代码、或写了年份，就不弹。指标没说清**不**弹（否则「经营情况怎么样」每次都要点一遍）。
+## 项目结构
 
-### 14.5 实测（2026-10-29）
-
-| 项 | 结果 |
-| --- | --- |
-| 后端全量（非 e2e） | **610 通过 / 0 失败 / 1 跳过** |
-| 流式 e2e | `firstStageMs=18 / metaMs=5785 / firstDeltaMs=6632 / totalMs=12001`，phases=`understand,plan,retrieve,verify,answer,cite_check`，citations=3 |
-| 前端 | vitest 24/24、eslint 0 error、build 通过（ChatView 135.40 kB / gzip 45.57 kB） |
-
-### 14.6 验证
-
-```powershell
-. .\scripts\load-env.ps1
-mvn -B test                                                                          # 610 通过 / 1 跳过
-mvn -B test "-Dsurefire.excludedGroups=" "-Dgroups=e2e" "-Dtest=ChatStreamE2ETest"    # 约 87 秒
-cd ..\financial-ai-web; npx vitest run && npm run build
+```
+financial-ai-project/
+├── docs/                              设计、契约、机制笔记、阶段报告
+│   ├── 主流程导读.md                  ← 想读代码从这份开始
+│   ├── 每轮问答的模型调用与流程图.md  ← 12 个节点逐个拆
+│   ├── 关键契约.md                    ← C1~C41，跨模块不能违反的约定
+│   ├── 技术资料/                      ← pgvector / tsvector+trgm / LangGraph4j / MCP 机制
+│   └── 阶段开发日志.md                ← 按时间序的开发记录与实测数字
+├── document-parser-service/           Python + Docling 解析服务
+├── mcp-market-server/                 行情 MCP Server（Python 参考实现）
+├── scripts/                           build-ui.ps1 / load-env.ps1 / verify-db.sh
+├── src/main/java/com/finagent/
+│   ├── agent/                         LangGraph4j 图、节点实现、状态、检查点
+│   ├── understanding/                 Query Understanding（规则 + 模型）
+│   ├── retrieval/                     多路检索、RRF、精排
+│   ├── chunk/                         父子块切分、表格渲染、入库、版本切换
+│   ├── context/                       Context Building 与证据打包
+│   ├── answer/                        生成、数字回查、引用校验
+│   ├── memory/  market/  security/    记忆 / 行情 / 多租户与授权
+│   └── document/  storage/            文档流水线、COS
+├── src/main/resources/db/migration/   Flyway V1 ~ V20（schema 唯一来源）
+└── src/test/                          955 个用例
 ```
 
-完整记录见 `docs/阶段14-统一图引擎报告.md`，契约见 `docs/关键契约.md`（C18）。
+前端与行情 MCP Server 是**同级目录**下的两个独立仓库：`../financial-ai-web/`、`../financial-mcp-server4j/`。前端构建产物会落到 `src/main/resources/static/`（已 gitignore）。
 
-## 阶段 15：多路检索的证据覆盖（复杂问题不再答错年份）
+## 注意事项
 
-阶段 14 之后所有问答都走图，问题也随之暴露：同一句话，单轮能答对 2025 年的数，拆成 3 个子问题却答成 2024 年的数。
+这些坑都真踩过：
 
-两个数字**不是两个口径，是同一张表的相邻两列**：`| 营业总收入（元） | 16,067,741,039.51 | 11,604,343,090.16 |`（document 7 第 7 页）。
+1. **`init/` 里的 SQL 只执行一次。** `docker/postgres/init/` 下的脚本仅在数据卷为空时运行；改了配置要 `docker compose down -v` 再 `up`，否则新配置不生效（`down -v` 会清库，注意备份）。
+2. **Docker Desktop 必须先起。** 容器停了，`mvn test` 会一片 `Connection refused`。
+3. **百炼 `base-url` 必须带 `/v1`。** 少了 `/v1` 会返回 404，而且不会提示你缺的是 `/v1`。正确值：`https://dashscope.aliyuncs.com/compatible-mode/v1`。
+4. **`embedding` 不会自动更新。** `content_tsv` 是生成列，改 `content` 会自动重算；但向量是应用侧调 API 写进去的，改了切块策略或换嵌入模型，必须重嵌入（`ReindexService`），否则新老向量混在一起。
+5. **改前端后要重新构建。** 单端口模式下直接 `mvn package` 不会重跑前端，容易拿到旧 hash 的 chunk；改完前端执行 `scripts/build-ui.ps1`。
+6. **Windows 上别用 PowerShell 5.1 读中文文件。** 默认按 GBK 解码会乱码，`Get-Content` 要加 `-Encoding UTF8`。
+7. **`mvn test` 的过滤参数要加引号。** `-Dsurefire.excludedGroups=` 的空值必须写成 `"-Dsurefire.excludedGroups="`，否则被 PowerShell 吃掉。
+8. **缺 Key 的用例会自动跳过。** 向量化、COS、精排、行情、解析的 live 测试在没有凭据时不跑，这是预期行为，不是失败。
+9. **时区。** 库里的时间列是 `timestamptz`，行情时间戳来自交易所，展示统一按 `Asia/Shanghai`。
 
-### 15.1 根因
+## 已知限制
 
-拆解按连接词切句，切出来的第 2、3 段是「并结合净利润」「毛利率的变化说明盈利能力」——**没有主体、没有年份**，
-它们不再是可以独立回答的问题，而是一串关键词。关键词命中的是财务报表附注页（rerank 0.602），
-分数高于主表（0.523）；上下文预算只有 6000 token，`ContextBuilder` 按分数排队整块裁剪，高分附注把主表挤了出去。
+- **单轮理解。** 指代消解只做到「结合上一轮补全查询」，真正的多轮指代（「它」「那家子公司」）还没做。
+- **语料偏窄。** 只针对 A 股年报 / 半年报 / 季报的 PDF 版面调过，招股书、研报、扫描件（无文本层）效果会明显下降。
+- **没有真正的 BM25。** PostgreSQL 自带 `ts_rank` 是近似值，真 BM25 需要自己算 tf/idf 或引扩展；当前用「精确子串 + 全文 + 向量」三路互补绕过去。
+- **评测是小样本。** 10 个问题的冒烟评测 + 人工判定，不是标准 benchmark。
+- **单机部署。** 没有分布式检索、没有多副本、没有限流网关，压测数据只能说明「单机跑得动」。
+- **行情只覆盖 A 股。** 数据来自公开接口，交易时段外返回最近收盘快照（答案里会标明时间）。
 
-### 15.2 改了什么
+## 文档
 
-| 改动 | 位置 | 一句话 |
-| --- | --- | --- |
-| 子问题自包含 | `RealAnalysisNodes.decompose` | 剥句首连接词 + 补「公司名字面 + 年份」前缀 |
-| 整句永远占一路 | `RealAnalysisNodes.retrieve` | 检索路数 = 整句 + 子问题；重复块保留最高分 |
-| 列锚定 | `AnswerPrompts.SYSTEM` 第 6 条 | 多列年份的表先按表头定位问题年份那一列，禁止默认取第一列 |
-| 状态新键 | `AnalysisState.COMPANY_MENTIONS` | understand 写公司名字面，plan 读它补前缀 |
-
-### 15.3 实测（2026-10-29）
-
-| 项 | 结果 |
+| 文件 | 内容 |
 | --- | --- |
-| 单测 | `RealAnalysisNodesTest` 16 通过 / 0 失败（+4 例） |
-| 非 db 全量 | 459 通过 / 0 失败 |
-| 真库回归 | `ComplexEvidenceDbTest` 1 通过（真检索 + 真 rerank，22.6 s），上下文含 chunk 7216 |
-| 主表 rerank | 0.523 → 0.572（片段补主体年份后） |
-| 端到端 | `meta` 证据第 3 条就是 7216，主表回到了上下文 |
-
-### 15.4 还剩的问题（下一步）
-
-主表回来了，但这条问题的答案仍是「证据不足」：模型要求「整体毛利率」，而年报只披露分行业/分产品毛利率与营业成本构成，
-并且答案提示词第 1 条**禁止换算**（`毛利率=(收入-成本)/收入` 属于换算）。这不是检索问题，是产品决策 ——
-要不要允许派生比率（答案里标注「系统计算」）需要单独定。
-
-```powershell
-. .\scripts\load-env.ps1
-mvn -o test "-Dtest=RealAnalysisNodesTest" "-Dsurefire.excludedGroups=db,e2e"
-mvn -o test "-Dtest=ComplexEvidenceDbTest" "-Dgroups=db" "-Dsurefire.excludedGroups="
-```
-
-### 15.5 2026-10-30 的两处补充修复
-
-| 现象 | 根因 | 修法 |
-| --- | --- | --- |
-| 答案里的 `[ E5 ]` 点不开 | ① 正则不认括号内的空格；② 引用列表只按 `usedEvidence` 建，正文引了但没登记的编号找不到条目 | 正则容忍空白与全角括号；正文里出现的编号按首次出现顺序补进 citations |
-| 同一个问题整题拒答「证据被误标」 | 提示词示例里 `"value":"12,084,594,947.22"` 恰好是 2025 年**净利润**，被示例标成了「营业总收入」 | 示例改用 `"<照抄证据里的数字>"` 占位符 |
-
-改完同一问题正常作答（`citations=3`、证据跨 doc 7 与 doc 38），非 db 全量 **461 通过**。详见报告第八节。
-
-完整记录见 `docs/阶段15-多路检索证据覆盖报告.md`，计划见 `docs/superpowers/plans/ST15-2026-10-29-15-multi-query-evidence.md`，契约见 `docs/关键契约.md`（C19）。
-
-## 阶段 16：答案质量（骨架 / 事实 / 换算 / 结构化）
-
-阶段 15 解决了「检索到的证据对不对」，阶段 16 解决「答案写得像不像分析」。起因是对比腾讯 ima 对同一份年报的答案：
-它的数字全部有出处，但**分节写、带表格、会归因**；我们的答案数字全对，却把结论、数据、归因挤成一句话。
-
-### 16.1 四段骨架（Task 1，已完成）
-
-改动前（2026-10-30 00:1x）：
-
-> 2025年营业总收入为16,067,741,039.51元，较2024年11,604,343,090.16元增长38.46%；增长主要由证券业收入（+47.59%）和信息技术服务业收入（+13.60%）共同驱动……[E1][E2]
-
-改动后（01:5x，同一问题、同一语料）：
-
-```text
-结论：2025年营业总收入为16,067,741,039.51元，2024年为11,604,343,090.16元，同比增长38.46%……[E1][E2]
-
-数据：2025年 / 2024年 营业总收入：16,067,741,039.51元 / 11,604,343,090.16元；证券业收入：12,535,471,036.46元 / 8,493,612,633.32元……
-
-归因：证券业收入增长47.59%……系手续费及佣金净收入（9,100,013,336.56元 vs 6,112,631,919.02元）和利息净收入（3,435,457,699.90元 vs 2,380,980,714.30元）双增长所致……
-
-口径：单位为元，期间为2025年度与2024年度，口径为合并报表；证据中未披露母公司口径数据，
-亦未提供交易额、保有规模、销售额等归因所需的底层业务量指标 [E1][E2]。
-```
-
-三处变化：结构（四段，段落标签可见）、归因落到科目级、**主动写缺口**（哪些证据里没有）。`facts` 也从 0 条变成 8 条。
-
-| 改动 | 文件 | 一句话 |
-| --- | --- | --- |
-| 答案形态判定 | `understanding/AnswerShape.java`（新增） | 纯词表判「归因 / 结构 / 对比」，跨年自动补对比；「增长」「贡献」故意不收录 |
-| 形态进状态 | `agent/AnalysisState.ANSWER_SHAPES` | plan 写一次，verify 与 rewrite 共用 |
-| 覆盖检查 | `agent/RealAnalysisNodes.verify` | 问原因却只召回财务附注 → `coverage_missing:attribution` + 一次改写（改写后不再判，避免整题拒答） |
-| 骨架与排版 | `answer/AnswerPrompts` | SYSTEM 给四段骨架 + 「结论：/数据：/归因：/口径：」段标签；USER_TEMPLATE 增加只对本题生效的【回答要求】段 |
-
-### 16.2 实测（2026-10-30 01:5x）
-
-| 项 | 结果 |
-| --- | --- |
-| 单测 | `AnswerShapeTest` 10、`AnswerPromptsTest` 5、`RealAnalysisNodesTest` 22（+6） |
-| 非 db 全量 | **479 通过 / 0 失败 / 1 跳过** |
-| 端到端 | `status=DONE`、`citations=2`、`facts=8`、`warnings=[]`；答案 4 段 |
-| 幻觉核验 | 19 个数字逐个回 chunk 7246 / 7531 查出，逐字一致 |
-
-### 16.3 事实层与派生指标（Task 2，已完成）
-
-Task 1 之后，骨架搭好了，但骨架里的数字还是模型自己从证据里挑、自己心算的。于是有两个毛病：
-该算的不算（问同比，它把算式留给用户），算了会算错（它自己减出「手续费净收入 +47.23%」，披露值是 +48.87%）。
-
-Task 2 把「抽事实」和「算数」从模型手里拿走，做成两个确定性步骤，算完再交给模型：
-
-| 步骤 | 做什么 | 代码 |
-| --- | --- | --- |
-| 抽事实 | 只从表格块抽「指标 / 期间 / 值 / 单位 / 原文 / 出处」 | `fact/TableRowParser`、`fact/FactCollector` |
-| 算派生指标 | 同比、结构占比、占比变动、收入贡献度、增长额，五条公式 | `fact/MetricCalculator`、`fact/MetricFormula` |
-| 换算 | 元 → 万元/亿元，比率 2 位小数，占比变动用「百分点」 | `fact/UnitConverter` |
-| 交回模型 | 提示词里两段清单【已报事实】【已计算事实】+ 数字白名单 | `fact/FactPack`、`answer/AnswerPrompts` |
-
-图里多了一个节点：`approve → compute → answer`。实测（同一问题）：
-
-```text
-facts = 5 条 COMPUTED + 3 条 REPORTED
-COMPUTED 营业总收入合计同比增长率 = 38.46%（与披露一致）
-COMPUTED 营业总收入合计增长额 = 4,463,397,949.35 元
-COMPUTED 证券业收入贡献度 = 90.56%
-REPORTED 营业总收入 2025 = 16,067,741,039.51 元
-```
-
-答案里的「增量占总增量 90.56%」「增加 44.63 亿元」现在都是系统算的，模型只负责挑来讲。
-
-收尾时实测又抓到 5 个问题，都已修：正文里出现点不开的 `[F63]`、facts 被百分比占满、模型心算增量触发告警、
-事实卡显示 `38.46%%`、以及「归因：」被接到结论段句末（改成后处理强制断行 —— 骨架是承诺，不能靠提示词运气）。
-
-### 16.4 跨年份与章节车道（Task 3，已完成）
-
-16.3 之后事实层已经靠谱，但**证据本身可能只覆盖了一半问题**：问「2024 年和 2025 年营业总收入的变化」，
-检索只发一次查询，2025 年报的块分数更高，18 条证据全来自 doc 7，2024 年的数字只能借 2025 年报里的对比列 ——
-那列到底是不是同一个口径，全靠运气。
-
-Task 3 把「一次查询」换成「一组车道（lane）」：每条车道是一次带过滤条件的独立检索，结果按 chunkId 取最高分合并。
-
-| 车道 | 什么时候有 | 过滤条件 | topK |
-| --- | --- | --- | --- |
-| `full` | 永远第一路 | 无 | 默认 |
-| `sub:N` | 问题被拆成子问题 | 无 | 默认 |
-| `attr` | 判定为「归因」或「结构」形态 | `sectionPathPrefix = 第三节`（管理层讨论） | 4 |
-| `year:YYYY` | 问题跨 2~3 个年份 | `docYear = YYYY` | 4（补跑 8） |
-
-三条硬规则：
-
-1. **整句永远占一路**（ST15 的结论不能退回）；
-2. **年份超过 3 个不开车道**（`year_range_too_wide`）—— 车道数是线性成本，4 年以上的问题该走「全量 + 配额」而不是逐年；
-3. **某年一条都没命中就补跑一轮**（topK 4 → 8），补到就不再告警；补完仍缺记 `year_coverage_missing:YYYY`，**不拒答**。
-
-实测（2026-10-30，问题「分析东方财富2024年和2025年营业总收入的变化，并说明是什么原因导致的」）：
-
-| 项 | 结果 |
-| --- | --- |
-| 车道 | `["full","sub:0","sub:1","sub:2","attr","year:2025","year:2024"]`（7 路） |
-| 候选 | 25 条，**doc 7 共 13 条 / doc 38 共 12 条**（改前 18 条全来自 doc 7） |
-| 告警 | `warnings=[]`（无 `year_coverage_missing`） |
-| 答案 | `status=DONE`、`citations=5`、`facts=8`；归因落到证券业 90.56% 贡献 + 股基交易额 38.46 万亿 + 保有规模 7,701.33 亿元 |
-| 单测 | `RetrievalLanesTest` 9、`RealAnalysisNodesTest` 28（+3） |
-| 真库回归 | `CrossYearCoverageDbTest` 1 通过（21.4 s），两年文档都在候选里 |
-
-顺带修掉一个 Task 2 遗留的答案缺陷：模型自己把两个净收入增量相加，写出「二者合计增量占总增量的 84.22%」，
-又紧接着写「…占总增量 4,463,397,949.35 元的 90.56%」—— 同一段里两个互相矛盾的比率。
-提示词第 2 条补上「禁止自己把两个证据数字相加、相减或相除，比率只能来自【已计算事实】」，复测 `warnings=[]`、比率只剩系统算的 90.56%。
-
-### 16.5 结构化输出与复制为 Markdown（Task 4，已完成）
-
-答案里的数字终于都对得上了，但**读起来仍然不像分析报告**：四段是纯文本标签，多期数字挤在长句里，
-复制出去是一堆 `[E1]` 死编号。
-
-这一节做了三件事：
-
-| 能力 | 后端 | 前端 |
-| --- | --- | --- |
-| 小标题 | 允许 `### 分行业`（最多 6 个），四段标签不变 | `AnswerText.vue` 渲染成 `h3` |
-| 表格 | 3 个以上并列数字**必须**用管道表格（≤6 列 × 12 行） | 渲染成 `<table>`，窄屏横向滚动，单元格里的 `[E1]` 仍可点 |
-| 复制 | — | `CopyAnswerButton.vue`：正文 + 「### 数值」表（来自 `response.facts`）+ 文末「### 引用」附录 |
-
-> **数值表不在答案正文里**。答案下方那张「数值」表是前端用 `response.facts` 单独渲染的
-> （后端抽出、逐条与原文核对过的事实，含 Java 算出的派生指标），所以早期「复制为 Markdown」只带走正文与引用、
-> 表就丢了。2026-11-03 修：`buildCopyText` 现在把去重后的数值表也渲染成 markdown（去重规则与页面共用 `utils/facts.ts`，
-> 页面几行、复制就几行），排在正文与引用附录之间。
-
-渲染器仍是**自写**、零新增依赖（计划 4.2 有七维对照）：`answer.ts` 只产出数据结构，Vue 渲染成文本节点，
-结构上不可能 XSS；`v-html` 会让 chip 的点击失效，还得再套一层 DOMPurify。什么时候该换成 `markdown-it`，
-契约 C22.4 写了四条触发条件。
-
-实测（2026-10-30 03:5x，问题「分析下2024年和2025年的营业总收入，然后看下是什么原因导致的」）：
-
-```text
-结论：2025年营业总收入 16,067,741,039.51 元…增长 38.46%，增量 4,463,397,949.35 元[E2][E4]
-
-数据：
-| 指标 | 2025年 | 2024年 | 同比增减 |
-| --- | --- | --- | --- |
-| 营业总收入合计（元） | 16,067,741,039.51 | 11,604,343,090.16 | 38.46% |
-| 分行业：证券业（元） | 12,535,471,036.46 | 8,493,612,633.32 | 47.59% |
-
-归因：
-### 分行业
-…
-```
-
-收尾时抓到并修掉两个问题：
-
-| 现象 | 根因 | 修法 |
-| --- | --- | --- |
-| 表格在页面上还是一段乱码 | 模型写成「数据：\| 指标 \| 2025年 \|」——标签和表格同一行，解析器只认「行首是竖线」 | `normalizeSkeleton` 在标签后紧跟 `\|` 或 `###` 时强制断行 |
-| 一开表格就冒出 `answer_value_not_in_evidence:10` | 模型自己把两列相减算增量（4,041,858,403.14 等），这些数不在证据里也不在白名单 | 落地校验新增「白名单金额两两相减的结果也算落地」（只做减法、只对 ≥1000 的金额），复测 `warnings` 回到只有 `facts_table_skipped` |
-
-前端 48 个用例（+24：`answer.spec` 16、`copyAnswer.spec` 9、两个组件 spec 6）、`vue-tsc` 0 错、lint 0 错；
-ChatView chunk gzip **47.23 kB**（+1.66 kB，验收线 +5 kB）。
-
-### 16.6 验收：五个固定问题人审（Task 5，已完成）
-
-五个问题一次跑完（`target/e2e-t5.ps1`），逐题按六列核：问题 / 期望 / 实际 / 数字核验 / 形态 / 差在哪。
-
-| 问题 | 结果 | 差在哪 |
-| --- | --- | --- |
-| 2024 和 2025 营业总收入 + 原因 | 四段齐全 + 3 行表 + 两个 `###` 归因分节；`facts=8`、`citations=4`、`high` | 归因只到「证券业 +47.59% / 贡献 90.56%」，没把手续费及佣金净收入、利息净收入写成驱动因子（数字在证据里） |
-| 2025 营业总收入同比增长多少 | 一句话 38.46% + 三个引用；`high` | 事实卡 7 条、答案只用 1 条（冗余不误导） |
-| 2025 各业务板块收入结构 | 占比表 78.02% / 21.95% / 0.03% + 交易额、销售额归因；`warnings=[]` | 「其他」行被当成业务板块解释 |
-| 两年净利润 + 净利率变化 | 两个净利润逐字正确，净利率明确写「证据未披露」；`high` | 没给可算的替代口径（刻意的口径决策） |
-| 研发投入占比变化 | 6.64% vs 9.85%、下降 3.21 个百分点（数字都对）；`confidence=low` | 3.21 = 两个百分比之差，不在白名单 → `answer_value_not_in_evidence:1` |
-
-**零幻觉**：12 个独立数字全部能回 chunk 7216 / 7246 / 7531 / 7259 逐字对上；两个系统算的比率（38.46%、90.56%）与披露值一致。
-
-与 ima 的对照结论：**引用可回溯、口径诚实度我们更好；归因深度略弱；换算与排版持平**。
-
-回归：非 db **535 通过 / 0 失败**、db 组 **158 通过 / 0 失败 / 1 跳过**、`ChatStreamE2ETest` 1 通过（41.8 s）、前端 48 通过 / 0 类型错。
-顺带修掉 Task 2 插入 `compute` 节点后 3 处过期的「节点序列」断言（`AgentHitlDbTest:127`、`AgentRunServiceDbTest:69`、`AgentStreamE2ETest:103`）。
-
-### 16.7 还没做的
-
-| 缺口 | 例子 | 计划 |
-| --- | --- | --- |
-| 单期分行业表不解析 | chunk 7248（毛利率 84.67%）只能靠模型自己读 | 未决，见报告 9.8 |
-| 分项增量仍靠模型算 | 表格里没有「增量」列，模型自己相减（结果不再告警，因为等于两个证据数之差） | 未决：要不要把每条子项的增量都算进【已计算事实】 |
-
-完整记录见 `docs/阶段16-答案质量报告.md`，计划见 `docs/superpowers/plans/ST16-2026-10-30-16-answer-quality-facts.md`，契约见 `docs/关键契约.md`（C20 / C21 / C22 / C23 / C24）。
-
-
-## 阶段 18：演示前的体验打磨（已完成）
-
-用户一次给了 12 条体验问题（后追加 2 条、撤销 1 条），按 A 视觉 / B 引用 / ~~C 知识库~~ / D 解析进度 / E 权限分批做。
-计划与偏差登记见 `docs/superpowers/plans/ST18-2026-10-30-18-demo-polish.md`。
-
-| 批 | 内容 | 状态 |
-| --- | --- | --- |
-| A（9 条） | 无分割线、问题时气泡收敛、去掉「问/答」印章、标题字体换无衬线、用时显示、回到底部按钮、操作按钮移底、答案不显示时钟、图标后加产品名 lora | 已完成 |
-| B（1 条） | 引用 `[E3]` 改成数字角标，悬停出整块原文（`GET /api/chunks/{id}`，404 不泄漏存在性），点击仍开 PDF 页 | 已完成（契约 C26） |
-| C（1 条） | 知识库名称与列表 | **用户撤销**：整个系统就是一个知识库 |
-| D（1 条） | 解析进度百分比 | 已完成（契约 C28） |
-| E（2 条） | 用户 / 角色 / 文档权限管理页（分页、搜索、抽屉看本人可读文档、角色 CRUD）、401 过期跳登录 | 已完成（契约 C27） |
-
-### 18.1 解析进度是「阶段检查点」，不是页级百分比
-
-Docling 的转换是一次阻塞调用，解析服务在作业完成前拿不到任何页级回调，所以进度取自链路上真实存在的七个时刻：
-
-`2 排队中 → 8 提交解析作业 → 12 解析中 → 45 解析完成 → 50 切块中 → 55 切块完成 → 55~95 向量化 x/y → 100 已完成`
-
-实测（2026-10-30 上传 12 页一季报，后端 2 秒轮询一次，抓到 6 个不同值）：
-`8% 失败`（当时解析服务未启动）→ `12% 解析中` → `55% 切块完成` → `76% 向量化 20/38` → `95% 向量化 38/38` → `100% 已完成`。
-Docling 单次转换 190.5 秒，切块 + 嵌入 8 秒。
-
-两个设计点值得记：
-
-- **只增不减**：`GREATEST` 一条 SQL 同时写进度与阶段文案，重试与回退不会让进度条倒退；
-- **进度写失败不能让文档失败**：`DocumentProgress.step` 吞异常只记 warn —— 进度是观测，不是状态。
-
-### 18.2 还剩的问题
-
-| 问题 | 影响 | 计划 |
-| --- | --- | --- |
-| 「解析中」一段 190 秒停在 12% | 用户知道在跑，但不知道跑到哪 | 要真实页级进度得把 Docling 转换拆成 `page_range` 分批，属解析引擎重构，不在本阶段 |
-| 45 / 50 两个检查点常被 2 秒轮询跳过 | 实测只看到 6 个值（要 ≥5 已达标） | 可把前端轮询降到 1 秒，或在解析完成时多留一拍 |
-
-完整记录见 `docs/superpowers/plans/ST18-2026-10-30-18-demo-polish.md` §5.1，契约见 `docs/关键契约.md`（C26 / C27 / C28）。
-
----
-
-## 阶段 19：入库执行记录（已完成）
-
-阶段 18 的进度条只回答「现在到哪一步」，看不到「这一趟到底发生了什么、失败卡在哪、重试过几次」。阶段 19 补的是一条**流水**：一次入库被拆成固定模板的若干步，每步记录状态、耗时、附注，失败时给出错误原文与重试按钮。
-
-计划与偏差登记见 `docs/superpowers/plans/ST19-2026-10-31-19-ingest-timeline.md`，口径见 `docs/关键契约.md` **C29**。
-
-### 19.1 三块内容
-
-| 块 | 内容 |
-| --- | --- |
-| 表（V17） | `document_ingest_run`（一次尝试：attempt / flow / current_step / status / summary_json / error）+ `document_ingest_step`（一步一行：seq / step / status / detail / retry / duration_ms），均带 RLS 与租户策略 |
-| 接口 | `GET /api/documents/{id}/ingest`（NONE / RUNNING 或 FAILED 补全 8 行 / DONE 只给摘要）、`POST /api/documents/{id}/retry`（只接受 FAILED，否则 409 `NOT_RETRYABLE`） |
-| 前端 | 详情弹窗内嵌 `IngestTimeline.vue`：运行中 2 秒轮询 + 当前步三重动效（脉冲点、流光条、秒数自增）；DONE 只显示一行摘要；FAILED 显示错误原文与「重试」 |
-
-步骤模板固定：PARSE / RESUME 8 步（已入队 → 提交解析作业 → 解析中 → 解析完成 → 切块中 → 切块完成 → 向量化 → 切换 ACTIVE），REINDEX 4 步。步数不随心跳、重试增加。
-
-### 19.2 实测（2026-10-31，本机真链路）
-
-| 场景 | 结果 |
-| --- | --- |
-| 12 页一季报，正常入库 | 3/8「解析中 · 已用 0m0s → 3m1s」每 30 秒变一次（心跳节流生效）→ 7/8「向量化 0/38」→ DONE；摘要 `parseMs=201078 chunkMs=326 embedMs=4093 pages=12 chunks=38` |
-| 停掉解析服务再上传（1 页探针 PDF） | `attempt=1`、第 2 步 FAILED、错误原文为连接被拒；**同一步 `retry=3`**（Kafka 重投折进同一条 run） |
-| 点「重试」 | 200，`attempt=2` → 74 秒后 DONE（`pages=1 chunks=1`） |
-| 对 DONE 文档点重试 | 409 `NOT_RETRYABLE` |
-
-### 19.3 三个容易做错的地方
-
-1. **重试不该产生新「次」**：MQ 重投是同一次入库的内部重试，5 分钟宽限窗内失败会被 `reopen` 复用同一条 run，只把该步 `retry+1`；不加这条，一次失败上传会在界面上显示「第 4 次」。
-2. **重试必须把进度归零**：C28 的进度是 `GREATEST(旧值, 新值)`，不归零则重试后的 8% 写不进去，界面停在 100% 假完成。
-3. **DONE 不返回步骤**：`totalMs/parseMs/chunkMs/embedMs` 由各步耗时现算，算完把 `steps` 置空——省流量，也避免把「上次跑的过程」当成现状。
-
-### 19.4 收尾时修掉的跨阶段回归（2026-10-31）
-
-全量测试在阶段 19 收尾时打出 5 条红（3 条多轮 e2e + 1 条记忆闸门 + 1 条评测门禁），查下来全是阶段 14 统一图引擎时**丢了调用点**的旧账：指代消解（`TurnContext`）、长期记忆召回（`MemoryGate`）、期间标注（`PeriodLabeler`）三个类都只剩定义、没人调用。另外两处判定写窄了：指标命中按字面比对（「归母净利润」对不上表头「归属于上市公司股东的净利润」），答案形态把「应对行业**变化**的措施」判成「要对比」，模型于是拒答一个没人问的问题。
-
-修完后的评测门禁（2026-10-31 20:09~20:15，32 题 live）：
-
-| 指标 | 修前 | 修后 | 门槛 |
-| --- | --- | --- | --- |
-| 引用准确率 | 0.7260 | **1.0000** | ≥ 0.90 |
-| 数值准确率 | 0.6296 → 0.8889 | **1.0000** | ≥ 0.90 |
-| 拒答准确率 | 1.0000 | **1.0000** | = 1.00 |
-| 期间标注率 | 0.0000 | **1.0000** | = 1.00 |
-
-口径写进 `docs/关键契约.md` **C30**，过程与实测表见 ST19 §12.4。教训一句：**定义存在 ≠ 在用**，这类断链只有真链路或 e2e 能抓到。
-
-## 阶段 20：技术债清理（检索精度 / 版本保留 / 图复用）
-
-阶段 20 没有新功能，专修「知道有问题、但一直没排上」的五笔债，外加一笔由用户 review 提出的图复用问题。
-计划与实测见 `docs/superpowers/plans/ST20-2026-10-31-20-tech-debt.md`。
-
-| # | 债 | 实测症状 | 改法 | 结果 |
-| --- | --- | --- | --- | --- |
-| 1 | Sparse 精确模式排序无相关性 | 「每股收益」17 条命中里 16 条命中数都是 1 → 排序退化成按主键，命中数超 `topSparse` 时正确块被截掉 | 三档打分：词长（越具体越高）+ 标题/章节命中 +3 + 位置兜底（C31.2） | 正确块稳定进 top |
-| 2 | 精准事实仍全量跑 Dense | 每题多一次 embedding（174~373 ms）+ 一路向量检索 | 先跑 Sparse，命中数落在 [3, 30) 才跳 Dense，并写 `dense_skipped_exact_fact` 警告 | 精准事实题省一次嵌入 |
-| 3 | 旧 chunk 版本无限堆积 | document 7 有 **11 个版本 8338 行**，当前版本只 758 行，91% 是历史版本 | 方案 A：保留 active + 最近 3 版，**被引用的行单独保住**（保护到行，不是版本） | 8338 → 2274 行；表+索引 113 → 87 MB |
-| 4 | `RETRIEVAL_ONLY` 未实现 | 想换嵌入模型只能整份重切（要调解析服务、要花嵌入费） | 从库里把块搬回内存按 C1 重拼 `embedding_text`，按 hash 复用旧向量；顺带补 `REEMBED` | 零嵌入费的重索引（C35） |
-| 5 | 兼容构造器梯度 | 3 个 record 共 7 个「少几个参数」的构造器、67 处调用点 | 一个全参构造器 + 具名工厂 + wither | 构造点收敛 |
-| 6 | 每次问答都重编 StateGraph | 一次问答至少建 2 张图，**每查一次运行状态再建 1 张** | 实例级 `volatile` 缓存 + 双检锁 + 启动期 `warmUp()` | 一个进程只编 2 张（见 20.6） |
-
-### 20.1 债 #3 的两个反直觉点
-
-1. **`DELETE` 不等于空间回来**：先 `VACUUM` 清堆，HNSW / GIN 里的死条目还要 `REINDEX` 才释放 —— 113 → 112 → 87 MB 就是这个过程。
-2. **`spared=0` 不是「没保护」**：document 7 被引用的 16 个块都落在保留集（v9/v11）里，所以待删版本里没有被引用的行。
-
-### 20.6 图的编译与复用（2026-11-02）
-
-**现象**：`AgentRunService` 每次请求都调 `graph.fastGraph()` / `hitlGraph()`，而它们直通 `build(hitl)`。
-一次人批问答会新建两张图，**刷新页面 / 轮询状态时又各建一张**。
-
-**先量，再改**（不靠直觉）：
-
-| 指标 | 实测 |
-| --- | --- |
-| 建图 + `compile()` | fast **0.112 ms** / hitl **0.058 ms**（各 300 次，已预热） |
-| 一张编译好的图常驻内存 | **≈ 4.9 KB**（留 2000 张 → 堆涨 9.5 MB） |
-| 一次问答里各节点耗时（184~214 次样本） | answer **10,506 ms** / understand **3,680 ms** / retrieve 1,551 ms / 其余 < 150 ms |
-
-所以建图**只占 0.001%**，它不是性能问题，是设计问题。
-
-**为什么能共享**：`CompiledGraph` 的五个字段全 `final`（`stateGraph` / `nodes` / `edges` / `processedData` / `compileConfig`），
-`javap -c` 全文扫这五个字段的 `putfield` 只出现 5 次、全在构造器里；每次运行的变量走 `RunnableConfig(threadId)` + 检查点 saver。
-
-**改法**：`AnalysisGraph` 加两个 `volatile` 字段 + 双检锁，`fastGraph()` / `hitlGraph()` 各只编一次（阶段 22 又合并成**一张**，见文末）；
-`AgentGraphConfig` 建 bean 时调 `warmUp()` —— 图定义写错（少边、节点名错、条件边指向不存在的节点）会在**启动期**抛错，而不是每个请求 500。
-缓存**必须实例级不能 static**：测试用 `FakeAnalysisNodes` + `MemorySaver` 另建实例，静态缓存会把假节点带进生产。
-
-**验收**：新增 `AnalysisGraphCacheTest` 8 例（只编一次 / 两张不同 / 实例级 / 预热幂等 / mermaid 不重编 / 缓存图连跑两次状态隔离 / 8 线程并发同一实例）
-全绿；真链路 1 次问答 + 3 次状态轮询，编译日志**始终 = 2 条**（改前这四个动作会编 4~6 张）。
-
-> 四条「该改但不是为了更快」的理由写在计划 §8.5：失去启动期 fail-fast、四处构建点会漂移、读一次状态也要编译整张图、将来加埋点无处落脚。
-
----
-
-## 阶段 21：文档归属与授权（默认私有 / 多主体批量授权）
-
-起因是一句很朴素的质疑：**「为什么文档默认全公司都能看？」** 旧模型里 `document.visibility` 只有两个值，
-`TENANT`（公司级可见）或 `PRIVATE`（仅属主），而且两种授权**互斥** —— TENANT 文档只认「公司级授权」，
-单份文档授权对它完全无效，接口只能提前拒掉这类请求。结果就是：想放开一份文档，必须放开整家公司。
-
-### 21.1 新口径（一句话 + 一段 SQL）
-
-> **能读 = 我是这份文档的上传者，或者有人把这份文档授权给了我（直接给我，或给我的某个角色）。**
-
-判定只写在 `scope/DocumentAccessSql.java` 一处，三个调用点共用（检索期 `AclScopeAuthorizer`、
-管理页「某人能读哪些」、角色卡片的可见文档数）。旧代码把这段谓词抄了四份，任何一份漂移都会出现
-「列表看不到、但引用读得到」。
-
-### 21.2 改了什么
-
-| 层 | 改动 | 关键点 |
-| --- | --- | --- |
-| 数据库 | `V19__document_ownership_and_grants.sql` | 回填属主 + `owner_user_id` 设 NOT NULL；把 `COMPANY` 授权**展开**成逐份 `DOCUMENT` 行；去重后建唯一索引 `uq_grant_subject_resource`；`DROP COLUMN visibility` |
-| 上传 | `DocumentRepository.upsertDocument(..., ownerUserId)` | 属主 = 当前登录用户；CLI / 解析服务传 `null` 时回落到本租户最早的 ACTIVE 账号；同一份 PDF 被第二个人重传**不改属主** |
-| 授权接口 | `POST /api/admin/grants` 支持批量 | `subjects ≤ 50`、请求资源 `≤ 200`、展开后文档 `≤ 500`；`resourceType=COMPANY` 只作请求侧写法；返回 `{created, skipped, subjects, documents}`；重复授权幂等 |
-| 前端 | 授权弹窗改多选 | 勾多份文档 + 可选「整家公司」+ 可同时授给多个角色；不再有「可见性」列 |
-
-### 21.3 快照语义：这是设计，不是缺陷
-
-「按整家公司授权」在落库前就展开成当时那 N 份文档的授权行。**之后这家公司新上传的文档不会自动可读。**
-代价是「新文档要再授一次」，收益是每一条可读性都能对应到一行可删的授权记录 —— 审计时能回答
-「谁在什么时候被授过这份文档」，而不是反推「按当时的公司归属他应该能看」。
-
-### 21.4 验收
-
-- 迁移后库内实测：`resource_grant` 由 3 行变 4 行（原有 ADMIN→文档 7 去重保留，新增 ADMIN→38、ANALYST→7、ANALYST→38），`visibility` 列已不存在，`owner_user_id` NOT NULL；
-- `AclScopeAuthorizerTest` 12 例（含「同公司新文档不会因旧授权自动可读」这条反例）、`ScopeResolverAclTest` 5 例、`AdminAccessDbTest` 9 例、`AdminControllerTest` 28 例、`DocumentUploadServiceTest` 5 例全绿；
-- analyst 仍能读 7 / 38（历史上那条公司级授权展开后语义不变），outsider 仍 409；
-- 契约写在 `docs/关键契约.md` 的 **C38**（含「为什么不做动态生效」的三条理由）；完整实测、四个坑与未决问题见 `docs/阶段21-文档归属与授权报告.md`。
-
----
-
-## 阶段 22：一张图 + 运行时审批闸门（2026-11-03）
-
-起因是用户的一句质问：**「我就问了个『【数值】表格是不是程序拼的』，和检索无关，为什么弹审批卡？而且我看不懂要我确认什么。」**
-
-查下来两个问题叠在一起：
-
-1. 审批触发条件只看作用域：**作用域里有两份年报（2024、2025）+ 问题里没写 4 位年份** → 一律弹（`AmbiguityDetector`）。
-   它不判断「这是不是文档问题」。
-2. 卡片文案写死了「确认后才会检索并生成」，但审批点在 `approve`，位于 `retrieve → verify` **之后** ——
-   检索早跑完了。也就是说，点「通过」根本不会改变检索，这句承诺是假的。
-
-第 2 条是结构问题：要让「确认理解」名副其实，断点必须前移到检索之前。而当时用的是 `interruptsBefore`，
-它是**编译期**配置，只能编两份图（`fastGraph` / `hitlGraph`）按请求选 —— 想按状态动态停，只能换机制。
-
-### 22.1 机制：`InterruptibleAction`（库自带，不是自己造的）
-
-LangGraph4j 1.9.7 里，节点动作若同时实现 `AsyncNodeActionWithConfig` 与 `InterruptibleAction`，
-库会在调用 `apply` **之前**先问 `interrupt(nodeId, state, config)`：返回非空就静停（`apply` 一次都不执行），
-返回空就照常执行。库自己的 `AgentEx\$ApprovalNodeAction` 就是这套写法。
-
-实测（最小图 `a → approve → b`，`MemorySaver`，2026-11-03）：
-
-| 场景 | 结果 | 计数 |
-| --- | --- | --- |
-| 需要审批 | 停在 `nextNodeId=approve` | `interruptCalls=1, applyCalls=0` |
-| 恢复 | 重新进入该节点 → `interrupt()` 返回空 → `apply` → `b` → `END` | `interruptCalls=2, applyCalls=1` |
-| 不需要审批 | 一次跑通 | `interruptCalls=3`（累计） |
-
-### 22.2 这次只做了「合并成一张图」，审批卡没动
-
-| 改动 | 之前 | 现在 |
-| --- | --- | --- |
-| 图 | `fastGraph()` / `hitlGraph()` 两份编译产物 | 唯一 `graph()`，实例内只编一次 |
-| 停不停 | 编译期 `interruptsBefore("approve")` | 运行时读状态：`approvalAllowed && decision 为空` |
-| `approve` 节点 | `node(state -> Map.of())` 透传 | `ApprovalGate`（同时实现两个接口） |
-| 调用方 | `execute(..., hitl)` 选图 | 同一个参数改名 `approvalAllowed`，只写进状态 |
-
-### 22.3 必须记住的坑：恢复时会**重新进入**同一个节点
-
-上表第二行：`interruptCalls` 从 1 变 2。也就是说，用户点「通过」后，图会再进一次 `approve`、再问一次
-`interrupt()`。所以判断里必须带「已经决定过就不停」（`!state.decision().isBlank()`）——
-漏掉这半句，点「通过」后会再停一次，永远出不来。
-
-### 22.4 验收
-
-- 非 db 全量 **879 通过 / 0 失败 / 4 跳过**；db 组 **194 通过 / 0 失败 / 3 跳过**；`ChatStreamE2ETest` 1/1（45.4 s，含一次真实人批往返）；
-- 新增 `ApprovalGateTest` 4 例（不停 / 停 + 原因 / 批过不再停 / apply 透传）；
-- `AnalysisGraphTest` 14 例全绿（原来 `fastGraph`/`hitlGraph` 全部改走 `graph()`，人批用例改成种 `approvalAllowed`）；
-- 契约：C17 §17.2 与 C36 已改写；`docs/主流程导读.md` 与 `docs/技术资料/LangGraph4j-工作机制.md` §7.5 已同步。
-
-### 22.5 B 部分：审批卡变成「真的能纠正」（2026-11-03 下午）
-
-A 部分只把两张图合成一张，卡片还是老的：**没告诉人「为什么停」，也没有任何可点的东西**，
-「按意见修改」只是把一句话塞进 `decisionNote`，检索条件一个字都没变。
-
-这一批把三件事一起做完：
-
-| 问题 | 现在的做法 |
-| --- | --- |
-| 为什么停 | `understand` 用 `AmbiguityDetector.reasons` 判「作用域里多个年份/公司而问题没点名」，写进 `APPROVAL_REASONS`；闸门读同一份，没歧义就不停 |
-| 要我确认什么 | 卡片显示 `understood`：检索范围、年份、公司、识别到的指标；说不清的维度用中文 chip 标出来（「没说看哪一年」） |
-| 我能改成什么 | 年份/公司候选可点（「2024 年报（1 份）」「两份都看」），点完再点「按这个继续」 |
-| 用户想补一句话 | 文本框非空时按钮变「按补充继续」→ EDIT：文本拼进检索式并抽出年份 |
-| 问题根本不是问年报 | `OffTopicDetector` 三条同时成立才判：无指标/公司/年份 + 无文档词 + 有对话/界面用词 → 直接答能力边界，不检索不弹卡 |
-
-**关键的结构调整**：审批点从「verify 之后」前移到「plan 之后」。这是让候选真正生效的前提 ——
-选了「只看 2024 年」，恢复后接着跑的就是检索，新条件立刻生效；如果闸门还在检索之后，
-选什么都不可能改变已经查回来的证据。
-
-**为什么 EDIT 不重跑 QU**：QU 是一次 3~4 秒的模型调用，而补充文本（"只看 2024 年的总营收"）
-里的年份用一条正则就能拿到，指标词本来就在检索式里。代价是「补充文本里换了指标」不会改写
-`metrics` 状态，只影响向量/全文检索的文本 —— 这一点写进了 C17 §17.5，不装作它是完整重理解。
-
-**验收**（2026-11-03）：
-- 后端：`ApprovalGateTest` 5 例（含「没歧义不停」）、`OffTopicDetectorTest` 5 例、`ApprovalPatchTest` 4 例、
-  `AnalysisGraphTest` 14 例改按新顺序断言、`AgentHitlDbTest` / `AgentStreamE2ETest` 的步骤与时序同步；
-- 前端：`ApprovalCard.spec.ts` 6 例（候选点击 → `yearFrom/yearTo`、补一句话 → EDIT、两份都看 → 空条件、驳回必填、busy 禁用、无 ambiguity 不崩）；
-- 契约：C17 §17.2 的图与时序、§17.5 的载荷与三种纠正。
-
-**仍未做**：计划列表折叠（现在最多 5 行，先不折）、枚举换中文（`queryType` 仍是 `FACT_LOOKUP` 这种码，
-卡片上只展示用户关心的四项）。
+| [`docs/主流程导读.md`](docs/主流程导读.md) | 一次提问从 HTTP 到答案的完整调用链，最适合第一次读代码 |
+| [`docs/每轮问答的模型调用与流程图.md`](docs/每轮问答的模型调用与流程图.md) | 12 个节点逐个拆：目的 / 输入 / 核心逻辑 / 输出 / 模型调用 / 降级 |
+| [`docs/关键契约.md`](docs/关键契约.md) | C1~C41，跨模块不能违反的约定（如 `embedding_text` 的组成、只读 ACTIVE 版本） |
+| [`docs/术语表.md`](docs/术语表.md) | 每个缩写的中文全称、为什么需要、在本项目里长什么样 |
+| [`docs/技术资料/`](docs/技术资料/) | pgvector 工作机制、tsvector 与 trgm、LangGraph4j、MCP 调用链路、HNSW |
+| [`docs/阶段开发日志.md`](docs/阶段开发日志.md) | 阶段 1 ~ 24 的时间序开发记录：做了什么、踩了什么坑、实测数字 |
+| [`docs/跨文档评测报告.md`](docs/跨文档评测报告.md) | 两份年报的跨文档对比效果与失误分析 |
+| [`docs/竞品对比与技术债.md`](docs/竞品对比与技术债.md) | 与同类产品的差异、已知技术债 |
+
+## 免责声明
+
+本项目仅用于学习与技术演示，不构成任何投资建议。行情数据来自公开接口，可能存在延迟或错误；年报数据请以交易所披露原文为准。

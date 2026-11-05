@@ -21,26 +21,27 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
 /**
- * 七个业务节点 + 两个终态节点的图（契约 C17 §2.2）。
+ * 十二个节点的图（契约 C17 / C40；阶段 23 加入情支路）。
  *
  * <pre>
- * START → understand → plan ─┬─ 需要检索 ─▶ approve ─▶ retrieve（节点内按 subQuestions 顺序循环）
- *                            └─ REFUSE ───▶ respond_insufficient
- * retrieve → verify ─┬─ ENOUGH ─────────────▶ compute → answer
- *                    ├─ RETRY（retryCount &lt; 1）▶ rewrite → retrieve
- *                    └─ INSUFFICIENT ───────▶ respond_insufficient
- * answer → cite_check ─┬─ 通过 ──▶ END（重写回 answer 时不再经过 compute，事实已在状态里）
- *                      └─ 不过且未重试 ──▶ answer（不经过 approve）
+ * START → understand → plan ─┬─ REFUSE（问题空 / refuseReason 非空）──────▶ respond_insufficient
+ *                            ├─ MARKET_ONLY（纯行情）─▶ market ─┬─ 纯行情 ─▶ answer_market → END
+ *                            │                                  └─ 混合 ───▶ verify
+ *                            └─ REVIEW ─────────────────▶ approve → retrieve ─┬─ REFUSE ─▶ respond_insufficient
+ *                                                                              ├─ MARKET_INTENT ─▶ market
+ *                                                                              └─ 其余 ──▶ verify
+ * verify ─┬─ ENOUGH ───────────────▶ compute → answer → cite_check ─┬─ 通过 ──────────▶ END
+ *         ├─ RETRY（retryCount &lt; 1）▶ rewrite → retrieve            └─ 不过且未重试 ──▶ answer（不经过 approve）
+ *         ├─ INSUFFICIENT ─────────▶ respond_insufficient
+ *         └─ MARKET_FALLBACK ──────▶ answer_market（证据不足但手里已有行情）
  * </pre>
  *
- * <p><b>只编一张图</b>（阶段 22）：是否停等人批由 {@link ApprovalGate} 在<b>运行时</b>按状态
- * （{@code approvalAllowed} + {@code decision} 是否已填）决定，不再靠编译期 {@code interruptsBefore} 区分
- * {@code fast} / {@code hitl} 两张产物。代价是 {@code approve} 每次都会执行，但它只是返回空 {@code Map.of()}，
- * 微秒级；换来的是「一个决策点、一份编译产物」。
+ * <p>为什么中断点是单独的 {@code approve} 节点而不是 {@code answer}（ST11 §19）：{@code cite_check}
+ * 发现引用问题会沿回边重跑 {@code answer}，若中断点挂在 {@code answer} 上，每重试一次就再弹一次审批
+ * （2026-10-29 真链路实测：复杂问题批了两次）。{@code approve} 每次运行只进一次，回边不再经过它。
  *
- * <p>为什么中断点不是 {@code answer} 而是单独一个 {@code approve} 节点（ST11 §19）：{@code cite_check}
- * 发现引用问题时会沿回边重跑 {@code answer}，若中断点挂在 {@code answer} 上，每重试一次就再弹一次审批
- * （2026-10-29 真链路实测：复杂问题批了两次）。{@code approve} 只在 verify 通过后进入一次，重试不再经过它。
+ * <p><b>阶段 22 起审批点在 {@code plan} 之后、检索之前</b>：人批确认的是「准备怎么查」，
+ * 所以选了年份/公司再检索，新条件才真的生效；停不停由 {@link ApprovalGate} 运行时决定。
  *
  * <p><b>图在实例内缓存一份</b>（2026-11-02 缓存两张，阶段 22 合并成一张）：{@code StateGraph} 是"装配件"而不是"运行数据"——
  * {@code CompiledGraph} 的五个字段（stateGraph / nodes / edges / processedData / compileConfig）全是
